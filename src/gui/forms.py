@@ -12,7 +12,8 @@ root_path = os.path.abspath(os.path.join(current_dir, '..', '..'))
 # # Add the root directory to sys.path
 sys.path.append(root_path)
 
-from src.db.transactions import TransactionRecords
+from src.models.transaction import Transaction
+from src.models.portfolio import Portfolio
 from datetime import datetime
 
 def create_transaction_form():
@@ -21,14 +22,15 @@ def create_transaction_form():
     layout = [
         [sg.Text("Date-Time"), sg.InputText(key="date_time", default_text=current_datetime)],
         [sg.CalendarButton("Select Date", target="date_time", format="%Y-%m-%d %H:%M:%S", key="calendar")],
-        [sg.Text("Transaction Type"), sg.Combo(["Buy", "Sell"], key="transaction_type")],
-        [sg.Text("Asset Class"), sg.Combo(["Stocks, ETFs, REITs, etc.", "Funds", "Fixed Deposit", "Government Bonds", "Corporate Bonds", "Stock Options", "Currencies", "Cryptocurrenies", "Commodities", "Cash", "Generic"], key="asset_class")],
-        [sg.Text("Asset"), sg.InputText(key="asset")],
-        [sg.Text("Broker"), sg.InputText(key="broker")],
-        [sg.Text("Amount"), sg.InputText(key="amount")],
-        [sg.Text("Price"), sg.InputText(key="price")],
-        [sg.Text("Brokerage Fee"), sg.InputText(key="brokerage_fee")],
-        [sg.Text("Other Fees"), sg.InputText(key="other_fees")],
+        [sg.Text("Type"), sg.Combo(["Buy", "Sell"], key="type", default_value="Buy")],
+        [sg.Text("Asset"), sg.InputText(key="asset", default_text="AAPL")],
+        [sg.Text("Broker"), sg.InputText(key="broker",default_text="Inter")],
+        [sg.Text("Allocation Class"), sg.Combo(["Oportunity Reserve", "Value Reserve", "Businesses"], key="allocation_class", default_value="Businesses")],
+        [sg.Text("Quantity"), sg.InputText(key="quantity", default_text="10")],
+        [sg.Text("Price"), sg.InputText(key="price",default_text="100")],
+        [sg.Text("Brokerage Fee"), sg.InputText(key="brokerage_fee",default_text="0")],
+        [sg.Text("Other Fees"), sg.InputText(key="other_fees",default_text="0")],
+        [sg.Text("Notes"), sg.InputText(key="notes")],
         [sg.Button("Add Transaction")]
     ]
 
@@ -41,29 +43,19 @@ def create_transaction_form():
         elif event == "Add Transaction":
             # Extract input values
             date_time = values["date_time"]
-            transaction_type = values["transaction_type"]
-            asset_class = values["asset_class"]
+            type = values["type"]
             asset = values["asset"]
             broker = values["broker"]
-            amount = float(values["amount"])  # Convert to float
+            allocation_class = values["allocation_class"]
+            quantity = float(values["quantity"])  # Convert to float
             price = float(values["price"])  # Convert to float
             brokerage_fee = float(values["brokerage_fee"])  # Convert to float
             other_fees = float(values["other_fees"])  # Convert to float
+            notes = values["notes"]
 
             # Add the transaction using your TransactionRecords class
-            records = TransactionRecords()
-            records.add_transaction(
-                date_time=date_time,
-                transaction_type=transaction_type,
-                asset_class=asset_class,
-                asset=asset,
-                broker=broker,
-                amount=amount,
-                price=price,
-                brokerage_fee=brokerage_fee,
-                other_fees=other_fees
-            )
-            records.save_transactions()
-            print(records.transactions_df)
+            transaction = Transaction(0, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes)
+            portfolio = Portfolio()
+            portfolio.add_transaction(transaction)
 
     window.close()
