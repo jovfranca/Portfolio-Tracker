@@ -16,7 +16,7 @@ from src.models.transaction import Transaction
 from src.models.portfolio import Portfolio
 from datetime import datetime
 
-def create_transaction_form():
+def create_transaction(portfolio):
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     layout = [
@@ -55,7 +55,7 @@ def create_transaction_form():
 
             # Add the transaction using your TransactionRecords class
             transaction = Transaction(0, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes)
-            portfolio = Portfolio()
             portfolio.add_transaction(transaction)
+            portfolio.update_assets()
 
     window.close()

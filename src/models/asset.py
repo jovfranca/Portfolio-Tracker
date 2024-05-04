@@ -5,7 +5,7 @@ class Asset:
         self.sector = sector
         self.sub_sector = sub_sector
         self.average_cost = 0.0
-        self.total_quantity = 0
+        self.quantity = 0
         self.current_price = 0.0
 
     def check_for_income(self):

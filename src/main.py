@@ -11,10 +11,12 @@ root_path = os.path.abspath(os.path.join(current_dir, '..'))
 # # Add the root directory to sys.path
 sys.path.append(root_path)
 
-from src.gui.forms import create_transaction_form
+from src.gui.forms import create_transaction
+from src.models.portfolio import Portfolio
 
 def main():
-    create_transaction_form()
+    portfolio = Portfolio()
+    create_transaction(portfolio)
     
 if __name__ == "__main__":
     main()

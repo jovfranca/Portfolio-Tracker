@@ -4,11 +4,25 @@
 ## Overview
 The Investments Portfolio Tracker is a comprehensive tool designed to manage and analyze your investment portfolio. It provides detailed insights into your investments, featuring profit and allocation calculations.
 
+## Released Features
+
+### Transaction Data
+- [x] **Transaction Records**: Track all buy and sell transactions. 
+- [x] **Transaction Form**: A form to input transaction details.
+
+### Asset Data
+
+- [x] **Assets List**: List of all assets owned
+- [x] **Average Cost**: Calculation of average cost
+
+There was implemented classes for: assets, brokers, transactions and portfolio.
+
 ## Upcoming Features
 
-### Transaction Management
-- **Records**: Track all buy and sell transactions.
-- **GUI**: A user-friendly form to input transaction details.
+### Asset Data
+
+- **Current Price**: Fetching of current price for asset
+- **Historical Data**: Fetching of historical price for asset
 
 ### Portfolio Data
 - **Assets Overview**: List assets with details such as average cost, quantity, current value, allocation, dividends, and profitability.

@@ -25,10 +25,7 @@ class Transaction:
         self.other_fees = other_fees
         self.notes = notes
 
-    @classmethod
-    def new_transaction(cls, id, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes):
-        return cls(id, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes)
-    
+
     def validate_transaction(self):
         # Validate the transaction data (e.g., check if required fields are present)
         # Implement your validation rules here
