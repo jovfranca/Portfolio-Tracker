@@ -4,6 +4,35 @@ from datetime import datetime
 from src.models.asset import Asset
 
 class Portfolio:
+    """
+    A class used to represent an investment portfolio, which includes methods for managing transactions and assets.
+
+    Attributes:
+    ----------
+    transactions_data_filename : str
+        The file path for storing transaction data in pickle format.
+    transactions_list : list
+        A list of transaction objects loaded from the pickle file.
+    assets_data_filename : str
+        The file path for storing asset data in pickle format.
+    assets_list : list
+        A list of asset objects loaded from the pickle file.
+
+    Methods:
+    -------
+    load_transactions()
+        Loads the list of transaction objects from the pickle file.
+    load_assets()
+        Loads the list of asset objects from the pickle file.
+    add_transaction(transaction)
+        Adds a new transaction to the transactions list and updates the pickle file.
+    list_assets()
+        Iterates over the transactions to update the assets list and serializes it to the pickle file.
+    update_asset_list(updated_asset)
+        Updates a specific asset in the assets list and serializes the updated list to the pickle file.
+    """
+
+
     def __init__(self):
         self.transactions_data_filename="src/db/transactions.pkl"
         self.transactions_list = self.load_transactions()
@@ -84,6 +113,17 @@ class Portfolio:
         else:
             # Asset not found in the list
             return False
+        
+    def get_oldest_transaction_date(self):
+        """
+        Retrieves the oldest transaction date from the transactions list.
+
+        Returns:
+            datetime: The oldest transaction date.
+        """
+        if not self.transactions_list:
+            return None  # No transactions available
+        return min(datetime.strptime(transaction.date_time, "%Y-%m-%d %H:%M:%S") for transaction in self.transactions_list)
 
     def calculate_total_value(self):
         # Calculate the total value of the portfolio (sum of asset values)
