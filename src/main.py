@@ -17,6 +17,7 @@ from src.models.portfolio import Portfolio
 def main():
     portfolio = Portfolio()
     create_transaction(portfolio)
+    portfolio.list_positions()
     portfolio.list_assets()
     oldest_transaction_date = portfolio.get_oldest_transaction_date()
     for asset in portfolio.assets_list:
@@ -34,8 +35,6 @@ def main():
 
     # List assets to verify the updates
     portfolio.list_assets()
-    
-    
 
 if __name__ == "__main__":
     main()

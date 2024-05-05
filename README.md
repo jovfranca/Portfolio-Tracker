@@ -14,18 +14,29 @@ The Investments Portfolio Tracker is a comprehensive tool designed to manage and
 
 - [x] **Assets List**: List of all assets owned
 - [x] **Average Cost**: Calculation of average cost
+- [x] **Current Price**: Fetching of current price for asset
+- [x] **Historical Data**: Fetching of historical price for asset
 
 There was implemented classes for: assets, brokers, transactions and portfolio.
 
 ## Upcoming Features
 
-### Asset Data
+### Position Data
 
-- **Current Price**: Fetching of current price for asset
-- **Historical Data**: Fetching of historical price for asset
+Each position must have a unique asset, broker and allocation class.
+
+- **Assets List**: List of all positions owned
+- **Average Cost**: Calculation of average cost of each position
+- **Unrealized Gain**: Calculation of unrealized gain
+- **Realized Gain**: Calculation of realized gain
+- **Total Gain**: Calculation of total gain
+- **Accumulated Profitability %**: Calculation of accumulated profitability
+- **Daily Profitability %**: Calculation of Daily Profitability
+
 
 ### Portfolio Data
-- **Assets Overview**: List assets with details such as average cost, quantity, current value, allocation, dividends, and profitability.
+- **Position Overview**: List positions with details such as average cost, quantity, current value, allocation, dividends, and profitability.
+- **Asset Overview**: List assets with details such as average cost, quantity, current value, allocation, dividends, and profitability.
 - **Ideal Allocation**: Calculate the ideal asset allocation based on risk indicators.
 - **Investment Strategy**: Determine investment amounts based on current and ideal allocations.
 - **API Integration**: Fetch historical price and dividend data.

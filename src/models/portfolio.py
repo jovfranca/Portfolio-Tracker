@@ -2,6 +2,7 @@ import pandas as pd
 import pickle
 from datetime import datetime
 from src.models.asset import Asset
+from src.models.position import Position
 
 class Portfolio:
     """
@@ -37,12 +38,22 @@ class Portfolio:
         self.transactions_data_filename="src/db/transactions.pkl"
         self.transactions_list = self.load_transactions()
 
+        self.positions_data_filename="src/db/positions.pkl"
+        self.positions_list = self.load_positions()
+
         self.assets_data_filename="src/db/assets.pkl"
         self.assets_list = self.load_assets()
 
     def load_transactions(self):
         try:
             with open(self.transactions_data_filename, 'rb') as file:
+                return pickle.load(file)
+        except FileNotFoundError:
+            return []
+        
+    def load_positions(self):
+        try:
+            with open(self.positions_data_filename, 'rb') as file:
                 return pickle.load(file)
         except FileNotFoundError:
             return []
@@ -68,9 +79,54 @@ class Portfolio:
             pickle.dump(self.transactions_list, file)
 
         # Print dataframe
-        for t in self.transactions_list:
-            print(t)
-        print("\n")
+        # for t in self.transactions_list:
+        #     print(t)
+        # print("\n")
+
+    def list_positions(self):
+        # Load the existing positions list
+        self.positions_list = self.load_positions()
+
+        # Iterate over the transactions to update the positions
+        for transaction in self.transactions_list:
+            # Check if the position already exists in the positions list
+            position = next((p for p in self.positions_list if (p.asset == transaction.asset and p.allocation_class == transaction.allocation_class and p.broker == transaction.broker)), None)
+            
+            if position is None:
+                # If the position does not exist, create a new Position instance
+                position = Position(transaction.allocation_class, transaction.asset, transaction.broker)
+                self.positions_list.append(position)
+
+        # Sort the positions list by allocation class and ticker
+        self.positions_list.sort(key=lambda p: (p.allocation_class, p.asset))
+
+        # Serialize the updated positions list to the pickle file
+        with open(self.positions_data_filename, 'wb') as file:
+            pickle.dump(self.positions_list, file)
+
+        # Print the updated list of positions
+        for position in self.positions_list:
+            print(position)
+        print("\n\n")
+
+    def update_position_list(self, updated_position):
+        # Load the existing assets list
+        position_list = self.load_assets()
+
+        # Find the index of the position to update
+        position_index = next((index for index, position in enumerate(position_list) if (position.asset == updated_position.ticker and position.allocation_class == updated_position.allocation_class and position.broker == updated_position.broker)), None)
+
+        # If the position is found, update it in the list
+        if position_index is not None:
+            position_list[position_index] = updated_position
+
+            # Serialize the updated positions list to the pickle file
+            with open(self.positions_data_filename, 'wb') as file:
+                pickle.dump(position_list, file)
+            return True
+        else:
+            # Position not found in the list
+            return False
 
     def list_assets(self):
         # Load the existing assets list
@@ -91,9 +147,9 @@ class Portfolio:
             pickle.dump(self.assets_list, file)
 
         # Print the updated list of assets
-        for asset in self.assets_list:
-            print(asset)
-        print("\n\n")
+        # for asset in self.assets_list:
+        #     print(asset)
+        # print("\n\n")
 
     def update_asset_list(self, updated_asset):
         # Load the existing assets list

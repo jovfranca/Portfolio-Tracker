@@ -109,8 +109,6 @@ class Asset:
 
         self.history = self.history[~self.history.index.duplicated(keep='first')]
 
-        print(self.ticker)
-        print(self.history)
         pass
 
     def update_current_price(self):
