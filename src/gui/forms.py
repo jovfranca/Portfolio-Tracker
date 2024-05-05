@@ -56,6 +56,5 @@ def create_transaction(portfolio):
             # Add the transaction using your TransactionRecords class
             transaction = Transaction(0, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes)
             portfolio.add_transaction(transaction)
-            portfolio.update_assets()
 
     window.close()

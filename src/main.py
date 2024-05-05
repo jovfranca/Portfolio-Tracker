@@ -17,6 +17,18 @@ from src.models.portfolio import Portfolio
 def main():
     portfolio = Portfolio()
     create_transaction(portfolio)
+    portfolio.list_assets()
+    for asset in portfolio.assets_list:
+        # Calculate the average cost and quantity for each asset
+        asset.update_average_cost(portfolio)
+        asset.update_quantity(portfolio)
+        
+        # Update the asset in the file
+        portfolio.update_asset_list(asset)
+
+    # List assets to verify the updates
+    portfolio.list_assets()
+
     
 if __name__ == "__main__":
     main()

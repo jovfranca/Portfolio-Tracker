@@ -25,6 +25,9 @@ class Transaction:
         self.other_fees = other_fees
         self.notes = notes
 
+    def __str__(self):
+        return f"Transaction(ID={self.id}, Date-Time='{self.date_time}', Type='{self.type}', Asset='{self.asset}', Broker='{self.broker}', Allocation Class='{self.allocation_class}', Quantity={self.quantity}, Price={self.price}, Brokerage Fee={self.brokerage_fee}, Other Fees={self.other_fees}, Notes='{self.notes}')"
+
 
     def validate_transaction(self):
         # Validate the transaction data (e.g., check if required fields are present)
