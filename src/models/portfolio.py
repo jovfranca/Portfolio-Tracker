@@ -1,134 +1,89 @@
 import pandas as pd
+import pickle
+from datetime import datetime
+from src.models.asset import Asset
 
 class Portfolio:
     def __init__(self):
         self.transactions_data_filename="src/db/transactions.pkl"
-        self.transactions_df = self.load_transactions()
+        self.transactions_list = self.load_transactions()
 
         self.assets_data_filename="src/db/assets.pkl"
-        self.assets_df = pd.DataFrame(columns = [
-                "Asset Class", "Ticker", "Sector", "Sub-sector", "Average Cost", "Quantity", "Current Price"
-            ])
+        self.assets_list = self.load_assets()
 
     def load_transactions(self):
         try:
-            return pd.read_pickle(self.transactions_data_filename)
+            with open(self.transactions_data_filename, 'rb') as file:
+                return pickle.load(file)
         except FileNotFoundError:
-            return pd.DataFrame(columns=[
-                "ID", "Date-Time", "Type", "Asset",
-                "Broker", "Allocation Class", "Quantity", "Price", "Brokerage Fee", "Other Fees", "Notes"
-            ])
+            return []
         
-    # def load_assets(self):
-    #     try:
-    #         return pd.read_pickle(self.assets_data_filename)
-    #     except FileNotFoundError:
-    #         return pd.DataFrame(columns = [
-    #             "Asset Class", "Ticker", "Sector", "Sub-sector", "Average Cost", "Quantity", "Current Price"
-    #         ])
+    def load_assets(self):
+        try:
+            with open(self.assets_data_filename, 'rb') as file:
+                return pickle.load(file)
+        except FileNotFoundError:
+            return []
 
     def add_transaction(self, transaction):
-        """
-        Adds a new transaction to the portfolio's transactions DataFrame and updates the storage file.
+        # Load the existing transactions list
+        self.transactions_list = self.load_transactions()
 
-        This method takes a transaction object, converts it into a DataFrame row, and appends it to the
-        existing transactions DataFrame. It then sorts the DataFrame based on the 'Date-Time' column to
-        maintain chronological order. After updating the DataFrame, it saves the new DataFrame to a pickle
-        file specified by 'self.transactions_data_filename'. Finally, it prints the updated DataFrame.
+        # Append the new transaction to the list
+        self.transactions_list.append(transaction)
 
-        Parameters:
-            transaction (Transaction): An object representing a financial transaction, which contains
-                                    attributes like ID, date-time, type, asset, broker, allocation class,
-                                    quantity, price, brokerage fee, other fees, and notes.
-
-        Raises:
-            FileNotFoundError: If the pickle file specified by 'self.transactions_data_filename' does not exist.
-            ValueError: If the transaction object has missing or invalid attributes.
-        """
-
-        # Convert the transaction instance into a DataFrame
-        transaction_data = {
-            "ID": [transaction.id],
-            "Date-Time": [transaction.date_time],
-            "Type": [transaction.type],
-            "Asset": [transaction.asset],
-            "Broker": [transaction.broker],
-            "Allocation Class": [transaction.allocation_class],
-            "Quantity": [transaction.quantity],
-            "Price": [transaction.price],
-            "Brokerage Fee": [transaction.brokerage_fee],
-            "Other Fees": [transaction.other_fees],
-            "Notes": [transaction.notes]
-        }
-        transaction_df = pd.DataFrame(transaction_data)
+        # Sort the transactions list by the 'date_time' attribute
+        self.transactions_list.sort(key=lambda x: datetime.strptime(x.date_time, "%Y-%m-%d %H:%M:%S"))
         
-        # Append the new transaction DataFrame to the existing transactions DataFrame
-        self.transactions_df = pd.concat([self.transactions_df, transaction_df], ignore_index=True)
-
-        # Sort the transactions DataFrame by date-time
-        self.transactions_df.sort_values(by="Date-Time", inplace=True)
-        
-        # Save the updated DataFrame to a file
-        self.transactions_df.to_pickle(self.transactions_data_filename)
+        with open(self.transactions_data_filename, 'wb') as file:
+            pickle.dump(self.transactions_list, file)
 
         # Print dataframe
-        print(self.transactions_df)
+        for t in self.transactions_list:
+            print(t)
+        print("\n")
 
-    def update_assets(self):
-        """
-        Updates the assets DataFrame with the latest transactions.
+    def list_assets(self):
+        # Load the existing assets list
+        self.assets_list = self.load_assets()
 
-        This method iterates over each transaction in the transactions DataFrame. If the asset
-        from a transaction does not exist in the assets DataFrame, it adds a new entry with the
-        transaction details. If the asset exists, it updates the 'Average Cost' and 'Quantity'
-        based on the transaction type ('Buy' or 'Sell'). If the quantity of an asset reaches zero,
-        it sets the 'Average Cost' to zero. Finally, it saves the updated assets DataFrame to a
-        pickle file and prints it.
+        # Iterate over the transactions to update the assets
+        for transaction in self.transactions_list:
+            # Check if the asset already exists in the assets list
+            asset = next((a for a in self.assets_list if a.ticker == transaction.asset), None)
+            
+            if asset is None:
+                # If the asset does not exist, create a new Asset instance
+                asset = Asset("", transaction.asset, "", "")
+                self.assets_list.append(asset)
 
-        The method assumes that 'self.transactions_df' and 'self.assets_df' are already defined
-        Pandas DataFrames with specific columns.
+        # Serialize the updated assets list to the pickle file
+        with open(self.assets_data_filename, 'wb') as file:
+            pickle.dump(self.assets_list, file)
 
-        Raises:
-            FileNotFoundError: If the pickle file for assets does not exist.
-        """
-        self.assets_df = pd.DataFrame(columns = [
-                "Asset Class", "Ticker", "Sector", "Sub-sector", "Average Cost", "Quantity", "Current Price"
-            ])
-        
-        for index, transaction in self.transactions_df.iterrows():
-            if not self.assets_df["Ticker"].str.contains(transaction["Asset"]).any():
-                asset_data = {
-                    "Asset Class": [""],
-                    "Ticker": [transaction["Asset"]],
-                    "Sector": [""],
-                    "Sub-sector": [""],
-                    "Average Cost": [transaction["Price"]],
-                    "Quantity": [transaction["Quantity"]],
-                    "Current Price": [""],
-                }
-                assets_df = pd.DataFrame(asset_data)
+        # Print the updated list of assets
+        for asset in self.assets_list:
+            print(asset)
+        print("\n\n")
 
-                # Append the new asset DataFrame to the existing transactions DataFrame
-                if not assets_df.dropna(how='all').empty:
-                    self.assets_df = pd.concat([self.assets_df, assets_df], ignore_index=True)
+    def update_asset_list(self, updated_asset):
+        # Load the existing assets list
+        assets_list = self.load_assets()
 
-            else:
-                # Search for the row that contains the ticker and creates a mask
-                mask = self.assets_df["Ticker"].str.contains(transaction["Asset"])
+        # Find the index of the asset to update
+        asset_index = next((index for index, asset in enumerate(assets_list) if asset.ticker == updated_asset.ticker), None)
 
-                if transaction["Type"] == "Buy":
-                    self.assets_df.loc[mask, "Average Cost"] = (self.assets_df.loc[mask, "Average Cost"]*self.assets_df.loc[mask, "Quantity"] + transaction["Price"]*transaction["Quantity"])/(self.assets_df.loc[mask, "Quantity"] + transaction["Quantity"])
-                    self.assets_df.loc[mask, "Quantity"] = self.assets_df.loc[mask, "Quantity"] + transaction["Quantity"]
-                elif transaction["Type"] == "Sell":
-                    self.assets_df.loc[mask, "Quantity"] = self.assets_df.loc[mask, "Quantity"] - transaction["Quantity"]
-                    if self.assets_df.loc[mask, "Quantity"].all() == 0:
-                        self.assets_df.loc[mask, "Average Cost"] = 0
-        # Save the updated DataFrame to a file
-        self.assets_df.to_pickle(self.assets_data_filename)
+        # If the asset is found, update it in the list
+        if asset_index is not None:
+            assets_list[asset_index] = updated_asset
 
-        # Print dataframe
-        print(self.assets_df)
-
+            # Serialize the updated assets list to the pickle file
+            with open(self.assets_data_filename, 'wb') as file:
+                pickle.dump(assets_list, file)
+            return True
+        else:
+            # Asset not found in the list
+            return False
 
     def calculate_total_value(self):
         # Calculate the total value of the portfolio (sum of asset values)
