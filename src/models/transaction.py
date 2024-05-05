@@ -12,6 +12,21 @@ sys.path.append(root_path)
 filename="src/db/transactions.pkl"
 
 class Transaction:
+    """
+    Represents a financial transaction within an investment portfolio.
+
+    This class provides a way to store and retrieve details about a single
+    financial transaction, including its unique identifier, date and time,
+    type (such as 'Buy' or 'Sell'), associated asset, broker involved,
+    allocation class, quantity of the asset transacted, price per unit,
+    brokerage fee, other associated fees, and any additional notes.
+
+    The `__str__` method is overridden to provide a human-readable string
+    representation of the transaction, which can be used for logging or
+    display purposes.
+    """
+
+
     def __init__(self, id, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes):
         self.id = id
         self.date_time = date_time

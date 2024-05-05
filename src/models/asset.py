@@ -1,4 +1,26 @@
 class Asset:
+    """
+    Represents an asset within an investment portfolio.
+
+    This class encapsulates the details of a financial asset, including its classification,
+    ticker symbol, sector, sub-sector, average cost, quantity, and current price. It provides
+    methods to update the average cost and quantity of the asset based on transactions.
+
+    Attributes:
+        asset_class (str): The classification of the asset (e.g., 'Stock', 'Bond').
+        ticker (str): The ticker symbol representing the asset.
+        sector (str): The sector to which the asset belongs.
+        sub_sector (str): The sub-sector within the main sector.
+        average_cost (float): The average cost of the asset.
+        quantity (int): The quantity of the asset held.
+        current_price (float): The current market price of the asset.
+
+    Methods:
+        update_average_cost(portfolio): Updates the average cost of the asset based on the transactions in the given portfolio.
+        update_quantity(portfolio): Updates the quantity of the asset based on the transactions in the given portfolio.
+    """
+
+
     def __init__(self, asset_class, ticker, sector, sub_sector):
         self.asset_class = asset_class
         self.ticker = ticker
