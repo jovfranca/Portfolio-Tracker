@@ -113,6 +113,17 @@ class Portfolio:
         else:
             # Asset not found in the list
             return False
+        
+    def get_oldest_transaction_date(self):
+        """
+        Retrieves the oldest transaction date from the transactions list.
+
+        Returns:
+            datetime: The oldest transaction date.
+        """
+        if not self.transactions_list:
+            return None  # No transactions available
+        return min(datetime.strptime(transaction.date_time, "%Y-%m-%d %H:%M:%S") for transaction in self.transactions_list)
 
     def calculate_total_value(self):
         # Calculate the total value of the portfolio (sum of asset values)
