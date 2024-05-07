@@ -6,31 +6,28 @@ from src.models.position import Position
 
 class Portfolio:
     """
-    A class used to represent an investment portfolio, which includes methods for managing transactions and assets.
+    A class used to represent an investment portfolio, which includes methods for managing transactions, positions and assets.
 
     Attributes:
     ----------
-    transactions_data_filename : str
-        The file path for storing transaction data in pickle format.
-    transactions_list : list
-        A list of transaction objects loaded from the pickle file.
-    assets_data_filename : str
-        The file path for storing asset data in pickle format.
-    assets_list : list
-        A list of asset objects loaded from the pickle file.
+        transactions_data_filename (str): The file path for storing transaction data in pickle format.
+        transactions_list (list): A list of transaction objects loaded from the pickle file.
+        positions_data_filename (str):  The file path for storing positions data in pickle format.
+        positions_list (list): A list of positions objects loaded from the pickle file.
+        assets_data_filename (str): The file path for storing asset data in pickle format.
+        assets_list (list): A list of asset objects loaded from the pickle file.
 
     Methods:
     -------
-    load_transactions()
-        Loads the list of transaction objects from the pickle file.
-    load_assets()
-        Loads the list of asset objects from the pickle file.
-    add_transaction(transaction)
-        Adds a new transaction to the transactions list and updates the pickle file.
-    list_assets()
-        Iterates over the transactions to update the assets list and serializes it to the pickle file.
-    update_asset_list(updated_asset)
-        Updates a specific asset in the assets list and serializes the updated list to the pickle file.
+        load_transactions(): Loads the list of transaction objects from the pickle file.
+        load_positions(): Loads the list of positions objects from the pickle file.
+        load_assets(): Loads the list of asset objects from the pickle file.
+        add_transaction(transaction): Adds a new transaction to the transactions list and updates the pickle file.
+        update_positions(): Iterates over the transactions to update the positions list and serializes it to the pickle file.
+        update_assets(): Iterates over the transactions to update the assets list and serializes it to the pickle file.
+        print_transactions(): Output on the terminal the transactions list
+        get_oldest_transaction_date(): Get the date of the oldested transaction recorded
+    
     """
 
 
@@ -78,12 +75,7 @@ class Portfolio:
         with open(self.transactions_data_filename, 'wb') as file:
             pickle.dump(self.transactions_list, file)
 
-        # Print dataframe
-        # for t in self.transactions_list:
-        #     print(t)
-        # print("\n")
-
-    def list_positions(self):
+    def update_positions(self):
         # Load the existing positions list
         self.positions_list = self.load_positions()
 
@@ -100,35 +92,26 @@ class Portfolio:
         # Sort the positions list by allocation class and ticker
         self.positions_list.sort(key=lambda p: (p.allocation_class, p.asset))
 
+        # Iterate over each position to update them
+        for position in self.positions_list:
+            position.update_average_cost(self)
+            position.update_quantity(self)
+            position.update_total_value(self)
+            position.update_historical_profitability(self)
+            position.update_current_profitability()
+
         # Serialize the updated positions list to the pickle file
         with open(self.positions_data_filename, 'wb') as file:
             pickle.dump(self.positions_list, file)
 
         # Print the updated list of positions
+        print("\n-------------POSITIONS--------------")
+        print("Allocation Class\t Asset \t Broker \t Average Cost \t Quantity \t Total Value \t Total Gain \t Acc. Profit (%)")
         for position in self.positions_list:
             print(position)
-        print("\n\n")
 
-    def update_position_list(self, updated_position):
-        # Load the existing assets list
-        position_list = self.load_assets()
 
-        # Find the index of the position to update
-        position_index = next((index for index, position in enumerate(position_list) if (position.asset == updated_position.ticker and position.allocation_class == updated_position.allocation_class and position.broker == updated_position.broker)), None)
-
-        # If the position is found, update it in the list
-        if position_index is not None:
-            position_list[position_index] = updated_position
-
-            # Serialize the updated positions list to the pickle file
-            with open(self.positions_data_filename, 'wb') as file:
-                pickle.dump(position_list, file)
-            return True
-        else:
-            # Position not found in the list
-            return False
-
-    def list_assets(self):
+    def update_assets(self):
         # Load the existing assets list
         self.assets_list = self.load_assets()
 
@@ -140,43 +123,39 @@ class Portfolio:
             if asset is None:
                 # If the asset does not exist, create a new Asset instance
                 asset = Asset("", transaction.asset, "", "")
+                asset.update_average_cost(self)
+                asset.update_quantity(self)
+                asset.update_history(self.get_oldest_transaction_date())
+                asset.update_current_price()
+                asset.update_total_value()
                 self.assets_list.append(asset)
+            else:
+                asset.update_average_cost(self)
+                asset.update_quantity(self)
+                asset.update_history(self.get_oldest_transaction_date())
+                asset.update_current_price()
+                asset.update_total_value()
 
         # Serialize the updated assets list to the pickle file
         with open(self.assets_data_filename, 'wb') as file:
             pickle.dump(self.assets_list, file)
 
         # Print the updated list of assets
-        # for asset in self.assets_list:
-        #     print(asset)
-        # print("\n\n")
+        print("\n-------------ASSETS--------------")
+        print(f"Ticker\tQuantity\tAverage Cost\tCurrent Price\tTotal Value")
+        for asset in self.assets_list:
+            print(asset)
 
-    def update_asset_list(self, updated_asset):
-        # Load the existing assets list
-        assets_list = self.load_assets()
+    def print_transactions(self):
+        # Print the updated list of transactions
+        print("\n-------------TRANSACTIONS--------------")
+        print(f"Transaction\tDate-Time\t\tType\tAsset\tBroker\tAllocation Class\tQuantity\tPrice\tBrokerage Fee\tOther Fees\tNotes")
 
-        # Find the index of the asset to update
-        asset_index = next((index for index, asset in enumerate(assets_list) if asset.ticker == updated_asset.ticker), None)
-
-        # If the asset is found, update it in the list
-        if asset_index is not None:
-            assets_list[asset_index] = updated_asset
-
-            # Serialize the updated assets list to the pickle file
-            with open(self.assets_data_filename, 'wb') as file:
-                pickle.dump(assets_list, file)
-            return True
-        else:
-            # Asset not found in the list
-            return False
+        for t in self.transactions_list:
+            print(t)
         
     def get_oldest_transaction_date(self):
-        """
-        Retrieves the oldest transaction date from the transactions list.
 
-        Returns:
-            datetime: The oldest transaction date.
-        """
         if not self.transactions_list:
             return None  # No transactions available
         return min(datetime.strptime(transaction.date_time, "%Y-%m-%d %H:%M:%S") for transaction in self.transactions_list)
