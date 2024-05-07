@@ -13,17 +13,22 @@ filename="src/db/transactions.pkl"
 
 class Transaction:
     """
-    Represents a financial transaction within an investment portfolio.
+    A class used to represent a financial transaction within an investment portfolio.
 
-    This class provides a way to store and retrieve details about a single
-    financial transaction, including its unique identifier, date and time,
-    type (such as 'Buy' or 'Sell'), associated asset, broker involved,
-    allocation class, quantity of the asset transacted, price per unit,
-    brokerage fee, other associated fees, and any additional notes.
+    Attributes:
+    ----------
+    id (int): Unique identifier for the transaction.
+    date_time (str): The date and time when the transaction occurred, formatted as a string.
+    type (str): The type of transaction, typically 'Buy' or 'Sell'.
+    asset (str): The asset involved in the transaction.
+    broker (str): The broker facilitating the transaction.
+    allocation_class (str): The classification of the asset for allocation purposes.
+    quantity (int): The quantity of the asset transacted.
+    price (float): The price per unit of the asset at the time of the transaction.
+    brokerage_fee (float): The fee charged by the broker for the transaction.
+    other_fees (float): Any additional fees associated with the transaction.
+    notes (str): Additional notes or comments about the transaction.
 
-    The `__str__` method is overridden to provide a human-readable string
-    representation of the transaction, which can be used for logging or
-    display purposes.
     """
 
 
@@ -41,7 +46,7 @@ class Transaction:
         self.notes = notes
 
     def __str__(self):
-        return f"Transaction(ID={self.id}, Date-Time='{self.date_time}', Type='{self.type}', Asset='{self.asset}', Broker='{self.broker}', Allocation Class='{self.allocation_class}', Quantity={self.quantity}, Price={self.price}, Brokerage Fee={self.brokerage_fee}, Other Fees={self.other_fees}, Notes='{self.notes}')"
+        return f"{self.id}\t\t{self.date_time}\t{self.type}\t{self.asset}\t{self.broker}\t{self.allocation_class}\t\t{self.quantity}\t\t{self.price}\t{self.brokerage_fee}\t\t{self.other_fees}\t\t{self.notes}"
 
 
     def validate_transaction(self):
