@@ -2,11 +2,8 @@
 # Investments Portfolio Tracker
 
 ## Overview
-The Investments Portfolio Tracker is a comprehensive tool designed to manage and analyze your investment portfolio. It provides detailed insights into your investments, featuring profit and allocation calculations.
 
-This is a under development portfolio tracker that aimns to allow the management and analysis of an investment portfolio. It's been implemented featureas as descried bellow, with most of the outputs being through the terminal yet, although a prototype GUI has been implemented add transactions.
-
-The next developments will be focused on improving the GUI.
+The Portfolio Tracker project is a tool currently under development with the aim of providing comprehensive management and analysis for your investment portfolio. While primarily operated through the terminal, we've implemented a prototype GUI for adding transactions, with future plans to enhance its usability.
 
 ## Released Features
 
