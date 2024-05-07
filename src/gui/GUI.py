@@ -16,7 +16,7 @@ from src.models.transaction import Transaction
 from src.models.portfolio import Portfolio
 from datetime import datetime
 
-def create_transaction_form():
+def GUI(portfolio):
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     layout = [
@@ -31,7 +31,8 @@ def create_transaction_form():
         [sg.Text("Brokerage Fee"), sg.InputText(key="brokerage_fee",default_text="0")],
         [sg.Text("Other Fees"), sg.InputText(key="other_fees",default_text="0")],
         [sg.Text("Notes"), sg.InputText(key="notes")],
-        [sg.Button("Add Transaction")]
+        [sg.Button("Add Transaction")],
+        [sg.Button("Update")]
     ]
 
     window = sg.Window("Transaction Input", layout)
@@ -55,7 +56,13 @@ def create_transaction_form():
 
             # Add the transaction using your TransactionRecords class
             transaction = Transaction(0, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes)
-            portfolio = Portfolio()
             portfolio.add_transaction(transaction)
+            portfolio.print_transactions()
+            portfolio.update_assets()
+            portfolio.update_positions()
+        elif event == "Update":
+            portfolio.print_transactions()
+            portfolio.update_assets()
+            portfolio.update_positions()
 
     window.close()
