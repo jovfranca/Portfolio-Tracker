@@ -2,7 +2,7 @@ from django.db import models
 
 class User(models.Model):
     name = models.CharField(max_length=100)
-    registration_number = models.PositiveIntegerField()
+    registration_number = models.PositiveIntegerField(null=True)
     email = models.EmailField(unique=True)
     pass_hash = models.CharField(max_length=128)
 

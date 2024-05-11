@@ -1,9 +1,8 @@
 import pandas as pd
 from datetime import datetime
 
-from django.db import models
 
-class Position(models.Model):
+class Position():
     """
     A class used to represent an investment position. An investment position is defined by unique assets, brokers and allocation classes.
 

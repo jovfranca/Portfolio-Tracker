@@ -55,14 +55,15 @@ def GUI(portfolio):
             notes = values["notes"]
 
             # Add the transaction using your TransactionRecords class
-            transaction = Transaction(0, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes)
-            portfolio.add_transaction(transaction)
-            portfolio.print_transactions()
-            portfolio.update_assets()
-            portfolio.update_positions()
-        elif event == "Update":
-            portfolio.print_transactions()
-            portfolio.update_assets()
-            portfolio.update_positions()
+
+        #     transaction = Transaction(0, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes)
+        #     portfolio.add_transaction(transaction)
+        #     portfolio.print_transactions()
+        #     portfolio.update_assets()
+        #     portfolio.update_positions()
+        # elif event == "Update":
+        #     portfolio.print_transactions()
+        #     portfolio.update_assets()
+        #     portfolio.update_positions()
 
     window.close()
