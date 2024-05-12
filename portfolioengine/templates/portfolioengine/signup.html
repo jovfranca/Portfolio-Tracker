@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Up - InvestTrack</title>
+    <style>
+        body { font-family: 'gill sans', sans-serif; line-height: 1.6; background: #f4f4f4; }
+        .signup-container { width: 300px; margin: 100px auto; padding: 20px; background: #fff; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }
+        h2 { text-align: center; color: #333; }
+        form { display: flex; flex-direction: column; }
+        label { margin-top: 10px; }
+        input[type="text"], input[type="email"], input[type="password"] { padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 5px; }
+        .button { background: #7b2cbf; color: white; padding: 10px; margin-top: 20px; border: none; border-radius: 5px; cursor: pointer; }
+        .button:hover { background: #5a189a; }
+        .error-message { color: red; }
+        .password-criteria {font-size: 10px; color: #6c757d;}
+    </style>
+</head>
+<body>
+    <div class="signup-container">
+        <h2>Sign Up for InvestTrack</h2>
+        <form method="post" action="{% url 'signup' %}">
+            {% csrf_token %}
+            <label for="username">Username:</label>
+            <input type="text" id="username" name="username" required>
+
+            <label for="email">Email:</label>
+            <input type="email" id="email" name="email" required>
+
+            <label for="password1">Password:</label>
+            <input type="password" id="password1" name="password1" required>
+
+            <small class="password-criteria">
+                Your password can’t be similar to your personal information.<br>
+                Your password must contain at least 8 characters.<br>
+                Your password can’t be a commonly used password.<br>
+                Your password can’t be entirely numeric.
+            </small>
+
+            <label for="password2">Confirm Password:</label>
+            <input type="password" id="password2" name="password2" required>
+
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="error-message">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+
+            <button type="submit" class="button">Sign Up</button>
+        </form>
+    </div>
+</body>
+</html>

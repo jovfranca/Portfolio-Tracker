@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - InvestTrack</title>
+    <style>
+        body { font-family: 'gill sans', sans-serif; line-height: 1.6; background: #f4f4f4; }
+        .login-container { width: 300px; margin: 100px auto; padding: 20px; background: #fff; box-shadow: 0 0 10px rgba(0, 0, 0, 0.1); }
+        h2 { text-align: center; color: #333; }
+        form { display: flex; flex-direction: column; }
+        label { margin-top: 10px; }
+        input[type="text"], input[type="password"] { padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 5px; }
+        .button { background: #7b2cbf; color: white; padding: 10px; margin-top: 20px; border: none; border-radius: 5px; cursor: pointer; }
+        .button:hover { background: #5a189a; }
+        .error-message {color: red}
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h2>Login to InvestTrack</h2>
+        <form method="post" action="{% url 'login' %}">
+            {% csrf_token %}
+            <label for="username">Username:</label>
+            <input type="text" id="username" name="username" required>
+
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="error-message">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+
+            <button type="submit" class="button">Login</button>
+        </form>
+    </div>
+</body>
+</html>

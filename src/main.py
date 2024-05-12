@@ -29,7 +29,7 @@ from portfolioengine.models import User
 from portfolioengine.models import Portfolio
 
 def main():
-    Login()
+    # Login()
     # users = User.objects.all()
     # for user in users:
     #     print(user)
