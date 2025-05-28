@@ -12,8 +12,8 @@ root_path = os.path.abspath(os.path.join(current_dir, '..'))
 # # Add the root directory to sys.path
 sys.path.append(root_path)
 
-from src.gui.GUI import GUI
 from src.models.portfolio import Portfolio
+from src.gui.GUI import GUI
 
 def main():
     portfolio = Portfolio()
