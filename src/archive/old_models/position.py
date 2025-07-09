@@ -1,16 +1,7 @@
-from sqlalchemy import Integer, String, Float, Date, DateTime, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from typing import List
-
-from src.models.portfolio import Portfolio
-
 import pandas as pd
 from datetime import datetime
 
-class Base(DeclarativeBase):
-    pass
-
-class Position(Base):
+class Position:
     """
     A class used to represent an investment position. An investment position is defined by unique assets, brokers and allocation classes.
 
@@ -36,24 +27,16 @@ class Position(Base):
 
     """
 
-    __tablename__ = "positions"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    allocation_class: Mapped[str] = mapped_column(String)
-    asset: Mapped[str] = mapped_column(String)
-    broker: Mapped[str] = mapped_column(String)
-    average_cost: Mapped[float] = mapped_column(Float)
-    quantity: Mapped[float] = mapped_column(Float)
-    total_value: Mapped[float] = mapped_column(Float)
-    current_total_gain: Mapped[float] = mapped_column(Float, default=0.0)
-    current_accumulated_profitability: Mapped[float] = mapped_column(Float, default=0.0)
-
-    position_profitability_data: Mapped[list["PositionProfitabilityData"]] = relationship(
-        back_populates="position",
-        cascade="all, delete-orphan"
-    )
-    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
-    portfolio: Mapped["Portfolio"] = relationship(back_populates="positions")
+    def __init__(self, allocation_class, asset, broker):
+        self.allocation_class = allocation_class
+        self.asset = asset
+        self.broker = broker
+        self.average_cost = 0.0
+        self.quantity = 0
+        self.total_value = 0.0
+        self.profitability_data = pd.DataFrame(columns=['Unrealized Gain', 'Realized Gain', 'Total Gain', 'Accumulated Profitability %', 'Daily Profitability %'])
+        self.current_total_gain = 0
+        self.current_accumulated_profitability = 0
 
     def __str__(self):
         # return f"Position(Allocation Class: {self.allocation_class}, Asset: {self.asset}, Broker: {self.broker}, Average Cost: {self.average_cost}, Quantity: {self.quantity}, Total Value: {self.total_value})"
@@ -171,17 +154,3 @@ class Position(Base):
         # Get the last 'Total Gain' and 'Accumulated Profitability %' value from the profitability DataFrame
         self.current_total_gain = self.profitability_data['Total Gain'].iloc[-1]
         self.current_accumulated_profitability = self.profitability_data['Accumulated Profitability %'].iloc[-1]
-
-class PositionProfitabilityData(Base):
-    __tablename__ = "position_profitability_data"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    position_id: Mapped[int] = mapped_column(ForeignKey("positions.id"))
-    unrealized_gain: Mapped[float] = mapped_column(Float)
-    realized_gain: Mapped[float] = mapped_column(Float)
-    total_gain: Mapped[float] = mapped_column(Float)
-    accumulated_profitability_pct: Mapped[float] = mapped_column(Float)
-    daily_profitability_pct: Mapped[float] = mapped_column(Float)
-    timestamp: Mapped[datetime] = mapped_column(DateTime)
-
-    position: Mapped["Position"] = relationship(back_populates="position_profitability_data")

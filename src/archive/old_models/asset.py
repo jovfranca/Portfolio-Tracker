@@ -1,38 +1,49 @@
-from sqlalchemy import Integer, String, Float, Date, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from typing import List
-
-from src.models.portfolio import Portfolio
-
 import yfinance as yf
 import pandas as pd
 from datetime import timezone
 from datetime import datetime
 
-class Base(DeclarativeBase):
-    pass
+class Asset:
+    """
+    Represents an asset within an investment portfolio.
 
-class Asset(Base):
-    __tablename__ = 'assets'
-    id: Mapped[int] = mapped_column(primary_key = True)
-    asset_class: Mapped[str] = mapped_column(String)
-    ticer: Mapped[str] = mapped_column(String)
-    sector: Mapped[str] = mapped_column(String)
-    sub_sector: Mapped[str] = mapped_column(String)
-    average_cost: Mapped[float] = mapped_column(Float)
-    quantity: Mapped[float] = mapped_column(Float)
-    current_price: Mapped[float] = mapped_column(Float)
-    total_value: Mapped[float] = mapped_column(Float)
+    This class encapsulates the details of a financial asset, including its classification,
+    ticker symbol, sector, sub-sector, average cost, quantity, and current price. It provides
+    methods to update the average cost and quantity of the asset based on transactions.
 
-    history: Mapped[List["AssetHistory"]] = relationship(
-        back_populates="asset",
-        cascade="all, delete-orphan"
-    )
+    Attributes:
+    -----------
+        asset_class (str): The classification of the asset (e.g., 'Stock', 'Bond').
+        ticker (str): The ticker symbol representing the asset.
+        sector (str): The sector to which the asset belongs.
+        sub_sector (str): The sub-sector within the main sector.
+        average_cost (float): The average cost of the asset.
+        quantity (int): The quantity of the asset held.
+        current_price (float): The current market price of the asset.
+        history (df): The historical closing price, dividends and stock splits information.
+        total_value(float): The total value owned.
 
-    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
-    portfolio: Mapped["Portfolio"] = relationship(back_populates="assets")
+    Methods:
+    --------
+        update_average_cost(portfolio): Updates the average cost of the asset based on the transactions in the given portfolio.
+        update_quantity(portfolio): Updates the quantity of the asset based on the transactions in the given portfolio.
+        update_history(oldest_transaction_date): Update the asset historical data for closing price, dividends and stock splits.
+        update_current_price(): Update the current asset price based on updated historical data.
+        update_total_value(): Update the current total value owned based on current price and quantity held.
+    """
 
-    
+
+    def __init__(self, asset_class, ticker, sector, sub_sector):
+        self.asset_class = asset_class
+        self.ticker = ticker
+        self.sector = sector
+        self.sub_sector = sub_sector
+        self.average_cost = 0.0
+        self.quantity = 0
+        self.current_price = 0.0
+        self.history = pd.DataFrame(columns=['Close', 'Dividends', 'Stock Splits'])
+        self.total_value = 0.0
+
     def __str__(self):
         return f"{self.ticker}\t{self.quantity}\t\t{self.average_cost:.2f}\t\t{self.current_price:.2f}\t\t{self.total_value:.2f}"
 
@@ -134,15 +145,3 @@ class Asset(Base):
         # Calculate and update the profitability (gain/loss percentage)
         # Implement your logic here
         pass
-
-class AssetHistory(Base):
-    __tablename__ = "asset_history"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"))
-    date: Mapped[Date] = mapped_column(Date)
-    close: Mapped[float] = mapped_column(Float)
-    dividends: Mapped[float] = mapped_column(Float)
-    stock_splits: Mapped[float] = mapped_column(Float)
-
-    asset: Mapped["Asset"] = relationship(back_populates="history")

@@ -1,16 +1,17 @@
-from sqlalchemy import Integer, String, Float, Date, DateTime, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from typing import List
-
-from src.models.portfolio import Portfolio
-
 import pandas as pd
-from datetime import datetime
+import os
+import sys
 
-class Base(DeclarativeBase):
-    pass
+# Get the directory of the current script
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# # Get the path to the root directory by navigating 2 levels up
+root_path = os.path.abspath(os.path.join(current_dir, '..', '..'))
+# # Add the root directory to sys.path
+sys.path.append(root_path)
 
-class Transaction(Base):
+filename="src/db/transactions.pkl"
+
+class Transaction:
     """
     A class used to represent a financial transaction within an investment portfolio.
 
@@ -29,21 +30,20 @@ class Transaction(Base):
     notes (str): Additional notes or comments about the transaction.
 
     """
-    __tablename__="transactions"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    date_time: Mapped[datetime] = mapped_column(DateTime)
-    type: Mapped[str] = mapped_column(String)       # ex: "buy", "sell"
-    asset: Mapped[str] = mapped_column(String)      # ticker ou nome
-    broker: Mapped[str] = mapped_column(String)
-    allocation_class: Mapped[str] = mapped_column(String)  # ex: "aposentadoria", "reserva"
-    quantity: Mapped[float] = mapped_column(Float)
-    price: Mapped[float] = mapped_column(Float)
-    brokerage_fee: Mapped[float] = mapped_column(Float)
-    other_fees: Mapped[float] = mapped_column(Float)
-    notes: Mapped[str] = mapped_column(String)
 
-    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
-    portfolio: Mapped["Portfolio"] = relationship(back_populates="transactions")
+
+    def __init__(self, id, date_time, type, asset, broker, allocation_class, quantity, price, brokerage_fee, other_fees, notes):
+        self.id = id
+        self.date_time = date_time
+        self.type = type
+        self.asset = asset
+        self.broker = broker
+        self.allocation_class = allocation_class
+        self.quantity = quantity
+        self.price = price
+        self.brokerage_fee = brokerage_fee
+        self.other_fees = other_fees
+        self.notes = notes
 
     def __str__(self):
         return f"{self.id}\t\t{self.date_time}\t{self.type}\t{self.asset}\t{self.broker}\t{self.allocation_class}\t\t{self.quantity}\t\t{self.price}\t{self.brokerage_fee}\t\t{self.other_fees}\t\t{self.notes}"
