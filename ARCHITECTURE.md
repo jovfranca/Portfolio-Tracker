@@ -7,7 +7,7 @@ The application is a small web monolith:
 ```text
 React browser UI → FastAPI routes → SQLAlchemy → PostgreSQL
                                 ↘ pure portfolio calculations
-                                ↘ yfinance market-data adapter
+                                ↘ yfinance / Banco Central market-data adapters
 Legacy import CLI → restricted pickle readers → SQLAlchemy
 ```
 
@@ -35,6 +35,8 @@ use case requires it.
 PostgreSQL is the active persistence layer. Transactions are authoritative.
 Positions are read models rebuilt from ordered transactions and are never stored
 as mutable balances. Asset quotes are stored separately and keyed by asset and date.
+Historical FX and PTAX rates are global, insert-only records keyed by currency,
+rate type, and reference date, so every portfolio can reuse the same audited value.
 Alembic migrations are the only supported way to change the database schema.
 
 The files under `src/db/` are legacy migration sources, not active persistence.
@@ -48,7 +50,13 @@ while legacy calculations and imported records are being reconciled.
 - Tickers are normalized to uppercase at the API boundary.
 - A position is grouped by ticker, broker, and allocation class.
 - Manual quotes take precedence over provider refreshes for the same date.
+- Currency rates express BRL per unit of the named currency. Exact cached dates are
+  used first; weekends and provider holidays fall back to the latest rate within
+  `RATE_FALLBACK_DAYS`. FX and PTAX histories remain separate. PTAX closing buy and
+  sell observations are both stored; choosing which one applies is a tax or business
+  rule and does not happen in the storage or provider layer.
 - Financial formulas retain legacy behavior; changes require regression tests and a
   separate, clearly identified behavior change.
-- Currency conversion, corporate-action processing, decimal accounting, short-sale
+- Applying currency conversion to portfolio calculations, corporate-action
+  processing, decimal accounting outside the rate store, short-sale
   rules, and tax calculations are outside the current implementation.

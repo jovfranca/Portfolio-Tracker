@@ -142,6 +142,48 @@ O teste manual do provedor de cotações faz uma chamada de rede real:
 .\.venv\Scripts\python.exe -m scripts.check_market_data
 ```
 
+O histórico cambial usa Yahoo para FX e armazena tanto a PTAX de compra quanto a
+PTAX de venda do boletim de fechamento do Banco Central. Ambas representam BRL por
+unidade da moeda estrangeira. A camada de histórico devolve as duas observações sem
+escolher qual se aplica; essa decisão pertence à futura regra tributária ou de negócio.
+As variáveis `FX_RATE_PROVIDER`, `PTAX_RATE_PROVIDER` e
+`RATE_FALLBACK_DAYS` podem ser definidas no `.env`; os valores suportados estão em
+`.env.example`. Uma consulta busca primeiro no PostgreSQL e só chama o provedor se
+a data necessária estiver ausente:
+
+```text
+GET /api/rates/FX/USD/2024-01-08
+GET /api/rates/PTAX/USD/2024-01-08
+```
+
+Datas sem publicação usam a taxa anterior dentro do limite configurado, e a resposta
+expõe a data efetivamente usada em `reference_date` e `fallback_used`. Para preencher
+um intervalo de moedas usadas pela aplicação:
+
+```json
+POST /api/rates/backfill
+{
+  "currencies": ["USD", "EUR"],
+  "rate_types": ["FX", "PTAX"],
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-31"
+}
+```
+
+O backfill apenas insere datas ausentes; valores históricos existentes não são
+substituídos. A integração dessas taxas aos cálculos de carteira pertence ao suporte
+multimoeda posterior.
+
+Informe as moedas explicitamente no backfill: o modelo atual de transações ainda
+não registra moeda e não permite inferir uma lista confiável por carteira.
+Nos fins de semana, uma sexta-feira já armazenada pode ser reutilizada sem rede;
+um cache mais antigo exige consultar o provedor antes de escolher a data anterior.
+Falhas do provedor permitem usar o cache dentro do limite, mas falhas de gravação
+cancelam a operação. A PTAX só aceita boletins de fechamento com compra e venda
+válidas; boletins intradiários não são congelados como histórico definitivo.
+No Yahoo, o dia corrente no fuso da série ainda pode mudar e só é armazenado
+depois que o dia termina. Até lá, a consulta usa a taxa anterior disponível.
+
 Para o teste real de navegador, tenha Microsoft Edge instalado e PostgreSQL ativo.
 Compile o frontend; no primeiro terminal execute `scripts/start-browser-test.ps1`.
 Ele usa o banco separado `portfolio_tracker_e2e` na porta HTTP 8001. No segundo:
