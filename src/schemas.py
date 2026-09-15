@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Name = Annotated[str, Field(min_length=1, max_length=120)]
 Amount = Annotated[float, Field(ge=0, le=1e15, allow_inf_nan=False)]
@@ -59,3 +59,34 @@ class TransactionOutput(TransactionInput):
     model_config = ConfigDict(from_attributes=True)
     id: int
     portfolio_id: int
+
+
+class RateBackfillInput(Input):
+    currencies: Annotated[list[str], Field(min_length=1, max_length=50)]
+    rate_types: Annotated[list[Literal['FX', 'PTAX']], Field(min_length=1)] = Field(
+        default_factory=lambda: ['FX', 'PTAX']
+    )
+    start_date: date
+    end_date: date
+
+    @field_validator('currencies')
+    @classmethod
+    def normalize_currencies(cls, values):
+        normalized = []
+        for value in values:
+            value = value.strip().upper()
+            if len(value) != 3 or not value.isalpha():
+                raise ValueError('Use códigos de moeda ISO com três letras.')
+            if value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @model_validator(mode='after')
+    def valid_period(self):
+        if self.end_date < self.start_date:
+            raise ValueError('A data final deve ser igual ou posterior à data inicial.')
+        if self.end_date > date.today():
+            raise ValueError('A data final não pode estar no futuro.')
+        if (self.end_date - self.start_date).days > 3660:
+            raise ValueError('O período de backfill não pode exceder dez anos.')
+        return self

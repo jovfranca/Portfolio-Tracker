@@ -1,6 +1,12 @@
-"""Network adapter. Manual prices work without any external provider."""
-from datetime import date, timedelta
+"""Network adapters for asset prices and historical currency rates."""
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+import json
 import math
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+from src.config import rate_provider
 
 
 def fetch_history(ticker, start):
@@ -26,4 +32,117 @@ def fetch_history(ticker, start):
         })
     if not rows:
         raise ValueError('Nenhuma cotação válida foi recebida.')
+    return rows
+
+
+def fetch_rates(currency, rate_type, start, end):
+    """Fetch BRL per currency unit for the inclusive date range."""
+    currency = currency.upper()
+    rate_type = rate_type.upper()
+    if currency == 'BRL':
+        retrieved_at = datetime.now(timezone.utc)
+        sides = ['BUY', 'SELL'] if rate_type == 'PTAX' else ['MARKET']
+        return [
+            {
+                'currency': currency,
+                'rate_type': rate_type,
+                'rate_side': side,
+                'reference_date': start + timedelta(days=offset),
+                'rate': Decimal('1'),
+                'source': 'identity',
+                'retrieved_at': retrieved_at,
+            }
+            for offset in range((end - start).days + 1)
+            for side in sides
+        ]
+
+    provider = rate_provider(rate_type)
+    if provider == 'yfinance':
+        return _fetch_yfinance_rates(currency, rate_type, start, end)
+    if provider == 'bcb':
+        return _fetch_ptax_rates(currency, rate_type, start, end)
+    raise ValueError(f'Provedor de câmbio não suportado: {provider}.')
+
+
+def _fetch_yfinance_rates(currency, rate_type, start, end):
+    import yfinance as yf
+
+    frame = yf.Ticker(f'{currency}BRL=X').history(
+        start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
+        interval='1d', auto_adjust=False, timeout=15, raise_errors=True,
+    )
+    retrieved_at = datetime.now(timezone.utc)
+    rows = []
+    for timestamp, item in frame.iterrows():
+        # Yahoo includes the live daily candle. It is not immutable history yet.
+        if timestamp.date() >= datetime.now(timestamp.tzinfo).date():
+            continue
+        close = float(item['Close'])
+        if math.isfinite(close) and close > 0:
+            rows.append({
+                'currency': currency,
+                'rate_type': rate_type,
+                'rate_side': 'MARKET',
+                'reference_date': timestamp.date(),
+                'rate': Decimal(str(close)),
+                'source': 'yfinance',
+                'retrieved_at': retrieved_at,
+            })
+    if not rows:
+        raise ValueError('O provedor não retornou taxas de câmbio válidas.')
+    return rows
+
+
+def _fetch_ptax_rates(currency, rate_type, start, end):
+    base = (
+        'https://olinda.bcb.gov.br/olinda/servico/PTAX/versao/v1/odata/'
+        'CotacaoMoedaPeriodo(moeda=@moeda,dataInicial=@dataInicial,dataFinalCotacao=@dataFinalCotacao)'
+    )
+    params = {
+        '@moeda': f"'{currency}'",
+        '@dataInicial': f"'{start:%m-%d-%Y}'",
+        '@dataFinalCotacao': f"'{end:%m-%d-%Y}'",
+        '$format': 'json',
+        '$select': 'cotacaoCompra,cotacaoVenda,dataHoraCotacao,tipoBoletim',
+    }
+    request = Request(f'{base}?{urlencode(params)}', headers={'User-Agent': 'Portfolio-Tracker/1.0'})
+    with urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+    return _parse_ptax_rows(currency, rate_type, payload.get('value', []))
+
+
+def _parse_ptax_rows(currency, rate_type, values):
+    """Keep both rates from the final PTAX bulletin published for each date."""
+    candidates = {}
+    for item in values:
+        raw_timestamp = item.get('dataHoraCotacao')
+        if not raw_timestamp or item.get('tipoBoletim') not in {'Fechamento', 'Fechamento PTAX'}:
+            continue
+        timestamp = datetime.fromisoformat(raw_timestamp.replace('Z', '+00:00'))
+        current = candidates.get(timestamp.date())
+        rank = timestamp
+        if current is None or rank > current[0]:
+            candidates[timestamp.date()] = (rank, item)
+
+    retrieved_at = datetime.now(timezone.utc)
+    rows = []
+    for reference_date, (_, item) in sorted(candidates.items()):
+        try:
+            pair = [Decimal(str(item[field])) for field in ('cotacaoCompra', 'cotacaoVenda')]
+        except (KeyError, InvalidOperation):
+            continue
+        if not all(rate.is_finite() and rate > 0 for rate in pair):
+            continue
+        for side, rate in zip(('BUY', 'SELL'), pair):
+            rows.append({
+                'currency': currency,
+                'rate_type': rate_type,
+                'rate_side': side,
+                'reference_date': reference_date,
+                'rate': rate,
+                'source': 'bcb-ptax-closing',
+                'retrieved_at': retrieved_at,
+            })
+    if not rows:
+        raise ValueError('O Banco Central não retornou taxas PTAX válidas.')
     return rows

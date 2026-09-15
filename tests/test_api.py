@@ -1,4 +1,6 @@
 """Integration tests use an outer PostgreSQL transaction, rolled back after each test."""
+from datetime import datetime, timezone
+from decimal import Decimal
 import os
 import pytest
 from fastapi.testclient import TestClient
@@ -74,3 +76,49 @@ def test_legacy_import_is_atomic_and_repeatable(client):
         assert session.scalar(select(func.count()).select_from(Transaction).where(Transaction.portfolio_id == pid)) == 10
         session.commit()
     assert len(c.get(f'/api/portfolios/{pid}/overview').json()['assets']) == 2
+
+
+def test_historical_rate_lookup_cache_and_backfill(client, monkeypatch):
+    c, _ = client
+    calls = []
+
+    def fetch(currency, rate_type, start, end):
+        calls.append((currency, rate_type, start, end))
+        sides = ['BUY', 'SELL'] if rate_type == 'PTAX' else ['MARKET']
+        return [
+            {
+                'currency': currency,
+                'rate_type': rate_type,
+                'rate_side': side,
+                'reference_date': end,
+                'rate': Decimal('5.123456789012'),
+                'source': 'integration-provider',
+                'retrieved_at': datetime(2024, 1, 1, tzinfo=timezone.utc),
+            }
+            for side in sides
+        ]
+
+    monkeypatch.setattr('src.api.market_data.fetch_rates', fetch)
+    first = c.get('/api/rates/FX/ZZZ/2024-01-08')
+    assert first.status_code == 200, first.text
+    assert first.json()['rates'][0]['rate'] == '5.123456789012'
+    assert first.json()['rates'][0]['side'] == 'MARKET'
+    assert not first.json()['fallback_used']
+
+    monkeypatch.setattr(
+        'src.api.market_data.fetch_rates',
+        lambda *args: pytest.fail('cached rate queried the provider'),
+    )
+    second = c.get('/api/rates/FX/ZZZ/2024-01-08')
+    assert second.status_code == 200
+    assert len(calls) == 1
+
+    monkeypatch.setattr('src.api.market_data.fetch_rates', fetch)
+    backfill = c.post('/api/rates/backfill', json={
+        'currencies': ['YYY'],
+        'rate_types': ['FX', 'PTAX'],
+        'start_date': '2024-01-08',
+        'end_date': '2024-01-09',
+    })
+    assert backfill.status_code == 200, backfill.text
+    assert backfill.json() == {'inserted': 3, 'series': 2}

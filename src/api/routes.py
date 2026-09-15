@@ -1,4 +1,5 @@
 """HTTP routes for portfolios, transactions and market data."""
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +11,10 @@ from src.api.market_data import fetch_history
 from src.database import get_session
 from src.domain import historical_profitability
 from src.models import AssetHistory, Portfolio, Transaction
-from src.schemas import PortfolioInput, QuoteInput, TransactionInput, TransactionOutput
+from src.rates import RateUnavailable, backfill_rates, get_rates
+from src.schemas import (
+    PortfolioInput, QuoteInput, RateBackfillInput, TransactionInput, TransactionOutput,
+)
 from src.services import ensure_asset, get_asset, get_overview, get_portfolio
 
 
@@ -203,3 +207,48 @@ def performance(
         Transaction.allocation_class == allocation_class,
     )))
     return historical_profitability(transactions, asset.history)
+
+
+@router.get('/rates/{rate_type}/{currency}/{reference_date}')
+def historical_rate(rate_type: str, currency: str, reference_date: date, session: DB):
+    try:
+        rates = get_rates(session, currency, rate_type, reference_date)
+        session.commit()
+    except ValueError as error:
+        session.rollback()
+        status = 404 if isinstance(error, RateUnavailable) else 422
+        raise HTTPException(status, str(error))
+    resolved_date = rates[0].reference_date
+    return {
+        'currency': rates[0].currency,
+        'rate_type': rates[0].rate_type,
+        'requested_date': reference_date,
+        'reference_date': resolved_date,
+        'rates': [
+            {
+                'side': rate.rate_side,
+                'rate': str(rate.rate),
+                'source': rate.source,
+                'retrieved_at': rate.retrieved_at,
+            }
+            for rate in rates
+        ],
+        'fallback_used': resolved_date != reference_date,
+    }
+
+
+@router.post('/rates/backfill')
+def backfill_historical_rates(payload: RateBackfillInput, session: DB):
+    try:
+        result = backfill_rates(
+            session,
+            payload.currencies,
+            payload.rate_types,
+            payload.start_date,
+            payload.end_date,
+        )
+        session.commit()
+    except Exception as error:
+        session.rollback()
+        raise HTTPException(502, f'Não foi possível completar o backfill: {error}')
+    return result
