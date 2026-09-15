@@ -1,29 +1,13 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import Integer, String, ForeignKey
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from src.database import Base
 
-from src.models.asset import Asset
-from src.models.position import Position
-from src.models.transaction import Transaction
-
-class Base(DeclarativeBase):
-    pass
 
 class Portfolio(Base):
-    __tablename__ = "portfolios"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)  # e.g. "Retirement", "Speculative"
-
-    # Relationships to positions, transactions, assets
-    positions: Mapped[list["Position"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan"
-    )
-    transactions: Mapped[list["Transaction"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan"
-    )
-    assets: Mapped[list["Asset"]] = relationship(
-        back_populates="portfolio",
-        cascade="all, delete-orphan"
-    )
+    __tablename__ = 'portfolios'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    transactions: Mapped[list['Transaction']] = relationship(
+        back_populates='portfolio', cascade='all, delete-orphan',
+        order_by='(Transaction.date_time, Transaction.id)')
+    assets: Mapped[list['Asset']] = relationship(back_populates='portfolio', cascade='all, delete-orphan')

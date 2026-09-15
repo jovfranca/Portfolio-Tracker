@@ -1,65 +1,26 @@
-from sqlalchemy import Integer, String, Float, Date, DateTime, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from typing import List
-
-from src.models.portfolio import Portfolio
-
-import pandas as pd
 from datetime import datetime
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Index, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from src.database import Base
 
-class Base(DeclarativeBase):
-    pass
 
 class Transaction(Base):
-    """
-    A class used to represent a financial transaction within an investment portfolio.
-
-    Attributes:
-    ----------
-    id (int): Unique identifier for the transaction.
-    date_time (str): The date and time when the transaction occurred, formatted as a string.
-    type (str): The type of transaction, typically 'Buy' or 'Sell'.
-    asset (str): The asset involved in the transaction.
-    broker (str): The broker facilitating the transaction.
-    allocation_class (str): The classification of the asset for allocation purposes.
-    quantity (int): The quantity of the asset transacted.
-    price (float): The price per unit of the asset at the time of the transaction.
-    brokerage_fee (float): The fee charged by the broker for the transaction.
-    other_fees (float): Any additional fees associated with the transaction.
-    notes (str): Additional notes or comments about the transaction.
-
-    """
-    __tablename__="transactions"
+    __tablename__ = 'transactions'
+    __table_args__ = (
+        CheckConstraint("type IN ('Buy', 'Sell')", name='type'),
+        CheckConstraint('quantity > 0 AND price >= 0 AND brokerage_fee >= 0 AND other_fees >= 0', name='amounts'),
+        Index('ix_transactions_portfolio_date', 'portfolio_id', 'date_time', 'id'),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
     date_time: Mapped[datetime] = mapped_column(DateTime)
-    type: Mapped[str] = mapped_column(String)       # ex: "buy", "sell"
-    asset: Mapped[str] = mapped_column(String)      # ticker ou nome
-    broker: Mapped[str] = mapped_column(String)
-    allocation_class: Mapped[str] = mapped_column(String)  # ex: "aposentadoria", "reserva"
+    type: Mapped[str] = mapped_column(String(4))
+    asset: Mapped[str] = mapped_column(String(40))
+    broker: Mapped[str] = mapped_column(String(120))
+    allocation_class: Mapped[str] = mapped_column(String(120))
     quantity: Mapped[float] = mapped_column(Float)
     price: Mapped[float] = mapped_column(Float)
-    brokerage_fee: Mapped[float] = mapped_column(Float)
-    other_fees: Mapped[float] = mapped_column(Float)
-    notes: Mapped[str] = mapped_column(String)
-
-    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
-    portfolio: Mapped["Portfolio"] = relationship(back_populates="transactions")
-
-    def __str__(self):
-        return f"{self.id}\t\t{self.date_time}\t{self.type}\t{self.asset}\t{self.broker}\t{self.allocation_class}\t\t{self.quantity}\t\t{self.price}\t{self.brokerage_fee}\t\t{self.other_fees}\t\t{self.notes}"
-
-
-    def validate_transaction(self):
-        # Validate the transaction data (e.g., check if required fields are present)
-        # Implement your validation rules here
-        pass
-
-    def delete_transaction(self):
-        # Remove an existing transaction from the system
-        # Implement your logic here
-        pass
-
-    def calculate_total_cost(self):
-        # Calculate the total cost of the transaction (including fees)
-        # Implement your logic here
-        pass
+    brokerage_fee: Mapped[float] = mapped_column(Float, default=0)
+    other_fees: Mapped[float] = mapped_column(Float, default=0)
+    notes: Mapped[str] = mapped_column(Text, default='')
+    portfolio: Mapped['Portfolio'] = relationship(back_populates='transactions')

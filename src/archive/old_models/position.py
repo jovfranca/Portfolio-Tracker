@@ -40,7 +40,7 @@ class Position:
 
     def __str__(self):
         # return f"Position(Allocation Class: {self.allocation_class}, Asset: {self.asset}, Broker: {self.broker}, Average Cost: {self.average_cost}, Quantity: {self.quantity}, Total Value: {self.total_value})"
-        return f"{self.allocation_class}\t\t {self.asset}\t {self.broker}\t\t {self.average_cost:.2f}\t\t {self.quantity}\t\t {self.total_value:.2f}\t {self.current_total_gain:.2f}\t\t {self.current_accumulated_profitability:.2f}\%"
+        return f"{self.allocation_class}\t\t {self.asset}\t {self.broker}\t\t {self.average_cost:.2f}\t\t {self.quantity}\t\t {self.total_value:.2f}\t {self.current_total_gain:.2f}\t\t {self.current_accumulated_profitability:.2f}\\%"
 
 
     def update_average_cost(self, portfolio):

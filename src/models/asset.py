@@ -1,148 +1,31 @@
-from sqlalchemy import Integer, String, Float, Date, ForeignKey
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from typing import List
+from datetime import date
+from sqlalchemy import Date, Float, ForeignKey, String, UniqueConstraint, CheckConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from src.database import Base
 
-from src.models.portfolio import Portfolio
-
-import yfinance as yf
-import pandas as pd
-from datetime import timezone
-from datetime import datetime
-
-class Base(DeclarativeBase):
-    pass
 
 class Asset(Base):
     __tablename__ = 'assets'
-    id: Mapped[int] = mapped_column(primary_key = True)
-    asset_class: Mapped[str] = mapped_column(String)
-    ticer: Mapped[str] = mapped_column(String)
-    sector: Mapped[str] = mapped_column(String)
-    sub_sector: Mapped[str] = mapped_column(String)
-    average_cost: Mapped[float] = mapped_column(Float)
-    quantity: Mapped[float] = mapped_column(Float)
-    current_price: Mapped[float] = mapped_column(Float)
-    total_value: Mapped[float] = mapped_column(Float)
+    __table_args__ = (UniqueConstraint('portfolio_id', 'ticker'),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
+    ticker: Mapped[str] = mapped_column(String(40))
+    asset_class: Mapped[str] = mapped_column(String(120), default='')
+    sector: Mapped[str] = mapped_column(String(120), default='')
+    sub_sector: Mapped[str] = mapped_column(String(120), default='')
+    portfolio: Mapped['Portfolio'] = relationship(back_populates='assets')
+    history: Mapped[list['AssetHistory']] = relationship(
+        back_populates='asset', cascade='all, delete-orphan', order_by='AssetHistory.date')
 
-    history: Mapped[List["AssetHistory"]] = relationship(
-        back_populates="asset",
-        cascade="all, delete-orphan"
-    )
-
-    portfolio_id: Mapped[int] = mapped_column(ForeignKey("portfolios.id"))
-    portfolio: Mapped["Portfolio"] = relationship(back_populates="assets")
-
-    
-    def __str__(self):
-        return f"{self.ticker}\t{self.quantity}\t\t{self.average_cost:.2f}\t\t{self.current_price:.2f}\t\t{self.total_value:.2f}"
-
-    def update_average_cost(self, portfolio):
-        average_cost = 0.0
-        total_quantity = 0
-
-        # Iterate over the transactions and update the total cost and quantity
-        for transaction in portfolio.transactions_list:
-            if transaction.asset == self.ticker:
-                if transaction.type == 'Buy':
-                    average_cost = (average_cost*total_quantity + transaction.price*transaction.quantity)/(total_quantity + transaction.quantity)
-                    total_quantity += transaction.quantity
-                elif transaction.type == 'Sell' and total_quantity > 0:
-                    total_quantity -= transaction.quantity
-
-        # Update the average cost if there are any holdings
-        if total_quantity > 0:
-            self.average_cost = average_cost
-        else:
-            self.average_cost = 0.0
-        pass
-
-    def update_quantity(self, portfolio):
-        self.quantity = 0
-
-        # Iterate over the transactions and update the quantity
-        for transaction in portfolio.transactions_list:
-            if transaction.asset == self.ticker:
-                if transaction.type == 'Buy':
-                    self.quantity += transaction.quantity
-                elif transaction.type == 'Sell':
-                    self.quantity -= transaction.quantity
-                    # Ensure quantity doesn't go negative
-                    self.quantity = max(self.quantity, 0)
-        pass
-
-    def check_for_income(self):
-        # Check if the asset generates income (e.g., dividends)
-        # Implement your logic here
-        pass
-
-
-
-    def update_history(self, oldest_transaction_date):
-        # Check if self.history is empty or find the last date with available data
-        if self.history.empty:
-            # If empty, find the oldest transaction date
-            start_date = oldest_transaction_date
-            asset_up_to_date = False
-        else:
-            # If not empty, get the first and last date with data
-            first_date = self.history.index.min()
-            last_date = self.history.index.max()
-
-            
-
-            # Verify if there was inputed a transaction older than the first available data, if so, it'll request older data
-            if oldest_transaction_date.strftime('%Y-%m-%d') < first_date.strftime('%Y-%m-%d'):
-                start_date = oldest_transaction_date
-                asset_up_to_date = False
-            else:
-                start_date = last_date + pd.Timedelta(days=1)
-
-                #If there is already data for current day, it won't be requested anymore
-                asset_up_to_date = True if last_date.strftime('%Y-%m-%d') == datetime.today().strftime('%Y-%m-%d') else False
-
-            
-
-        if not asset_up_to_date:
-            new_data = yf.Ticker(self.ticker).history(start=start_date.strftime('%Y-%m-%d'),interval="1d")
-            new_data = new_data[['Close', 'Dividends', 'Stock Splits']]
-
-            # Verify if there was inputed a transaction older than the first available data, if so, proceed to replace the entire data
-            if not self.history.empty:
-                if oldest_transaction_date.strftime('%Y-%m-%d') < first_date.strftime('%Y-%m-%d'):
-                    self.history = new_data
-                else:
-                    self.history = pd.concat([self.history,new_data])
-            else:
-                self.history = new_data
-
-            self.history = self.history[~self.history.index.duplicated(keep='first')]
-
-    def update_current_price(self):
-        # Check if the history DataFrame is not empty
-        if not self.history.empty:
-            # Get the last 'Close' value from the history DataFrame
-            self.current_price = self.history['Close'].iloc[-1]
-        else:
-            # If history is empty, fetch the current price from yfinance
-            self.current_price = yf.Ticker(self.ticker).info['regularMarketPrice']
-
-    def update_total_value(self):
-        # Calculate the total value of the asset
-        self.total_value = self.current_price * self.quantity
-
-    def update_profitability(self):
-        # Calculate and update the profitability (gain/loss percentage)
-        # Implement your logic here
-        pass
 
 class AssetHistory(Base):
-    __tablename__ = "asset_history"
-
+    __tablename__ = 'asset_history'
+    __table_args__ = (UniqueConstraint('asset_id', 'date'), CheckConstraint('close >= 0', name='close'))
     id: Mapped[int] = mapped_column(primary_key=True)
-    asset_id: Mapped[int] = mapped_column(ForeignKey("assets.id"))
-    date: Mapped[Date] = mapped_column(Date)
+    asset_id: Mapped[int] = mapped_column(ForeignKey('assets.id', ondelete='CASCADE'))
+    date: Mapped[date] = mapped_column(Date)
     close: Mapped[float] = mapped_column(Float)
-    dividends: Mapped[float] = mapped_column(Float)
-    stock_splits: Mapped[float] = mapped_column(Float)
-
-    asset: Mapped["Asset"] = relationship(back_populates="history")
+    dividends: Mapped[float] = mapped_column(Float, default=0)
+    stock_splits: Mapped[float] = mapped_column(Float, default=0)
+    source: Mapped[str] = mapped_column(String(30), default='manual')
+    asset: Mapped['Asset'] = relationship(back_populates='history')

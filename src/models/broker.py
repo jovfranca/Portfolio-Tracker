@@ -1,17 +1,9 @@
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import String, Integer
+from sqlalchemy import String
+from sqlalchemy.orm import Mapped, mapped_column
+from src.database import Base
 
-class Base(DeclarativeBase):
-    pass
 
 class Broker(Base):
-    __tablename__ = "brokers"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    registration_number: Mapped[str] = mapped_column(String, nullable=False, unique=True)
-    country: Mapped[str] = mapped_column(String, nullable=False)
-
-    def calculate_total_fees(self):
-        # Implement your brokerage fee calculation logic here
-        pass
+    __tablename__ = 'brokers'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
