@@ -1,9 +1,12 @@
-from datetime import date, datetime
+from datetime import date
+from decimal import Decimal
 from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Name = Annotated[str, Field(min_length=1, max_length=120)]
 Amount = Annotated[float, Field(ge=0, le=1e15, allow_inf_nan=False)]
+DecimalAmount = Annotated[Decimal, Field(ge=0, le=Decimal('1e15'), allow_inf_nan=False, max_digits=28, decimal_places=12)]
+PositiveDecimalAmount = Annotated[Decimal, Field(gt=0, le=Decimal('1e15'), allow_inf_nan=False, max_digits=28, decimal_places=12)]
 
 
 class Input(BaseModel):
@@ -15,15 +18,18 @@ class PortfolioInput(Input):
 
 
 class TransactionInput(Input):
-    date_time: datetime
+    trade_date: date
+    settlement_date: date
     type: Literal['Buy', 'Sell']
     asset: Annotated[str, Field(min_length=1, max_length=40, pattern=r'^[A-Za-z0-9.^=:/_-]+$')]
     broker: Name
-    allocation_class: Name
-    quantity: Annotated[float, Field(gt=0, le=1e15, allow_inf_nan=False)]
-    price: Amount
-    brokerage_fee: Amount = 0
-    other_fees: Amount = 0
+    allocation_class: Name = 'Sem classe'
+    quantity: PositiveDecimalAmount
+    price: DecimalAmount
+    asset_currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] = 'BRL'
+    fx_rate: PositiveDecimalAmount | None = None
+    brokerage_fee: DecimalAmount = Decimal('0')
+    other_fees: DecimalAmount = Decimal('0')
     notes: Annotated[str, Field(max_length=5000)] = ''
 
     @field_validator('asset')
@@ -31,14 +37,28 @@ class TransactionInput(Input):
     def normalize_ticker(cls, value):
         return value.upper()
 
-    @field_validator('date_time')
+    @field_validator('asset_currency')
     @classmethod
-    def local_datetime(cls, value):
-        if value.tzinfo is not None:
-            raise ValueError('Use data/hora local sem fuso, como no histórico original.')
-        if value.date() > date.today():
-            raise ValueError('A data da operação não pode estar no futuro.')
-        return value
+    def normalize_currency(cls, value):
+        return value.upper()
+
+    @field_validator('type', mode='before')
+    @classmethod
+    def normalize_type(cls, value):
+        normalized = str(value).strip().casefold()
+        return {'buy': 'Buy', 'compra': 'Buy', 'sell': 'Sell', 'venda': 'Sell'}.get(
+            normalized, value
+        )
+
+    @model_validator(mode='after')
+    def valid_dates_and_brl_rate(self):
+        if self.trade_date > date.today():
+            raise ValueError('A data de negociação não pode estar no futuro.')
+        if self.settlement_date < self.trade_date:
+            raise ValueError('A data de liquidação deve ser igual ou posterior à negociação.')
+        if self.asset_currency == 'BRL':
+            self.fx_rate = Decimal('1')
+        return self
 
 
 class QuoteInput(Input):
@@ -59,6 +79,12 @@ class TransactionOutput(TransactionInput):
     model_config = ConfigDict(from_attributes=True)
     id: int
     portfolio_id: int
+
+
+class TransactionImportConfirm(Input):
+    digest: Annotated[str, Field(pattern=r'^[a-f0-9]{64}$')]
+    filename: Annotated[str, Field(min_length=1, max_length=255)]
+    rows: Annotated[list[TransactionInput], Field(min_length=1, max_length=5000)]
 
 
 class RateBackfillInput(Input):

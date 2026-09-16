@@ -4,12 +4,13 @@ import hashlib
 import io
 import json
 import pickle
+from datetime import datetime
 from pathlib import Path
 from sqlalchemy import select
 from src.database import SessionLocal
 from src.models import Portfolio, Transaction, LegacyImport, AssetHistory
 from src.schemas import TransactionInput, QuoteInput
-from src.services import get_portfolio, ensure_asset, get_overview
+from src.services import get_portfolio, ensure_asset, get_overview, transaction_values
 
 
 class LegacyTransaction:
@@ -87,9 +88,28 @@ def read_transactions(path):
     records = TransactionReader(io.BytesIO(data)).load()
     if not isinstance(records, list) or not all(isinstance(t, LegacyTransaction) for t in records):
         raise ValueError('O arquivo deve conter uma lista de transações do projeto original.')
-    fields = TransactionInput.model_fields
-    validated = [TransactionInput.model_validate({k: getattr(t, k) for k in fields if hasattr(t, k)}) for t in records]
-    return hashlib.sha256(data).hexdigest(), sorted(validated, key=lambda t: t.date_time)
+    validated = []
+    for transaction in records:
+        timestamp = transaction.date_time
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp)
+        values = {
+            key: getattr(transaction, key)
+            for key in TransactionInput.model_fields
+            if hasattr(transaction, key)
+        }
+        values.update({
+            'trade_date': timestamp.date(),
+            'settlement_date': timestamp.date(),
+            'asset_currency': 'BRL',
+            'fx_rate': 1,
+        })
+        if timestamp.tzinfo is not None:
+            raise ValueError('Use data/hora local sem fuso, como no histórico original.')
+        validated.append((timestamp, TransactionInput.model_validate(values)))
+    return hashlib.sha256(data).hexdigest(), [
+        record for _, record in sorted(validated, key=lambda item: item[0])
+    ]
 
 
 def import_transactions(session, path, portfolio_id, assets_path=None):
@@ -103,7 +123,9 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
         raise ValueError('Escolha uma carteira vazia para a migração inicial. Mesclar históricos exige conciliação.')
     for record in records:
         ensure_asset(session, portfolio_id, record.asset)
-        session.add(Transaction(portfolio_id=portfolio_id, **record.model_dump()))
+        session.add(Transaction(
+            portfolio_id=portfolio_id, **transaction_values(session, record)
+        ))
     if assets_path:
         for old, quotes in read_assets(assets_path):
             asset = ensure_asset(session, portfolio_id, old.ticker.upper())

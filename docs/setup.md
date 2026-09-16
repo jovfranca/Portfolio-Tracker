@@ -121,8 +121,79 @@ arquivo não duplica transações. Para escolher uma carteira vazia, use
 O leitor restringe os tipos Python aceitos; use apenas arquivos locais conhecidos
 do projeto. Não existe endpoint de upload de pickle.
 
-As planilhas Excel e o backup Money Manager não fazem parte desta migração técnica.
-Seu importador com conciliação permanece no roadmap.
+## Importar transações CSV/XLSX
+
+Na aba **Transações**, clique em **Importar transações**, ao lado de
+**+ Nova transação**. A página dedicada fica em
+**http://127.0.0.1:8000/#/transactions/import** (ou porta 5173 no Vite).
+Use **Voltar para Transações** para retornar ao histórico. A navegação usa hashes
+no mesmo shell React, sem dependência de roteamento ou configuração adicional no servidor.
+
+1. Confira a carteira selecionada no topo. Para testes, crie uma carteira separada.
+2. Clique em **Baixar planilha modelo** e substitua/remova as três operações fictícias.
+3. Em **Selecionar arquivo**, envie CSV ou XLSX e revise os valores da prévia.
+4. Corrija os erros indicados por linha/coluna e selecione o arquivo novamente.
+5. Clique em **Confirmar importação** quando todas as linhas forem válidas.
+
+Nenhuma transação é salva durante a prévia. Confirmar recalcula as posições pelo
+mesmo fluxo existente. A proteção de duplicatas usa o conteúdo exato do arquivo
+por carteira; um arquivo alterado ou reexportado não é necessariamente reconhecido.
+
+### Estrutura e colunas aceitas
+
+CSV usa UTF-8, com ou sem BOM, e separador vírgula, ponto e vírgula ou tabulação.
+XLSX lê a aba ativa. A primeira linha é o cabeçalho; a ordem das colunas é livre.
+Maiúsculas/minúsculas e espaços nas extremidades dos cabeçalhos são ignorados.
+Cabeçalhos duplicados, aliases repetidos do mesmo campo e células excedentes sem
+cabeçalho são rejeitados. Colunas desconhecidas são ignoradas.
+
+| Coluna | Obrigatória / opcional | Tipo | Formato / valores | Exemplo | Descrição / observações |
+| --- | --- | --- | --- | --- | --- |
+| `ticker` | Obrigatória | Texto | 1–40 caracteres: A–Z, a–z, 0–9 e `. ^ = : / _ -` | `FICTICIO-BR` | Convertido para maiúsculas. Alias: `asset`. |
+| `broker` | Obrigatória | Texto | 1–120 caracteres | `Corretora Fictícia` | Corretora. |
+| `type` | Obrigatória | Enum textual | `Buy`, `Sell`, `Compra`, `Venda`, sem distinção de maiúsculas/minúsculas | `Buy` | Compra ou venda; espaços externos removidos. Alias: `transaction_type`. |
+| `trade_date` | Obrigatória | Data | `AAAA-MM-DD` ou célula de data no XLSX | `2024-01-02` | Não pode ser futura. Alias: `trade date`. |
+| `settlement_date` | Obrigatória | Data | `AAAA-MM-DD` ou célula de data no XLSX | `2024-01-04` | Igual ou posterior à negociação. Alias: `settlement date`. |
+| `quantity` | Obrigatória | Decimal | Maior que zero | `10.5` | Quantidade. |
+| `unit_price` | Obrigatória | Decimal | Zero ou positivo | `25.50` | Preço unitário. Aliases: `price`, `unit price`. |
+| `asset_currency` | Obrigatória | Texto | Exatamente 3 letras A–Z/a–z | `BRL` | Convertida para maiúsculas. Aliases: `currency`, `asset currency`. |
+| `fx_rate` | Opcional | Decimal | Maior que zero quando informado | `5.25` | Vazio: 1 para BRL; busca histórica para moeda estrangeira. Alias: `fx rate`. |
+| `allocation_class` | Opcional | Texto | 1–120 caracteres quando informado | `Exemplo` | Vazio/ausente: `Sem classe`. Alias: `allocation class`. |
+| `brokerage_fee` | Opcional | Decimal | Zero ou positivo | `1.25` | Vazio/ausente: 0. Alias: `brokerage fee`. |
+| `other_fees` | Opcional | Decimal | Zero ou positivo | `0.50` | Vazio/ausente: 0. Alias: `other fees`. |
+| `notes` | Opcional | Texto | Até 5.000 caracteres | `Exemplo fictício` | Vazio/ausente: texto vazio. |
+
+Em texto, use ponto decimal e nenhum símbolo monetário/separador de milhar:
+`1234.56`, não `1.234,56`. Células numéricas do Excel são aceitas mesmo quando
+exibidas com vírgula. Para muitos dígitos, use células de texto para evitar a
+perda de precisão do próprio Excel. O parser também aceita notação científica
+(`1e2`) e sublinhados (`1_000.50`). Todos os decimais aceitam até 10¹⁵, até 28
+dígitos e até 12 casas decimais. Taxas são registradas sem alterar os cálculos atuais.
+
+Datas em texto como `02/01/2024` são inválidas. O validador também aceita ISO com
+horário à meia-noite e timestamps Unix (segundos ou milissegundos) que representem
+meia-noite. Células de data/hora do XLSX perdem o horário na leitura. Prefira
+`AAAA-MM-DD`. Fórmulas não são recalculadas: só o resultado armazenado no XLSX é lido.
+
+Espaços nas extremidades dos valores são removidos. Campos opcionais vazios usam
+os padrões da tabela. O limite é 5 MB por arquivo, 5.000 transações no CSV e 5.000
+linhas após o cabeçalho no XLSX (incluindo linhas vazias intermediárias). XLSX tem
+limite adicional de 25 MB descompactado.
+
+### FX e modelo XLSX
+
+Para BRL, o FX salvo é 1. Se informado, deve passar pela validação numérica antes
+de ser substituído por 1. Para outra moeda sem FX, a prévia busca a taxa histórica
+da liquidação; pode usar uma taxa anterior dentro da janela configurada. Sem taxa
+disponível, a linha fica inválida. O FX resolvido é armazenado e não muda depois.
+Liquidações futuras são aceitas em BRL ou com FX informado. A moeda é validada
+apenas como três letras, sem garantia de cobertura pelo provedor. Não misture
+moedas no mesmo ticker da carteira.
+
+`GET /api/transactions/import-template.xlsx` gera o download `modelo-transacoes.xlsx`
+com `openpyxl`, já instalado. Não consulta banco ou provedor. O modelo inclui todos
+os 13 cabeçalhos e três operações fictícias: compra/venda em BRL e compra em USD
+com FX explícito. O teste de contrato baixa o arquivo e o valida no importador real.
 
 ## Verificação automática
 
@@ -174,8 +245,8 @@ O backfill apenas insere datas ausentes; valores históricos existentes não sã
 substituídos. A integração dessas taxas aos cálculos de carteira pertence ao suporte
 multimoeda posterior.
 
-Informe as moedas explicitamente no backfill: o modelo atual de transações ainda
-não registra moeda e não permite inferir uma lista confiável por carteira.
+Informe as moedas explicitamente no backfill; esse endpoint não seleciona as
+moedas da carteira automaticamente.
 Nos fins de semana, uma sexta-feira já armazenada pode ser reutilizada sem rede;
 um cache mais antigo exige consultar o provedor antes de escolher a data anterior.
 Falhas do provedor permitem usar o cache dentro do limite, mas falhas de gravação
@@ -201,7 +272,8 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 - Preço médio, ganho realizado e ganho não realizado preservam as fórmulas Buy/Sell.
 - Taxas, dividendos e desdobramentos são registrados, sem aplicação financeira adicional.
 - A variação diária é a variação do ganho; não é TWR ou retorno total com proventos.
-- A precisão numérica continua em `float`, conforme o código original.
+- Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
+  cotações históricas continuam no formato legado.
 - Cotações ausentes aparecem como ausentes, e não como preço zero.
 - Operações anteriores à primeira cotação são consideradas nessa primeira avaliação;
   a migração corrige esse desalinhamento de datas sem mudar a fórmula de ganho.
