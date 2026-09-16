@@ -9,5 +9,5 @@ class Portfolio(Base):
     name: Mapped[str] = mapped_column(String(120))
     transactions: Mapped[list['Transaction']] = relationship(
         back_populates='portfolio', cascade='all, delete-orphan',
-        order_by='(Transaction.date_time, Transaction.id)')
+        order_by='(Transaction.trade_date, Transaction.id)')
     assets: Mapped[list['Asset']] = relationship(back_populates='portfolio', cascade='all, delete-orphan')

@@ -2,7 +2,8 @@
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -10,12 +11,18 @@ from sqlalchemy.orm import Session
 from src.api.market_data import fetch_history
 from src.database import get_session
 from src.domain import historical_profitability
-from src.models import AssetHistory, Portfolio, Transaction
+from src.models import AssetHistory, Portfolio, Transaction, TransactionImport
 from src.rates import RateUnavailable, backfill_rates, get_rates
 from src.schemas import (
-    PortfolioInput, QuoteInput, RateBackfillInput, TransactionInput, TransactionOutput,
+    PortfolioInput, QuoteInput, RateBackfillInput, TransactionImportConfirm,
+    TransactionInput, TransactionOutput,
 )
-from src.services import ensure_asset, get_asset, get_overview, get_portfolio
+from src.services import (
+    ensure_asset, ensure_asset_currency, get_asset, get_overview, get_portfolio,
+    transaction_values,
+)
+from src.transaction_import import MAX_IMPORT_BYTES, preview_import
+from src.import_template import transaction_template
 
 
 router = APIRouter(prefix='/api')
@@ -64,7 +71,7 @@ def transactions(portfolio_id: int, session: DB):
     return list(session.scalars(
         select(Transaction)
         .where(Transaction.portfolio_id == portfolio_id)
-        .order_by(Transaction.date_time.desc(), Transaction.id.desc())
+        .order_by(Transaction.trade_date.desc(), Transaction.id.desc())
     ))
 
 
@@ -75,8 +82,11 @@ def transactions(portfolio_id: int, session: DB):
 )
 def add_transaction(portfolio_id: int, payload: TransactionInput, session: DB):
     get_portfolio(session, portfolio_id, lock=True)
+    ensure_asset_currency(session, portfolio_id, payload.asset, payload.asset_currency)
     ensure_asset(session, portfolio_id, payload.asset)
-    transaction = Transaction(portfolio_id=portfolio_id, **payload.model_dump())
+    transaction = Transaction(
+        portfolio_id=portfolio_id, **transaction_values(session, payload)
+    )
     session.add(transaction)
     session.flush()
     get_overview(session, portfolio_id)
@@ -106,8 +116,14 @@ def edit_transaction(
 ):
     get_portfolio(session, portfolio_id, lock=True)
     transaction = find_transaction(session, portfolio_id, transaction_id)
+    ensure_asset_currency(
+        session, portfolio_id, payload.asset, payload.asset_currency, transaction_id
+    )
     ensure_asset(session, portfolio_id, payload.asset)
-    for key, value in payload.model_dump().items():
+    values = transaction_values(session, payload)
+    if transaction.trade_date == payload.trade_date:
+        values['date_time'] = transaction.date_time
+    for key, value in values.items():
         setattr(transaction, key, value)
     session.flush()
     get_overview(session, portfolio_id)
@@ -122,6 +138,66 @@ def delete_transaction(portfolio_id: int, transaction_id: int, session: DB):
     session.flush()
     get_overview(session, portfolio_id)
     session.commit()
+
+
+@router.get('/transactions/import-template.xlsx')
+def download_transaction_template():
+    return Response(
+        transaction_template(),
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': 'attachment; filename="modelo-transacoes.xlsx"'},
+    )
+
+
+@router.post('/portfolios/{portfolio_id}/transactions/import-preview')
+async def import_preview(portfolio_id: int, filename: str, request: Request, session: DB):
+    get_portfolio(session, portfolio_id)
+    if len(filename) > 255:
+        raise HTTPException(422, 'O nome do arquivo excede 255 caracteres.')
+    content = bytearray()
+    async for chunk in request.stream():
+        if len(content) + len(chunk) > MAX_IMPORT_BYTES:
+            raise HTTPException(413, 'O arquivo excede o limite de 5 MB.')
+        content.extend(chunk)
+    content = bytes(content)
+    result = preview_import(session, filename, content, portfolio_id)
+    previous = session.scalar(select(TransactionImport.id).where(
+        TransactionImport.portfolio_id == portfolio_id,
+        TransactionImport.digest == result['digest'],
+    ))
+    result['already_imported'] = previous is not None
+    return result
+
+
+@router.post('/portfolios/{portfolio_id}/transactions/import', status_code=201)
+def import_transactions(
+    portfolio_id: int,
+    payload: TransactionImportConfirm,
+    session: DB,
+):
+    get_portfolio(session, portfolio_id, lock=True)
+    previous = session.scalar(select(TransactionImport.id).where(
+        TransactionImport.portfolio_id == portfolio_id,
+        TransactionImport.digest == payload.digest,
+    ))
+    if previous is not None:
+        raise HTTPException(409, 'Este arquivo já foi importado para esta carteira.')
+    for row in payload.rows:
+        ensure_asset_currency(session, portfolio_id, row.asset, row.asset_currency)
+        ensure_asset(session, portfolio_id, row.asset)
+        session.add(Transaction(
+            portfolio_id=portfolio_id, **transaction_values(session, row)
+        ))
+    session.flush()
+    get_overview(session, portfolio_id)
+    session.add(TransactionImport(
+        portfolio_id=portfolio_id,
+        digest=payload.digest,
+        filename=payload.filename,
+        records=len(payload.rows),
+    ))
+    session.commit()
+    return {'imported': len(payload.rows)}
 
 
 @router.get('/portfolios/{portfolio_id}/assets/{asset_id}/history')
@@ -164,7 +240,7 @@ def refresh_quotes(portfolio_id: int, asset_id: int, session: DB):
         raise HTTPException(422, 'Cadastre uma transação antes de atualizar.')
 
     ticker = asset.ticker
-    start = min(transaction.date_time.date() for transaction in transactions)
+    start = min(transaction.trade_date for transaction in transactions)
     session.rollback()
     try:
         rows = fetch_history(ticker, start)

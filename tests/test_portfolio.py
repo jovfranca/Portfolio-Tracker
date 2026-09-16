@@ -33,6 +33,23 @@ def test_original_gain_formulas():
     assert result[1]['daily_profitability_pct'] == 160
 
 
+def test_same_day_legacy_order_uses_timestamp_before_id():
+    buy = tx(2, 'Buy', 10, 20, 1)
+    sell = tx(1, 'Sell', 5, 30, 1)
+    buy.date_time = datetime(2024, 1, 1, 9)
+    sell.date_time = datetime(2024, 1, 1, 15)
+    buy.trade_date = sell.trade_date = date(2024, 1, 1)
+    assert cost_and_quantity([sell, buy]) == (20, 5)
+    assert historical_profitability([sell, buy], [Obj(date=date(2024, 1, 1), close=30)])[0]['realized_gain'] == 50
+
+
+def test_domain_accepts_date_only_transactions():
+    row = tx(1, 'Buy', 2, 10, 1)
+    row.trade_date = row.date_time.date()
+    del row.date_time
+    assert cost_and_quantity([row]) == (10, 2)
+
+
 def test_transaction_before_first_quote_is_not_lost():
     rows = [tx(1, 'Buy', 10, 20, 1)]
     result = historical_profitability(rows, [Obj(date=date(2024, 1, 3), close=30)])
@@ -72,6 +89,22 @@ def test_asset_cost_pooling_is_characterized():
     assert result['assets'][0]['average_cost'] == 30
 
 
+def test_overview_does_not_combine_different_currencies():
+    brl = tx(1, 'Buy', 2, 10, 1)
+    brl.asset_currency = 'BRL'
+    usd = tx(2, 'Buy', 1, 20, 1)
+    usd.asset = 'USD-ASSET'
+    usd.asset_currency = 'USD'
+    assets = [
+        Obj(id=1, ticker='TEST', history=[Obj(date=date(2024, 1, 2), close=10)]),
+        Obj(id=2, ticker='USD-ASSET', history=[Obj(date=date(2024, 1, 2), close=20)]),
+    ]
+    result = overview([brl, usd], assets)
+    assert result['summary']['total_value'] is None
+    assert result['summary']['priced_value'] is None
+    assert result['summary']['totals_by_currency'] == {'BRL': 20, 'USD': 20}
+
+
 def test_legacy_files_are_readable_from_synthetic_fixtures(tmp_path, monkeypatch):
     import importlib
     import pandas as pd
@@ -106,6 +139,11 @@ def test_legacy_files_are_readable_from_synthetic_fixtures(tmp_path, monkeypatch
     assets = read_assets(assets_path)
     assert len(records) == 1
     assert records[0].asset == 'TEST'
+    late = old_transaction_type()
+    late.__dict__.update(transaction.__dict__ | {'date_time': '2024-01-02 15:00:00', 'price': 30})
+    transactions_path.write_bytes(pickle.dumps([late, transaction]))
+    _, ordered_records = read_transactions(transactions_path)
+    assert [record.price for record in ordered_records] == [10, 30]
     assert len(assets) == 1
     assert assets[0][1][0].close == 11
 

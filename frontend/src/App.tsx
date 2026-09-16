@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset } from './api'
+import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric } from './api'
+import TransactionImportPage from './TransactionImportPage'
 
-const fmt = (value: number | null | undefined, digits = 2) => value == null ? '—' : value.toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits })
+const tabPaths: Record<string, string> = { 'Posições': '/', 'Transações': '/transactions', 'Cotações': '/quotes', 'Desempenho': '/performance' }
+const currentPath = () => window.location.hash.slice(1) || '/'
+
+const fmt = (value: Numeric | null | undefined, digits = 2) => value == null ? '—' : Number(value).toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits })
 const localDate = () => {
   const d = new Date()
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
 }
 const dateLabel = (value: string | null) => value ? value.slice(0, 10).split('-').reverse().join('/') : 'Sem cotação'
 const message = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível concluir.'
-type Draft = Omit<Transaction, 'id' | 'portfolio_id'>
-const emptyDraft = (): Draft => ({ date_time: localDate(), type: 'Buy', asset: '', broker: '', allocation_class: '',
+type Draft = Omit<Transaction, 'id' | 'portfolio_id' | 'fx_rate'> & { fx_rate: Numeric | '' }
+const emptyDraft = (): Draft => ({ trade_date: localDate().slice(0, 10), settlement_date: localDate().slice(0, 10),
+  type: 'Buy', asset: '', broker: '', allocation_class: '', asset_currency: 'BRL', fx_rate: '',
   quantity: 1, price: 0, brokerage_fee: 0, other_fees: 0, notes: '' })
 
 export default function App() {
@@ -17,7 +22,14 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
   const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [tab, setTab] = useState('Posições')
+  const [path, setPath] = useState(currentPath)
+  const importing = path === '/transactions/import'
+  const tab = importing ? 'Transações' : Object.keys(tabPaths).find(key => tabPaths[key] === path) ?? 'Posições'
+  useEffect(() => {
+    const onHashChange = () => setPath(currentPath())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
@@ -79,13 +91,14 @@ export default function App() {
   async function saveTransaction(e: FormEvent) {
     e.preventDefault()
     const url = '/portfolios/' + selected + '/transactions' + (editing === null ? '' : '/' + editing)
-    if (await mutate(() => api(url, editing === null ? 'POST' : 'PUT', draft), 'Transação salva. Posições recalculadas.')) {
+    const payload = { ...draft, fx_rate: draft.fx_rate === '' ? null : draft.fx_rate }
+    if (await mutate(() => api(url, editing === null ? 'POST' : 'PUT', payload), 'Transação salva. Posições recalculadas.')) {
       setDraft(emptyDraft()); setEditing(null); setFormOpen(false)
     }
   }
   function edit(tx: Transaction) {
     const { id, portfolio_id: _portfolioId, ...values } = tx
-    setDraft({ ...values, date_time: values.date_time.slice(0, 16) }); setEditing(id); setFormOpen(true)
+    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setEditing(id); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
   const filteredPositions = overview?.positions.filter(p => [p.asset, p.broker, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
@@ -95,7 +108,7 @@ export default function App() {
       <a className="brand" href="/"><span className="brand-icon">P<span>↗</span></span><span>portfolio<span className="brand-sub">TRACKER</span></span></a>
       <div className="nav-label">MEU PATRIMÔNIO</div>
       {['Posições', 'Transações', 'Cotações', 'Desempenho'].map((item, i) =>
-        <button className={'nav-item ' + (tab === item ? 'active' : '')} key={item} onClick={() => setTab(item)}>
+        <button className={'nav-item ' + (tab === item ? 'active' : '')} key={item} onClick={() => { window.location.hash = tabPaths[item] }}>
           <span className="nav-symbol" aria-hidden="true">{['◫', '⇄', '⌁', '↗'][i]}</span>{item}
         </button>)}
       <div className="sidebar-footer"><span className="status-dot" /> Ambiente local<span>Seus registros em PostgreSQL</span></div>
@@ -110,9 +123,12 @@ export default function App() {
         <button className="button quiet" disabled={busy} onClick={() => setNewPortfolio(!newPortfolio)}>+ Carteira</button>
       </div></header>
       <div className="content">
-        <div className="page-heading"><div><div className="eyebrow">SEU PORTFOLIO, EM PERSPECTIVA</div><h1>{tab}</h1>
-          <p>Acompanhe seus investimentos a partir das operações registradas.</p></div>
-          <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setEditing(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
+        <div className="page-heading"><div><div className="eyebrow">SEU PORTFOLIO, EM PERSPECTIVA</div><h1>{importing ? 'Importar transações' : tab}</h1>
+          <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
+          {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : <div className="page-actions">
+            {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
+            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setEditing(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
+          </div>}
         </div>
         {error && <div role="alert" className="alert error">{error} <button className="button quiet" disabled={busy} onClick={() => void loadPortfolios().then(() => reload()).catch(e => setError(message(e)))}>Tentar novamente</button></div>}
         {notice && <div role="status" className="alert success">{notice}</div>}
@@ -121,29 +137,33 @@ export default function App() {
           <label>Nome da carteira<input required maxLength={120} value={portfolioName} onChange={e => setPortfolioName(e.target.value)} placeholder="Ex.: Investimentos pessoais" /></label>
           <button className="button primary" disabled={busy}>Criar carteira</button>
         </form>}
-        {formOpen && <form className="panel transaction-form" onSubmit={saveTransaction}>
+        {formOpen && !importing && <form className="panel transaction-form" onSubmit={saveTransaction}>
           <div className="section-heading"><h2>{editing === null ? 'Registrar transação' : 'Editar transação'}</h2><button type="button" className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div>
           <fieldset disabled={busy}>
             <div className="form-grid">
               <label>Operação<select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value as 'Buy' | 'Sell' })}><option value="Buy">Compra</option><option value="Sell">Venda</option></select></label>
-              <label>Data e hora<input required type="datetime-local" value={draft.date_time} onChange={e => setDraft({ ...draft, date_time: e.target.value })} /></label>
+              <label>Data da negociação<input required type="date" max={localDate().slice(0, 10)} value={draft.trade_date} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></label>
+              <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
               <label>Ticker<input required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value })} placeholder="Ex.: PETR4.SA" /></label>
               <label>Corretora<input required maxLength={120} value={draft.broker} onChange={e => setDraft({ ...draft, broker: e.target.value })} /></label>
               <label>Classe de alocação<input required maxLength={120} value={draft.allocation_class} onChange={e => setDraft({ ...draft, allocation_class: e.target.value })} placeholder="Ex.: Ações Brasil" /></label>
-              {([['quantity', 'Quantidade'], ['price', 'Preço unitário'], ['brokerage_fee', 'Corretagem'], ['other_fees', 'Outras taxas']] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min={key === 'quantity' ? '0.000000000001' : '0'} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value === '' ? '' : Number(e.target.value) } as Draft)} /></label>)}
+              <label>Moeda do ativo<input required maxLength={3} pattern="[A-Za-z]{3}" value={draft.asset_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, asset_currency: currency, fx_rate: currency === draft.asset_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
+              <label>Taxa FX<input type="number" min="0.000000000001" step="any" value={draft.fx_rate} disabled={draft.asset_currency === 'BRL'} onChange={e => setDraft({ ...draft, fx_rate: e.target.value })} placeholder={draft.asset_currency === 'BRL' ? '1' : 'Automática'} /></label>
+              {([['quantity', 'Quantidade'], ['price', 'Preço unitário'], ['brokerage_fee', 'Corretagem'], ['other_fees', 'Outras taxas']] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min={key === 'quantity' ? '0.000000000001' : '0'} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value } as Draft)} /></label>)}
               <label className="wide">Observações<input maxLength={5000} value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></label>
             </div>
-            <div className="form-footer"><span>Taxas são registradas, mas não alteram o cálculo legado.</span><button className="button primary">{busy ? 'Salvando…' : 'Salvar transação'}</button></div>
+            <div className="form-footer"><span>FX vazio usa a taxa histórica da data de liquidação; o valor salvo não muda depois.</span><button className="button primary">{busy ? 'Salvando…' : 'Salvar transação'}</button></div>
           </fieldset>
         </form>}
         {loading && <div className="panel empty" role="status">Carregando sua carteira…</div>}
-        {!loading && overview && <>
+        {importing && <TransactionImportPage key={selected} portfolioId={selected} portfolioName={portfolios.find(p => p.id === selected)?.name ?? ''} busy={busy || loading} mutate={mutate} />}
+        {!importing && !loading && overview && <>
           <div className="metrics">
-            <article className="metric featured"><span>Valor das posições</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.summary.missing_prices.length ? 'Parcial com cotação: ' + fmt(overview.summary.priced_value) : 'Nas unidades monetárias de origem'}</small></article>
+            <article className="metric featured"><span>Valor das posições</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.summary.currencies.length > 1 ? 'Totais separados: ' + Object.entries(overview.summary.totals_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : overview.summary.missing_prices.length ? 'Parcial com cotação: ' + fmt(overview.summary.priced_value) : 'Na moeda do ativo'}</small></article>
             <article className="metric"><span>Ativos acompanhados</span><strong>{overview.summary.assets.toString().padStart(2, '0')}</strong><small>{overview.summary.positions} posições por corretora e classe</small></article>
             <article className="metric"><span>Operações registradas</span><strong>{overview.summary.transactions.toString().padStart(2, '0')}</strong><small>Compras e vendas persistidas</small></article>
           </div>
-          <div className="method-note"><span>i</span> Sem conversão cambial: compare e some apenas ativos na mesma moeda. Ganhos seguem as fórmulas originais, sem dividendos ou taxas.</div>
+          <div className="method-note"><span>i</span> Moedas diferentes são exibidas separadamente e nunca somadas. Ganhos seguem as fórmulas originais, sem dividendos ou taxas.</div>
           {tab === 'Posições' && <section className="panel">
             <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição para cada ativo, corretora e classe.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo, corretora ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
             {!overview.positions.length ? <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
@@ -152,8 +172,8 @@ export default function App() {
                 <td className={(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{fmt(p.current_total_gain)}<small>{fmt(p.current_accumulated_profitability)}%{p.history_behind_transactions ? ' · histórico incompleto' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
-          {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar ou excluir recalcula as posições automaticamente.</p></div></div>
-            {!transactions.length ? <div className="empty">Nenhuma transação registrada.</div> : <div className="table-wrap"><table><thead><tr><th>Data</th><th>Operação</th><th>Ativo</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.date_time)}</td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}</td><td>{fmt(tx.brokerage_fee + tx.other_fees)}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
+          {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar recalcula as posições automaticamente.</p></div></div>
+            {!transactions.length ? <div className="empty">Nenhuma transação registrada.</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.asset_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
               if (window.confirm('Excluir esta transação e recalcular as posições?')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída.')
             }}>Excluir</button></div></td></tr>)}</tbody></table></div>}
           </section>}
