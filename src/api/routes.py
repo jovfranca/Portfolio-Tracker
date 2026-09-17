@@ -1,17 +1,16 @@
 """HTTP routes for portfolios, transactions and market data."""
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy import select, text
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from src.api.market_data import fetch_history
 from src.database import get_session
 from src.domain import historical_profitability
-from src.models import AssetHistory, Portfolio, Transaction, TransactionImport
+from src.models import Portfolio, Transaction, TransactionImport
+from src.market_prices import get_history, get_latest, get_stored_history, save_user_price
 from src.rates import RateUnavailable, backfill_rates, get_rates
 from src.schemas import (
     PortfolioInput, QuoteInput, RateBackfillInput, TransactionImportConfirm,
@@ -83,7 +82,7 @@ def transactions(portfolio_id: int, session: DB):
 def add_transaction(portfolio_id: int, payload: TransactionInput, session: DB):
     get_portfolio(session, portfolio_id, lock=True)
     ensure_asset_currency(session, portfolio_id, payload.asset, payload.asset_currency)
-    ensure_asset(session, portfolio_id, payload.asset)
+    ensure_asset(session, portfolio_id, payload.asset, payload.asset_currency)
     transaction = Transaction(
         portfolio_id=portfolio_id, **transaction_values(session, payload)
     )
@@ -119,7 +118,7 @@ def edit_transaction(
     ensure_asset_currency(
         session, portfolio_id, payload.asset, payload.asset_currency, transaction_id
     )
-    ensure_asset(session, portfolio_id, payload.asset)
+    ensure_asset(session, portfolio_id, payload.asset, payload.asset_currency)
     values = transaction_values(session, payload)
     if transaction.trade_date == payload.trade_date:
         values['date_time'] = transaction.date_time
@@ -184,7 +183,7 @@ def import_transactions(
         raise HTTPException(409, 'Este arquivo já foi importado para esta carteira.')
     for row in payload.rows:
         ensure_asset_currency(session, portfolio_id, row.asset, row.asset_currency)
-        ensure_asset(session, portfolio_id, row.asset)
+        ensure_asset(session, portfolio_id, row.asset, row.asset_currency)
         session.add(Transaction(
             portfolio_id=portfolio_id, **transaction_values(session, row)
         ))
@@ -210,23 +209,46 @@ def asset_history(portfolio_id: int, asset_id: int, session: DB):
             'dividends': history.dividends,
             'stock_splits': history.stock_splits,
             'source': history.source,
+            'origin': history.origin,
+            'currency': history.currency,
+            'retrieved_at': history.retrieved_at,
         }
-        for history in asset.history
+        for history in get_stored_history(session, asset)
     ]
 
 
 @router.put('/portfolios/{portfolio_id}/assets/{asset_id}/quote')
 def save_quote(portfolio_id: int, asset_id: int, payload: QuoteInput, session: DB):
     get_portfolio(session, portfolio_id, lock=True)
-    get_asset(session, portfolio_id, asset_id)
-    values = payload.model_dump() | {'asset_id': asset_id, 'source': 'manual'}
-    query = insert(AssetHistory).values(**values)
-    session.execute(query.on_conflict_do_update(
-        index_elements=['asset_id', 'date'],
-        set_=values,
-    ))
+    asset = get_asset(session, portfolio_id, asset_id)
+    try:
+        save_user_price(
+            session, asset, payload.date, payload.close, payload.currency,
+            payload.dividends, payload.stock_splits,
+        )
+    except ValueError as error:
+        raise HTTPException(422, str(error))
     session.commit()
     return {'saved': 1}
+
+
+@router.get('/portfolios/{portfolio_id}/assets/{asset_id}/quote')
+def latest_quote(portfolio_id: int, asset_id: int, session: DB):
+    asset = get_asset(session, portfolio_id, asset_id)
+    result = get_latest(session, asset)
+    session.commit()
+    if not result.available:
+        raise HTTPException(404, 'Não há cotação disponível para este ativo.')
+    return {
+        'date': result.price.date,
+        'price': result.price.close,
+        'currency': result.price.currency,
+        'source': result.price.source,
+        'origin': result.price.origin,
+        'market_at': result.price.market_at,
+        'retrieved_at': result.price.retrieved_at,
+        'stale': result.stale,
+    }
 
 
 @router.post('/portfolios/{portfolio_id}/assets/{asset_id}/refresh')
@@ -239,30 +261,20 @@ def refresh_quotes(portfolio_id: int, asset_id: int, session: DB):
     if not transactions:
         raise HTTPException(422, 'Cadastre uma transação antes de atualizar.')
 
-    ticker = asset.ticker
     start = min(transaction.trade_date for transaction in transactions)
-    session.rollback()
-    try:
-        rows = fetch_history(ticker, start)
-    except Exception:
+    history_end = date.today() - timedelta(days=1)
+    result = get_history(session, asset, start, history_end) if start <= history_end else None
+    latest = get_latest(session, asset)
+    session.commit()
+    if (result is not None and not result.complete) or not latest.available or latest.stale:
         raise HTTPException(
             502,
             'Não foi possível obter cotações. Verifique o ticker ou registre uma '
             'cotação manual; os dados anteriores foram mantidos.',
         )
-
-    get_portfolio(session, portfolio_id, lock=True)
-    get_asset(session, portfolio_id, asset_id)
-    for row in rows:
-        query = insert(AssetHistory).values(asset_id=asset_id, **row)
-        session.execute(query.on_conflict_do_update(
-            index_elements=['asset_id', 'date'],
-            set_=row,
-            where=AssetHistory.source != 'manual',
-        ))
-    session.commit()
     return {
-        'received': len(rows),
+        'received': len(result.prices) if result is not None else 0,
+        'latest_available': latest.available,
         'message': 'Histórico atualizado. Cotações manuais foram preservadas.',
     }
 
@@ -282,7 +294,7 @@ def performance(
         Transaction.broker == broker,
         Transaction.allocation_class == allocation_class,
     )))
-    return historical_profitability(transactions, asset.history)
+    return historical_profitability(transactions, get_stored_history(session, asset))
 
 
 @router.get('/rates/{rate_type}/{currency}/{reference_date}')

@@ -63,9 +63,15 @@ class TransactionInput(Input):
 
 class QuoteInput(Input):
     date: date
-    close: Amount
+    close: DecimalAmount
+    currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] | None = None
     dividends: Amount = 0
     stock_splits: Amount = 0
+
+    @field_validator('currency')
+    @classmethod
+    def normalize_optional_currency(cls, value):
+        return value.upper() if value else value
 
     @field_validator('date')
     @classmethod

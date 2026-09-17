@@ -57,12 +57,46 @@ def test_crud_prices_isolation_and_rollback(client, monkeypatch):
     assert c.get(base + '/overview').json()['summary']['total_value'] == 150
     assert c.post(base + '/transactions', json=payload | {'quantity': -1}).status_code == 422
     assert len(c.get(base + '/transactions').json()) == 1
-    monkeypatch.setattr('src.api.routes.fetch_history', lambda *args: (_ for _ in ()).throw(RuntimeError('offline')))
+    monkeypatch.setattr('src.market_prices.market_data.fetch_history', lambda *args: (_ for _ in ()).throw(RuntimeError('offline')))
+    monkeypatch.setattr('src.market_prices.market_data.fetch_latest', lambda *args: (_ for _ in ()).throw(RuntimeError('offline')))
     assert c.post(base + f'/assets/{aid}/refresh').status_code == 502
     assert c.get(base + f'/assets/{aid}/history').json()[0]['close'] == 30
     assert c.post('/api/portfolios', json={'name':'forbidden'}, headers={'Origin':'https://example.com'}).status_code == 403
     assert c.delete(base + f'/transactions/{tid}').status_code == 204
     assert c.get(base + '/overview').json()['positions'] == []
+
+
+def test_quote_endpoint_keeps_manual_prices_private_and_checks_currency(client, monkeypatch):
+    from datetime import date
+    c, _ = client
+    first = c.post('/api/portfolios', json={'name': 'Manual price owner'}).json()['id']
+    second = c.post('/api/portfolios', json={'name': 'Other price owner'}).json()['id']
+    payload = dict(trade_date='2024-01-02', settlement_date='2024-01-02', type='Buy',
+                   asset='QUOTE-TEST', broker='Example', quantity='1', price='10',
+                   asset_currency='USD', fx_rate='5')
+    asset_ids = []
+    for pid in (first, second):
+        assert c.post(f'/api/portfolios/{pid}/transactions', json=payload).status_code == 201
+        asset_ids.append(c.get(f'/api/portfolios/{pid}/overview').json()['assets'][0]['id'])
+    path = f'/api/portfolios/{first}/assets/{asset_ids[0]}/quote'
+    quote = {'date': date.today().isoformat(), 'close': '12', 'currency': 'USD'}
+    assert c.put(path, json=quote | {'currency': 'BRL'}).status_code == 422
+    assert c.put(path, json=quote).status_code == 200
+    calls = []
+
+    def offline(*args):
+        calls.append(args)
+        raise OSError('offline')
+
+    monkeypatch.setattr('src.market_prices.market_data.fetch_latest', offline)
+    response = c.get(path)
+    assert response.status_code == 200
+    assert response.json()['origin'] == 'user-defined'
+    assert not response.json()['stale']
+    assert calls == []
+    assert c.get(f'/api/portfolios/{second}/assets/{asset_ids[0]}/quote').status_code == 404
+    assert c.get(f'/api/portfolios/{second}/assets/{asset_ids[1]}/quote').status_code == 404
+    assert len(calls) == 1
 
 
 def test_legacy_import_is_atomic_and_repeatable(client):
@@ -77,6 +111,72 @@ def test_legacy_import_is_atomic_and_repeatable(client):
         assert session.scalar(select(func.count()).select_from(Transaction).where(Transaction.portfolio_id == pid)) == 10
         session.commit()
     assert len(c.get(f'/api/portfolios/{pid}/overview').json()['assets']) == 2
+
+
+def test_legacy_import_preserves_price_provenance(client, monkeypatch):
+    from datetime import date
+    from types import SimpleNamespace
+    from src.models import Asset, UserDefinedPrice
+    from src.schemas import QuoteInput
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Synthetic legacy import'}).json()['id']
+    monkeypatch.setattr('src.import_legacy.read_transactions', lambda path: ('a' * 64, []))
+    monkeypatch.setattr('src.import_legacy.read_assets', lambda path: [
+        (SimpleNamespace(ticker='SYNTHETIC'), [QuoteInput(date=date(2024, 1, 2), close='12')]),
+    ])
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        import_transactions(session, 'synthetic', pid, 'synthetic')
+        price = session.scalar(select(UserDefinedPrice).join(UserDefinedPrice.asset).where(
+            Asset.portfolio_id == pid,
+        ))
+        assert price.source == 'legacy'
+        assert price.retrieved_at is None
+
+
+@pytest.mark.parametrize('trade_today', [False, True])
+def test_refresh_reports_unavailable_latest_and_still_attempts_it(client, monkeypatch, trade_today):
+    from datetime import date
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Refresh failure'}).json()['id']
+    day = date.today().isoformat() if trade_today else '2024-01-02'
+    base = f'/api/portfolios/{pid}'
+    response = c.post(base + '/transactions', json=dict(
+        trade_date=day, settlement_date=day, type='Buy', asset='REFRESH-FAIL',
+        broker='Synthetic', quantity='1', price='10', asset_currency='BRL',
+    ))
+    assert response.status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    calls = []
+
+    def offline(*args):
+        calls.append(args)
+        raise OSError('offline')
+
+    monkeypatch.setattr('src.market_prices.market_data.fetch_history', offline)
+    monkeypatch.setattr('src.market_prices.market_data.fetch_latest', offline)
+    assert c.post(base + f'/assets/{aid}/refresh').status_code == 502
+    assert any(len(args) == 2 for args in calls)
+
+
+def test_latest_quote_keeps_exchange_date_after_postgres_reload(client):
+    from datetime import date, timedelta
+    from sqlalchemy import text
+    from src.market_prices import get_latest
+    from src.services import ensure_asset
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Quote timezone'}).json()['id']
+    now = datetime(2024, 1, 9, 1, tzinfo=timezone.utc)
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        session.execute(text("SET LOCAL TIME ZONE 'UTC'"))
+        asset = ensure_asset(session, pid, 'TIMEZONE-TEST', 'USD')
+        get_latest(session, asset, lambda *args: {
+            'price': Decimal('20'), 'currency': 'USD', 'retrieved_at': now,
+            'market_at': datetime(2024, 1, 8, 19, tzinfo=timezone(timedelta(hours=-5))),
+        }, now)
+        session.flush()
+        session.expire_all()
+        result = get_latest(session, asset, lambda *args: pytest.fail('fresh cache fetched'), now)
+        assert result.price.date == date(2024, 1, 8)
 
 
 def test_historical_rate_lookup_cache_and_backfill(client, monkeypatch):

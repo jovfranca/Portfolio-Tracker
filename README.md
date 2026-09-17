@@ -9,7 +9,8 @@ performance views are calculated from them.
 - Create and rename portfolios.
 - Create, edit, and delete buy/sell transactions.
 - Rebuild positions by asset, broker, and allocation class.
-- Store manual quotes or refresh daily history through Yahoo Finance.
+- Reuse shared daily Yahoo Finance history, cache latest quotes for 15 minutes,
+  and keep manual portfolio prices private.
 - View the legacy gain calculation as a table and chart.
 - Import the original transaction and quote pickle files through a local CLI.
 

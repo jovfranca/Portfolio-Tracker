@@ -255,6 +255,21 @@ válidas; boletins intradiários não são congelados como histórico definitivo
 No Yahoo, o dia corrente no fuso da série ainda pode mudar e só é armazenado
 depois que o dia termina. Até lá, a consulta usa a taxa anterior disponível.
 
+As cotações de ativos usam `MARKET_DATA_PROVIDER=yfinance` e
+`MARKET_QUOTE_TTL_MINUTES=15` por padrão. O histórico diário do provedor é
+compartilhado entre carteiras que usam o mesmo ticker e moeda. Intervalos já
+consultados, inclusive feriados e fins de semana sem pregão, não são baixados
+novamente. Cotações manuais continuam vinculadas somente ao ativo da carteira e
+têm precedência sobre o valor compartilhado na mesma data. `GET` e `PUT` em
+`/api/portfolios/{portfolio_id}/assets/{asset_id}/quote` consultam a cotação atual
+e registram uma cotação manual, respectivamente.
+
+A migração `0006` mantém as cotações existentes vinculadas ao ativo da carteira,
+inclusive preços zero e a fonte original (`manual`, `legacy` ou `yfinance`).
+O histórico Yahoo antigo usava preços ajustados e pode diferir entre carteiras;
+somente novas consultas verificadas alimentam a base compartilhada. Datas de
+consulta desconhecidas permanecem nulas, sem inventar cobertura de intervalos.
+
 Para o teste real de navegador, tenha Microsoft Edge instalado e PostgreSQL ativo.
 Compile o frontend; no primeiro terminal execute `scripts/start-browser-test.ps1`.
 Ele usa o banco separado `portfolio_tracker_e2e` na porta HTTP 8001. No segundo:
