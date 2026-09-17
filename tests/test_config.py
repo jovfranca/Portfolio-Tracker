@@ -1,6 +1,9 @@
 import pytest
 
-from src.config import allowed_origins, database_url, rate_fallback_days, rate_provider
+from src.config import (
+    allowed_origins, database_url, market_data_provider, quote_ttl, rate_fallback_days,
+    rate_provider,
+)
 
 
 def test_database_url_normalizes_postgresql_scheme(monkeypatch):
@@ -36,3 +39,17 @@ def test_rate_fallback_days_is_bounded(monkeypatch):
     monkeypatch.setenv('RATE_FALLBACK_DAYS', '0')
     with pytest.raises(ValueError, match='entre 1 e 31'):
         rate_fallback_days()
+
+
+def test_market_price_provider_and_quote_ttl(monkeypatch):
+    monkeypatch.delenv('MARKET_DATA_PROVIDER', raising=False)
+    monkeypatch.delenv('MARKET_QUOTE_TTL_MINUTES', raising=False)
+    assert market_data_provider() == 'yfinance'
+    assert quote_ttl().total_seconds() == 15 * 60
+    monkeypatch.setenv('MARKET_DATA_PROVIDER', 'unknown')
+    with pytest.raises(ValueError, match='não suportado'):
+        market_data_provider()
+    monkeypatch.setenv('MARKET_DATA_PROVIDER', 'yfinance')
+    monkeypatch.setenv('MARKET_QUOTE_TTL_MINUTES', '0')
+    with pytest.raises(ValueError, match='entre 1 e 1440'):
+        quote_ttl()

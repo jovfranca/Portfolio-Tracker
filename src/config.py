@@ -1,5 +1,6 @@
 """Environment-backed application configuration."""
 import os
+from datetime import timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,3 +50,20 @@ def rate_fallback_days():
     if not 1 <= value <= 31:
         raise ValueError('RATE_FALLBACK_DAYS deve estar entre 1 e 31.')
     return value
+
+
+def market_data_provider():
+    value = os.getenv('MARKET_DATA_PROVIDER', 'yfinance').strip().lower()
+    if value != 'yfinance':
+        raise ValueError(f'Provedor de cotações {value!r} não suportado.')
+    return value
+
+
+def quote_ttl():
+    try:
+        minutes = int(os.getenv('MARKET_QUOTE_TTL_MINUTES', '15'))
+    except ValueError as error:
+        raise ValueError('MARKET_QUOTE_TTL_MINUTES deve ser um inteiro.') from error
+    if not 1 <= minutes <= 1440:
+        raise ValueError('MARKET_QUOTE_TTL_MINUTES deve estar entre 1 e 1440.')
+    return timedelta(minutes=minutes)

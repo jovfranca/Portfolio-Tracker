@@ -1,10 +1,12 @@
 from datetime import datetime, time
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 from src.models import Portfolio, Asset, Transaction
 from src.domain import overview
+from src.market_prices import ensure_instrument, history_for_domain
 from src.rates import get_rates
 
 
@@ -26,12 +28,15 @@ def get_asset(session, portfolio_id, asset_id):
     return asset
 
 
-def ensure_asset(session, portfolio_id, ticker):
+def ensure_asset(session, portfolio_id, ticker, currency='BRL'):
     asset = session.scalar(select(Asset).where(Asset.portfolio_id == portfolio_id, Asset.ticker == ticker))
     if asset is None:
-        asset = Asset(portfolio_id=portfolio_id, ticker=ticker)
+        instrument = ensure_instrument(session, ticker, currency)
+        asset = Asset(portfolio_id=portfolio_id, ticker=ticker, instrument_id=instrument.id)
         session.add(asset)
         session.flush()
+    elif asset.instrument.currency != currency:
+        raise HTTPException(422, f'O ativo {ticker} já está registrado em {asset.instrument.currency}.')
     return asset
 
 
@@ -65,5 +70,9 @@ def get_overview(session, portfolio_id):
     transactions = list(session.scalars(select(Transaction).where(Transaction.portfolio_id == portfolio_id)
                                        .order_by(Transaction.trade_date, Transaction.id)))
     assets = list(session.scalars(select(Asset).where(Asset.portfolio_id == portfolio_id)
-                                 .options(selectinload(Asset.history))))
-    return overview(transactions, assets)
+                                 .options(joinedload(Asset.instrument))))
+    calculation_assets = [
+        SimpleNamespace(id=asset.id, ticker=asset.ticker, history=history_for_domain(session, asset))
+        for asset in assets
+    ]
+    return overview(transactions, calculation_assets)

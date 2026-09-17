@@ -5,34 +5,90 @@ import json
 import math
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from src.config import rate_provider
 
 
-def fetch_history(ticker, start):
+def fetch_history(ticker, currency, start, end):
+    """Fetch unadjusted daily closes for an inclusive, bounded range."""
     import yfinance as yf
-    frame = yf.Ticker(ticker).history(
-        start=start.isoformat(), end=(date.today() + timedelta(days=1)).isoformat(),
-        interval='1d', auto_adjust=True, timeout=15, raise_errors=True,
+    instrument = yf.Ticker(ticker)
+    frame = instrument.history(
+        start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
+        interval='1d', auto_adjust=False, timeout=15, raise_errors=True,
     )
-    if frame.empty:
-        raise ValueError('O provedor não retornou cotações para o ativo e período.')
+    metadata = instrument.get_history_metadata()
+    _verify_currency(metadata, currency)
+    exchange_timezone = _exchange_timezone(metadata)
+    retrieved_at = datetime.now(timezone.utc)
     rows = []
     for timestamp, row in frame.iterrows():
-        close = float(row['Close'])
-        if not math.isfinite(close) or close < 0:
+        trading_date = _trading_date(timestamp, exchange_timezone)
+        if not start <= trading_date <= end:
             continue
+        if trading_date >= retrieved_at.astimezone(exchange_timezone).date():
+            raise ValueError('O fechamento diário ainda não é final no fuso do mercado.')
+        close = float(row['Close'])
+        if not math.isfinite(close) or close <= 0:
+            raise ValueError('O provedor retornou um fechamento inválido.')
         dividends = float(row.get('Dividends', 0))
         splits = float(row.get('Stock Splits', 0))
         rows.append({
-            'date': timestamp.date(), 'close': close,
-            'dividends': dividends if math.isfinite(dividends) else 0,
-            'stock_splits': splits if math.isfinite(splits) else 0,
-            'source': 'yfinance',
+            'date': trading_date, 'price': Decimal(str(close)),
+            'dividends': Decimal(str(dividends)) if math.isfinite(dividends) else Decimal('0'),
+            'stock_splits': Decimal(str(splits)) if math.isfinite(splits) else Decimal('0'),
+            'currency': currency, 'source': 'yfinance', 'retrieved_at': retrieved_at,
         })
-    if not rows:
-        raise ValueError('Nenhuma cotação válida foi recebida.')
     return rows
+
+
+def _verify_currency(metadata, currency):
+    # Preserve case: Yahoo's GBp denotes pence, not GBP (pounds).
+    actual = metadata.get('currency')
+    if actual != currency:
+        raise ValueError(f'Provider currency {actual!r} does not match {currency!r}.')
+
+
+def _exchange_timezone(metadata):
+    name = metadata.get('exchangeTimezoneName')
+    if not name:
+        raise ValueError('O provedor não informou o fuso horário do mercado.')
+    try:
+        return ZoneInfo(name)
+    except Exception as error:
+        raise ValueError(f'O provedor informou um fuso horário inválido: {name!r}.') from error
+
+
+def _market_datetime(value, exchange_timezone):
+    if hasattr(value, 'to_pydatetime'):
+        value = value.to_pydatetime()
+    if not hasattr(value, 'date') or not hasattr(value, 'tzinfo'):
+        raise ValueError('O provedor não informou o horário da cotação regular.')
+    if value.tzinfo is None:
+        return value.replace(tzinfo=exchange_timezone)
+    return value.astimezone(exchange_timezone)
+
+
+def _trading_date(value, exchange_timezone):
+    return _market_datetime(value, exchange_timezone).date()
+
+
+def fetch_latest(ticker, currency):
+    """Fetch Yahoo's canonical regular-session price and market timestamp."""
+    import yfinance as yf
+    instrument = yf.Ticker(ticker)
+    metadata = instrument.get_history_metadata()
+    _verify_currency(metadata, currency)
+    exchange_timezone = _exchange_timezone(metadata)
+    price = float(metadata.get('regularMarketPrice', math.nan))
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError('O provedor não retornou uma cotação regular válida.')
+    market_at = _market_datetime(metadata.get('regularMarketTime'), exchange_timezone)
+    return {
+        'price': Decimal(str(price)), 'currency': currency, 'source': 'yfinance',
+        'market_at': market_at, 'retrieved_at': datetime.now(timezone.utc),
+    }
 
 
 def fetch_rates(currency, rate_type, start, end):

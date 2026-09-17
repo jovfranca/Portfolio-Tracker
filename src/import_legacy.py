@@ -5,10 +5,12 @@ import io
 import json
 import pickle
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from sqlalchemy import select
 from src.database import SessionLocal
-from src.models import Portfolio, Transaction, LegacyImport, AssetHistory
+from src.models import Portfolio, Transaction, LegacyImport
+from src.market_prices import save_user_price
 from src.schemas import TransactionInput, QuoteInput
 from src.services import get_portfolio, ensure_asset, get_overview, transaction_values
 
@@ -66,7 +68,9 @@ def read_assets(path):
         raise ValueError('Cache de ativos inválido.')
     result = []
     for asset in records:
-        quotes = [QuoteInput(date=index.date(), close=float(row['Close']),
+        quotes = [QuoteInput(
+                             date=index.date(),
+                             close=Decimal(str(float(row['Close']))).quantize(Decimal('0.000000000001')),
                              dividends=float(row['Dividends']), stock_splits=float(row['Stock Splits']))
                   for index, row in asset.history.iterrows()]
         result.append((asset, quotes))
@@ -122,7 +126,7 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
     if session.scalar(select(Transaction.id).where(Transaction.portfolio_id == portfolio_id).limit(1)):
         raise ValueError('Escolha uma carteira vazia para a migração inicial. Mesclar históricos exige conciliação.')
     for record in records:
-        ensure_asset(session, portfolio_id, record.asset)
+        ensure_asset(session, portfolio_id, record.asset, record.asset_currency)
         session.add(Transaction(
             portfolio_id=portfolio_id, **transaction_values(session, record)
         ))
@@ -132,7 +136,12 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
             for field in ['asset_class', 'sector', 'sub_sector']:
                 setattr(asset, field, getattr(old, field, '') or '')
             for quote in quotes:
-                session.add(AssetHistory(asset_id=asset.id, source='legacy', **quote.model_dump()))
+                stored = save_user_price(
+                    session, asset, quote.date, quote.close, quote.currency,
+                    quote.dividends, quote.stock_splits,
+                )
+                stored.source = 'legacy'
+                stored.retrieved_at = None
     session.flush()
     get_overview(session, portfolio_id)
     session.add(LegacyImport(portfolio_id=portfolio_id, digest=digest, records=len(records)))
