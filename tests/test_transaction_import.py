@@ -61,6 +61,30 @@ def test_preview_reports_each_invalid_row_without_saving():
     assert {error['field'] for error in result['rows'][0]['errors']} >= {'quantity'}
 
 
+@pytest.mark.parametrize('status', ['unresolved', 'ambiguous'])
+def test_preview_explicitly_rejects_unresolved_or_ambiguous_instruments(monkeypatch, status):
+    class EmptyResult:
+        def all(self):
+            return []
+
+    class Session:
+        def execute(self, _query):
+            return EmptyResult()
+
+    monkeypatch.setattr(
+        'src.transaction_import.resolve_instrument',
+        lambda *args, **kwargs: Obj(status=status, instrument=None),
+    )
+    result = preview_import(
+        Session(), 'unknown.csv',
+        csv_bytes('UNKNOWN,Example,Buy,2024-01-02,2024-01-03,1,10,BRL,1\n'),
+        portfolio_id=1,
+    )
+    assert not result['valid']
+    assert result['rows'][0]['instrument_resolution'] == status
+    assert result['rows'][0]['errors'][0]['field'] == 'asset'
+
+
 def test_xlsx_reader_accepts_required_columns():
     workbook = Workbook()
     sheet = workbook.active

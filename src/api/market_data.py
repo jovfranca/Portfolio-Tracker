@@ -10,6 +10,44 @@ from zoneinfo import ZoneInfo
 from src.config import rate_provider
 
 
+def search_instruments(query):
+    """Search Yahoo on demand; callers decide whether a result is selected."""
+    params = urlencode({'q': query, 'quotesCount': 20, 'newsCount': 0})
+    request = Request(
+        f'https://query1.finance.yahoo.com/v1/finance/search?{params}',
+        headers={'User-Agent': 'Portfolio-Tracker/1.0'},
+    )
+    with urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+    type_map = {
+        'EQUITY': 'STOCK', 'ETF': 'ETF', 'CRYPTOCURRENCY': 'CRYPTO',
+    }
+    results = []
+    for item in payload.get('quotes', []):
+        provider_symbol = item.get('symbol')
+        currency = item.get('currency')
+        if not provider_symbol:
+            continue
+        quote_type = str(item.get('quoteType', 'OTHER')).upper()
+        canonical_symbol = (
+            str(item.get('fromCurrency')).upper()
+            if quote_type == 'CRYPTOCURRENCY' and item.get('fromCurrency')
+            else provider_symbol.upper()
+        )
+        results.append({
+            'symbol': canonical_symbol,
+            'name': item.get('longname') or item.get('shortname') or provider_symbol,
+            'asset_type': type_map.get(quote_type, 'OTHER'),
+            'exchange': item.get('exchange'),
+            # Search metadata can omit currency; require explicit selection then.
+            'currency': currency.upper() if currency else '',
+            'provider': 'yfinance',
+            'provider_symbol': provider_symbol.upper(),
+            'provider_exchange': item.get('exchDisp') or item.get('exchange'),
+        })
+    return results
+
+
 def fetch_history(ticker, currency, start, end):
     """Fetch unadjusted daily closes for an inclusive, bounded range."""
     import yfinance as yf

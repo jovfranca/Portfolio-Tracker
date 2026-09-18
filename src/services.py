@@ -4,9 +4,10 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
-from src.models import Portfolio, Asset, Transaction
+from src.models import Portfolio, Asset, Instrument, Transaction
 from src.domain import overview
-from src.market_prices import ensure_instrument, history_for_domain
+from src.instruments import resolve_instrument
+from src.market_prices import history_for_domain
 from src.rates import get_rates
 
 
@@ -28,22 +29,46 @@ def get_asset(session, portfolio_id, asset_id):
     return asset
 
 
-def ensure_asset(session, portfolio_id, ticker, currency='BRL'):
-    asset = session.scalar(select(Asset).where(Asset.portfolio_id == portfolio_id, Asset.ticker == ticker))
+def require_instrument(session, identifier, currency, instrument_id=None):
+    resolution = resolve_instrument(
+        session, identifier, currency=currency, instrument_id=instrument_id,
+    )
+    if resolution.status == 'ambiguous':
+        raise HTTPException(422, f'O identificador {identifier} corresponde a mais de um instrumento.')
+    if resolution.status == 'unresolved':
+        raise HTTPException(
+            422,
+            f'O instrumento {identifier} não foi resolvido. Pesquise e selecione um instrumento antes de salvar.',
+        )
+    if resolution.instrument.currency != currency:
+        raise HTTPException(
+            422,
+            f'As cotações deste instrumento usam {resolution.instrument.currency}; '
+            'a moeda da transação deve coincidir. Conversão automática não é suportada.',
+        )
+    return resolution.instrument
+
+
+def ensure_asset(session, portfolio_id, instrument):
+    if not isinstance(instrument, Instrument):
+        raise TypeError('ensure_asset requires a canonical Instrument.')
+    asset = session.scalar(select(Asset).where(
+        Asset.portfolio_id == portfolio_id, Asset.instrument_id == instrument.id,
+    ))
     if asset is None:
-        instrument = ensure_instrument(session, ticker, currency)
-        asset = Asset(portfolio_id=portfolio_id, ticker=ticker, instrument_id=instrument.id)
+        asset = Asset(
+            portfolio_id=portfolio_id, ticker=instrument.symbol,
+            instrument_id=instrument.id,
+        )
         session.add(asset)
         session.flush()
-    elif asset.instrument.currency != currency:
-        raise HTTPException(422, f'O ativo {ticker} já está registrado em {asset.instrument.currency}.')
     return asset
 
 
-def ensure_asset_currency(session, portfolio_id, ticker, currency, exclude_id=None):
+def ensure_asset_currency(session, portfolio_id, instrument_id, currency, exclude_id=None):
     query = select(Transaction.asset_currency).where(
         Transaction.portfolio_id == portfolio_id,
-        Transaction.asset == ticker,
+        Transaction.instrument_id == instrument_id,
     )
     if exclude_id is not None:
         query = query.where(Transaction.id != exclude_id)
@@ -51,7 +76,7 @@ def ensure_asset_currency(session, portfolio_id, ticker, currency, exclude_id=No
     if existing is not None and existing != currency:
         raise HTTPException(
             422,
-            f'O ativo {ticker} já está registrado em {existing}; não misture moedas no mesmo ticker.',
+            f'O instrumento já está registrado em {existing}; não misture moedas na mesma posição.',
         )
 
 
@@ -72,7 +97,10 @@ def get_overview(session, portfolio_id):
     assets = list(session.scalars(select(Asset).where(Asset.portfolio_id == portfolio_id)
                                  .options(joinedload(Asset.instrument))))
     calculation_assets = [
-        SimpleNamespace(id=asset.id, ticker=asset.ticker, history=history_for_domain(session, asset))
+        SimpleNamespace(
+            id=asset.id, instrument_id=asset.instrument_id,
+            ticker=asset.instrument.symbol, history=history_for_domain(session, asset),
+        )
         for asset in assets
     ]
     return overview(transactions, calculation_assets)

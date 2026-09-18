@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api, apiFile, type ImportPreview } from './api'
+import InstrumentPicker from './InstrumentPicker'
 
 type Props = {
   portfolioId: number | null
@@ -85,6 +86,21 @@ function TransactionImporter({ portfolioId, busy, mutate }: Props) {
     {preview && <div className="import-preview">
       <p role="status"><strong>{preview.filename}</strong>: {preview.rows.filter(row => row.valid).length} válida(s), {preview.rows.filter(row => !row.valid).length} inválida(s).</p>
       {preview.already_imported && <p role="alert" className="negative">Este arquivo já foi importado para esta carteira.</p>}
+      {preview.rows.filter(row => row.data && ['unresolved', 'ambiguous'].includes(row.instrument_resolution ?? '')).map(row => <div key={row.row} className="panel">
+        <strong>Linha {row.row}: resolver {row.data!.asset} ({row.instrument_resolution})</strong>
+        <InstrumentPicker query={row.data!.asset} currency={row.data!.asset_currency} onSelect={async item => {
+          const data = await api<NonNullable<typeof row.data>>('/portfolios/' + portfolioId + '/transactions/import-resolve', 'POST', {
+            ...row.data, instrument_id: item.instrument_id,
+          })
+          setPreview(current => {
+            if (!current) return current
+            const rows = current.rows.map(value => value.row === row.row ? {
+              ...value, data, valid: true, errors: [], instrument_resolution: 'resolved' as const,
+            } : value)
+            return { ...current, rows, valid: rows.every(value => value.valid) }
+          })
+        }} />
+      </div>)}
       {!preview.valid && <div className="alert error" role="alert"><strong>Corrija as linhas abaixo e selecione o arquivo novamente.</strong>
         <div className="table-wrap"><table aria-label="Erros de importação"><thead><tr><th>Linha</th><th>Coluna</th><th>Erro informado pelo validador</th></tr></thead><tbody>
           {preview.rows.filter(row => !row.valid).flatMap(row => row.errors.map((item, index) => <tr key={row.row + ':' + index}><td>{row.row}</td><td>{columnName(item.field)}</td><td>{item.message === 'Field required' ? 'Campo obrigatório ausente ou vazio.' : item.message}</td></tr>))}

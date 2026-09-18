@@ -9,7 +9,7 @@ from src.database import Base
 from src.market_prices import get_history, get_latest, get_stored_history, save_user_price
 from src.models import (
     Asset, Instrument, LatestMarketQuote, MarketPrice, MarketPriceCoverage, Portfolio,
-    UserDefinedPrice,
+    ProviderInstrument, UserDefinedPrice,
 )
 
 
@@ -17,7 +17,8 @@ from src.models import (
 def market_session():
     engine = create_engine('sqlite://')
     for table in [
-        Portfolio.__table__, Instrument.__table__, Asset.__table__, MarketPrice.__table__,
+        Portfolio.__table__, Instrument.__table__, ProviderInstrument.__table__,
+        Asset.__table__, MarketPrice.__table__,
         MarketPriceCoverage.__table__, LatestMarketQuote.__table__, UserDefinedPrice.__table__,
     ]:
         table.create(engine)
@@ -27,6 +28,10 @@ def market_session():
         second = Portfolio(name='Second')
         session.add_all([instrument, first, second])
         session.flush()
+        session.add(ProviderInstrument(
+            instrument_id=instrument.id, provider='yfinance',
+            provider_symbol='TEST-PROVIDER', currency='USD', active=True,
+        ))
         session.add_all([
             Asset(portfolio_id=first.id, instrument_id=instrument.id, ticker='TEST'),
             Asset(portfolio_id=second.id, instrument_id=instrument.id, ticker='TEST'),
@@ -37,6 +42,10 @@ def market_session():
 
 def assets(session):
     return list(session.scalars(select(Asset).order_by(Asset.id)))
+
+
+def mapping(session):
+    return session.scalar(select(ProviderInstrument))
 
 
 def history_row(day, price='10'):
@@ -69,12 +78,12 @@ def test_history_fetches_only_uncovered_subranges(market_session):
     asset = assets(market_session)[0]
     market_session.add_all([
         MarketPriceCoverage(
-            instrument_id=asset.instrument_id, interval='1d', source='yfinance',
+            provider_instrument_id=mapping(market_session).id, interval='1d', source='yfinance',
             start_date=date(2024, 1, 1), end_date=date(2024, 1, 3),
             retrieved_at=datetime.now(timezone.utc),
         ),
         MarketPriceCoverage(
-            instrument_id=asset.instrument_id, interval='1d', source='yfinance',
+            provider_instrument_id=mapping(market_session).id, interval='1d', source='yfinance',
             start_date=date(2024, 1, 6), end_date=date(2024, 1, 7),
             retrieved_at=datetime.now(timezone.utc),
         ),
@@ -222,7 +231,7 @@ def test_daily_close_is_not_replaced_by_older_intraday_quote(market_session):
     day = date(2024, 1, 8)
     get_history(market_session, asset, day, day, lambda *args: [history_row(day, '20')])
     market_session.add(LatestMarketQuote(
-        instrument_id=asset.instrument_id, source='yfinance', currency='USD',
+        provider_instrument_id=mapping(market_session).id, source='yfinance', currency='USD',
         price=Decimal('10'), market_at=datetime(2024, 1, 8, 12, tzinfo=timezone.utc),
         retrieved_at=datetime(2024, 1, 8, 12, tzinfo=timezone.utc),
     ))
@@ -234,7 +243,7 @@ def test_daily_close_is_not_replaced_by_older_intraday_quote(market_session):
 def test_stored_dates_without_coverage_are_not_downloaded_again(market_session):
     from src.market_prices import _store_market_prices
     asset = assets(market_session)[0]
-    _store_market_prices(market_session, asset.instrument, [history_row(date(2024, 1, 8))])
+    _store_market_prices(market_session, mapping(market_session), [history_row(date(2024, 1, 8))])
     calls = []
     get_history(market_session, asset, date(2024, 1, 8), date(2024, 1, 9),
                 lambda symbol, currency, start, end: calls.append((start, end)) or [])

@@ -5,7 +5,7 @@ from src.database import Base
 
 class Asset(Base):
     __tablename__ = 'assets'
-    __table_args__ = (UniqueConstraint('portfolio_id', 'ticker'),)
+    __table_args__ = (UniqueConstraint('portfolio_id', 'instrument_id'),)
     id: Mapped[int] = mapped_column(primary_key=True)
     portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
     instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))

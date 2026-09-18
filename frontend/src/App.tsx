@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric } from './api'
 import TransactionImportPage from './TransactionImportPage'
+import InstrumentPicker from './InstrumentPicker'
 
 const tabPaths: Record<string, string> = { 'Posições': '/', 'Transações': '/transactions', 'Cotações': '/quotes', 'Desempenho': '/performance' }
 const currentPath = () => window.location.hash.slice(1) || '/'
@@ -12,9 +13,11 @@ const localDate = () => {
 }
 const dateLabel = (value: string | null) => value ? value.slice(0, 10).split('-').reverse().join('/') : 'Sem cotação'
 const message = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível concluir.'
-type Draft = Omit<Transaction, 'id' | 'portfolio_id' | 'fx_rate'> & { fx_rate: Numeric | '' }
+type Draft = Omit<Transaction, 'id' | 'portfolio_id' | 'fx_rate' | 'instrument_id'> & {
+  instrument_id: number | null; fx_rate: Numeric | ''
+}
 const emptyDraft = (): Draft => ({ trade_date: localDate().slice(0, 10), settlement_date: localDate().slice(0, 10),
-  type: 'Buy', asset: '', broker: '', allocation_class: '', asset_currency: 'BRL', fx_rate: '',
+  type: 'Buy', asset: '', instrument_id: null, broker: '', allocation_class: '', asset_currency: 'BRL', fx_rate: '',
   quantity: 1, price: 0, brokerage_fee: 0, other_fees: 0, notes: '' })
 
 export default function App() {
@@ -144,7 +147,11 @@ export default function App() {
               <label>Operação<select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value as 'Buy' | 'Sell' })}><option value="Buy">Compra</option><option value="Sell">Venda</option></select></label>
               <label>Data da negociação<input required type="date" max={localDate().slice(0, 10)} value={draft.trade_date} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></label>
               <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
-              <label>Ticker<input required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value })} placeholder="Ex.: PETR4.SA" /></label>
+              <label>Instrumento<input required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
+              <InstrumentPicker key={draft.asset} query={draft.asset} currency={draft.asset_currency} onSelect={item => setDraft(current => ({ ...current,
+                instrument_id: item.instrument_id, asset: item.symbol, asset_currency: item.currency,
+                fx_rate: item.currency === current.asset_currency ? current.fx_rate : '',
+              }))} />
               <label>Corretora<input required maxLength={120} value={draft.broker} onChange={e => setDraft({ ...draft, broker: e.target.value })} /></label>
               <label>Classe de alocação<input required maxLength={120} value={draft.allocation_class} onChange={e => setDraft({ ...draft, allocation_class: e.target.value })} placeholder="Ex.: Ações Brasil" /></label>
               <label>Moeda do ativo<input required maxLength={3} pattern="[A-Za-z]{3}" value={draft.asset_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, asset_currency: currency, fx_rate: currency === draft.asset_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
@@ -167,7 +174,7 @@ export default function App() {
           {tab === 'Posições' && <section className="panel">
             <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição para cada ativo, corretora e classe.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo, corretora ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
             {!overview.positions.length ? <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
-              <div className="table-wrap"><table><thead><tr><th>Ativo / classe</th><th>Corretora</th><th>Quantidade</th><th>Preço médio</th><th>Cotação</th><th>Valor atual</th><th>Ganho histórico</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={[p.asset, p.broker, p.allocation_class].join('|')}>
+              <div className="table-wrap"><table><thead><tr><th>Ativo / classe</th><th>Corretora</th><th>Quantidade</th><th>Preço médio</th><th>Cotação</th><th>Valor atual</th><th>Ganho histórico</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={[p.asset_id, p.broker, p.allocation_class].join('|')}>
                 <td><strong>{p.asset}</strong><small>{p.allocation_class}</small></td><td>{p.broker}</td><td>{fmt(p.quantity, 6)}</td><td>{fmt(p.average_cost, 4)}</td><td>{fmt(p.current_price)}<small>{dateLabel(p.price_date)}</small></td><td>{fmt(p.total_value)}</td>
                 <td className={(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{fmt(p.current_total_gain)}<small>{fmt(p.current_accumulated_profitability)}%{p.history_behind_transactions ? ' · histórico incompleto' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
@@ -228,7 +235,7 @@ function PerformancePanel({ portfolioId, overview }: { portfolioId: number; over
   useEffect(() => {
     if (index >= overview.positions.length) setIndex(0)
   }, [index, overview.positions.length])
-  const assetId = overview.assets.find(a => a.ticker === p?.asset)?.id
+  const assetId = p?.asset_id
   useEffect(() => {
     setRows([]); setError('')
     if (!p || !assetId) return

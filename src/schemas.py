@@ -81,16 +81,42 @@ class QuoteInput(Input):
         return value
 
 
+class TransactionSelectionInput(TransactionInput):
+    instrument_id: int | None = Field(default=None, gt=0)
+
+
 class TransactionOutput(TransactionInput):
     model_config = ConfigDict(from_attributes=True)
     id: int
     portfolio_id: int
+    instrument_id: int
+
+
+class InstrumentSelection(Input):
+    symbol: Annotated[str, Field(min_length=1, max_length=40)]
+    name: Annotated[str, Field(max_length=200)] = ''
+    asset_type: Literal['STOCK', 'ETF', 'CRYPTO', 'OTHER'] = 'OTHER'
+    exchange: Annotated[str, Field(max_length=40)] | None = None
+    currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')]
+    status: Literal['ACTIVE', 'INACTIVE', 'DELISTED'] = 'ACTIVE'
+    isin: Annotated[str, Field(min_length=12, max_length=12)] | None = None
+    provider: Annotated[str, Field(max_length=80)] | None = None
+    provider_symbol: Annotated[str, Field(max_length=80)] | None = None
+    provider_exchange: Annotated[str, Field(max_length=80)] | None = None
+    aliases: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
+        default_factory=list, max_length=20
+    )
+
+    @field_validator('symbol', 'currency', 'status', 'asset_type')
+    @classmethod
+    def normalize_instrument_codes(cls, value):
+        return value.upper()
 
 
 class TransactionImportConfirm(Input):
     digest: Annotated[str, Field(pattern=r'^[a-f0-9]{64}$')]
     filename: Annotated[str, Field(min_length=1, max_length=255)]
-    rows: Annotated[list[TransactionInput], Field(min_length=1, max_length=5000)]
+    rows: Annotated[list[TransactionSelectionInput], Field(min_length=1, max_length=5000)]
 
 
 class RateBackfillInput(Input):

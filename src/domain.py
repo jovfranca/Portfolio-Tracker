@@ -108,18 +108,24 @@ def historical_profitability(transactions, history):
 
 def overview(transactions, assets):
     groups = defaultdict(list)
-    assets_by_ticker = {asset.ticker: asset for asset in assets}
+    assets_by_identity = {
+        getattr(asset, 'instrument_id', ('legacy', asset.ticker)): asset for asset in assets
+    }
     for transaction in ordered(transactions):
+        identity = getattr(transaction, 'instrument_id', None)
+        if identity is None:
+            identity = ('legacy', transaction.asset)
         groups[(
-            transaction.asset, transaction.broker, transaction.allocation_class,
+            identity, transaction.broker, transaction.allocation_class,
             getattr(transaction, 'asset_currency', 'BRL'),
         )].append(transaction)
 
     positions = []
-    for (ticker, broker, allocation, currency), position_transactions in sorted(
-        groups.items(), key=lambda item: (item[0][2], item[0][0], item[0][1])
+    for (identity, broker, allocation, currency), position_transactions in sorted(
+        groups.items(), key=lambda item: (item[0][2], str(item[0][0]), item[0][1])
     ):
-        asset = assets_by_ticker.get(ticker)
+        asset = assets_by_identity.get(identity)
+        ticker = asset.ticker if asset else position_transactions[0].asset
         quotes = asset.history if asset else []
         average, quantity = cost_and_quantity(position_transactions)
         latest = max(quotes, key=lambda quote: quote.date) if quotes else None
@@ -136,6 +142,7 @@ def overview(transactions, assets):
         )
         positions.append({
             **asdict(position),
+            'asset_id': asset.id if asset else None,
             'price_date': latest.date if latest else None,
             'gain_date': latest.date if last else None,
             'history_behind_transactions': bool(
@@ -144,11 +151,19 @@ def overview(transactions, assets):
         })
 
     asset_rows = []
-    for ticker in sorted({transaction.asset for transaction in transactions}):
-        asset_transactions = [transaction for transaction in transactions if transaction.asset == ticker]
+    identities = {
+        getattr(transaction, 'instrument_id', None) or ('legacy', transaction.asset)
+        for transaction in transactions
+    }
+    for identity in sorted(identities, key=str):
+        asset_transactions = [
+            transaction for transaction in transactions
+            if (getattr(transaction, 'instrument_id', None) or ('legacy', transaction.asset)) == identity
+        ]
         currency = getattr(asset_transactions[0], 'asset_currency', 'BRL')
         average, quantity = cost_and_quantity(asset_transactions)
-        asset = assets_by_ticker.get(ticker)
+        asset = assets_by_identity.get(identity)
+        ticker = asset.ticker if asset else asset_transactions[0].asset
         latest = max(asset.history, key=lambda quote: quote.date) if asset and asset.history else None
         asset_rows.append({
             'id': asset.id if asset else None,

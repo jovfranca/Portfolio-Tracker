@@ -2,12 +2,19 @@ export type Portfolio = { id: number; name: string }
 export type Numeric = number | string
 export type Transaction = {
   id: number; portfolio_id: number; trade_date: string; settlement_date: string;
+  instrument_id: number;
   type: 'Buy' | 'Sell'; asset: string; broker: string; allocation_class: string;
   asset_currency: string; fx_rate: Numeric | null; quantity: Numeric;
   price: Numeric; brokerage_fee: Numeric; other_fees: Numeric; notes: string
 }
+export type InstrumentSearchResult = {
+  instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'OTHER';
+  exchange: string | null; currency: string; status: 'ACTIVE' | 'INACTIVE' | 'DELISTED';
+  provider: string | null; provider_symbol: string | null; provider_exchange?: string | null
+}
 export type ImportPreviewRow = {
-  row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id'>;
+  row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id' | 'instrument_id'> & { instrument_id?: number | null };
+  instrument_resolution?: 'resolved' | 'unresolved' | 'ambiguous' | 'not_requested';
   errors: { field: string; message: string }[]
 }
 export type ImportPreview = {
@@ -15,6 +22,7 @@ export type ImportPreview = {
   rows: ImportPreviewRow[]
 }
 export type Position = {
+  asset_id: number | null;
   asset: string; broker: string; allocation_class: string; asset_currency: string; quantity: number;
   average_cost: number; current_price: number | null; total_value: number | null;
   current_total_gain: number | null; current_accumulated_profitability: number | null;

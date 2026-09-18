@@ -8,8 +8,10 @@ from sqlalchemy import select
 
 from src.api import market_data
 from src.config import market_data_provider, quote_ttl
+from src.instruments import provider_mapping
 from src.models import (
-    Instrument, LatestMarketQuote, MarketPrice, MarketPriceCoverage, UserDefinedPrice,
+    LatestMarketQuote, MarketPrice, MarketPriceCoverage, UserDefinedPrice,
+    ProviderInstrument,
 )
 
 
@@ -44,18 +46,6 @@ class HistoricalPriceResult:
     @property
     def complete(self):
         return not self.missing_ranges
-
-
-def ensure_instrument(session, symbol, currency):
-    symbol, currency = symbol.upper(), currency.upper()
-    instrument = session.scalar(select(Instrument).where(
-        Instrument.symbol == symbol, Instrument.currency == currency,
-    ))
-    if instrument is None:
-        instrument = Instrument(symbol=symbol, currency=currency)
-        session.add(instrument)
-        session.flush()
-    return instrument
 
 
 def _utc(value):
@@ -95,24 +85,30 @@ def _missing_ranges(start, end, coverage):
 
 
 def _stored_history(session, asset, start=None, end=None):
-    shared_query = select(MarketPrice).where(
-        MarketPrice.instrument_id == asset.instrument_id,
+    # Mapping activity controls network access, never ownership of stored history.
+    shared_query = select(MarketPrice).join(ProviderInstrument).where(
+        ProviderInstrument.instrument_id == asset.instrument_id,
+        ProviderInstrument.currency == asset.instrument.currency,
+        MarketPrice.currency == asset.instrument.currency,
         MarketPrice.interval == '1d',
     )
     manual_query = select(UserDefinedPrice).where(UserDefinedPrice.asset_id == asset.id)
     if start is not None:
-        shared_query = shared_query.where(MarketPrice.reference_at >= _daily_reference(start))
+        if shared_query is not None:
+            shared_query = shared_query.where(MarketPrice.reference_at >= _daily_reference(start))
         manual_query = manual_query.where(UserDefinedPrice.reference_date >= start)
     if end is not None:
-        shared_query = shared_query.where(
-            MarketPrice.reference_at < _daily_reference(end + timedelta(days=1))
-        )
+        if shared_query is not None:
+            shared_query = shared_query.where(
+                MarketPrice.reference_at < _daily_reference(end + timedelta(days=1))
+            )
         manual_query = manual_query.where(UserDefinedPrice.reference_date <= end)
 
     by_date = {}
-    for row in session.scalars(shared_query.order_by(
+    shared_rows = session.scalars(shared_query.order_by(
         MarketPrice.reference_at, MarketPrice.retrieved_at
-    )):
+    )) if shared_query is not None else []
+    for row in shared_rows:
         reference_date = _reference_date(row.reference_at)
         current = by_date.get(reference_date)
         if current is not None and row.source != market_data_provider():
@@ -168,7 +164,7 @@ def save_user_price(
     return existing
 
 
-def _store_market_prices(session, instrument, rows):
+def _store_market_prices(session, mapping, rows):
     inserted = 0
     for values in rows:
         reference_at = values.get('reference_at')
@@ -176,15 +172,14 @@ def _store_market_prices(session, instrument, rows):
             reference_at = _daily_reference(values['date'])
         source = values.get('source', market_data_provider())
         existing = session.scalar(select(MarketPrice.id).where(
-            MarketPrice.instrument_id == instrument.id,
+            MarketPrice.provider_instrument_id == mapping.id,
             MarketPrice.interval == '1d',
             MarketPrice.reference_at == reference_at,
-            MarketPrice.source == source,
         ))
         if existing is not None:
             continue
         session.add(MarketPrice(
-            instrument_id=instrument.id,
+            provider_instrument_id=mapping.id,
             interval='1d',
             reference_at=reference_at,
             price=values.get('price', values.get('close')),
@@ -192,7 +187,7 @@ def _store_market_prices(session, instrument, rows):
             volume=values.get('volume'),
             dividends=values.get('dividends', 0),
             stock_splits=values.get('stock_splits', 0),
-            currency=values.get('currency', instrument.currency),
+            currency=values.get('currency', mapping.currency),
             source=source,
             retrieved_at=values.get('retrieved_at', datetime.now(timezone.utc)),
         ))
@@ -216,14 +211,21 @@ def get_history(session, asset, start, end, fetcher=None):
     if end >= date.today():
         raise ValueError('O histórico diário deve terminar antes da data atual.')
     source = market_data_provider()
+    try:
+        mapping = provider_mapping(
+            session, asset.instrument, provider=source, currency=asset.instrument.currency,
+        )
+    except ValueError:
+        return HistoricalPriceResult(
+            _stored_history(session, asset, start, end), [(start, end)],
+        )
     coverage = list(session.scalars(select(MarketPriceCoverage).where(
-        MarketPriceCoverage.instrument_id == asset.instrument_id,
+        MarketPriceCoverage.provider_instrument_id == mapping.id,
         MarketPriceCoverage.interval == '1d',
-        MarketPriceCoverage.source == source,
     )))
     for row in session.scalars(select(MarketPrice).where(
-        MarketPrice.instrument_id == asset.instrument_id,
-        MarketPrice.interval == '1d', MarketPrice.source == source,
+        MarketPrice.provider_instrument_id == mapping.id,
+        MarketPrice.interval == '1d',
         MarketPrice.reference_at >= _daily_reference(start),
         MarketPrice.reference_at < _daily_reference(end + timedelta(days=1)),
     )):
@@ -240,19 +242,19 @@ def get_history(session, asset, start, end, fetcher=None):
     missing = []
     for gap_start, gap_end in gaps:
         try:
-            rows = fetcher(asset.instrument.symbol, asset.instrument.currency, gap_start, gap_end)
+            rows = fetcher(mapping.provider_symbol, mapping.currency, gap_start, gap_end)
             rows = list(rows)
             for values in rows:
-                _validate_provider_price(values, asset.instrument.currency)
+                _validate_provider_price(values, mapping.currency)
                 day = values.get('date') or values['reference_at'].date()
                 if not gap_start <= day <= gap_end:
                     raise ValueError('Provider date outside requested range.')
         except Exception:
             missing.append((gap_start, gap_end))
             continue
-        _store_market_prices(session, asset.instrument, rows)
+        _store_market_prices(session, mapping, rows)
         session.add(MarketPriceCoverage(
-            instrument_id=asset.instrument_id, interval='1d', source=source,
+            provider_instrument_id=mapping.id, interval='1d', source=source,
             start_date=gap_start, end_date=gap_end,
             retrieved_at=datetime.now(timezone.utc),
         ))
@@ -276,9 +278,16 @@ def get_latest(session, asset, fetcher=None, now=None):
     if local and local[-1].date == local_date and local[-1].origin == 'user-defined':
         return LatestPriceResult(local[-1])
     source = market_data_provider()
+    try:
+        mapping = provider_mapping(
+            session, asset.instrument, provider=source, currency=asset.instrument.currency,
+        )
+    except ValueError:
+        local = history_for_domain(session, asset)
+        local = [row for row in local if row.date <= local_date]
+        return LatestPriceResult(local[-1] if local else None, True)
     cached = session.scalar(select(LatestMarketQuote).where(
-        LatestMarketQuote.instrument_id == asset.instrument_id,
-        LatestMarketQuote.source == source,
+        LatestMarketQuote.provider_instrument_id == mapping.id,
     ))
     if cached is not None and cached.reference_date is not None and now - _utc(cached.retrieved_at) <= quote_ttl():
         provider_price = _as_resolved(cached)
@@ -286,16 +295,16 @@ def get_latest(session, asset, fetcher=None, now=None):
         provider_price = _as_resolved(cached) if cached is not None else None
         fetcher = fetcher or market_data.fetch_latest
         try:
-            values = fetcher(asset.instrument.symbol, asset.instrument.currency)
-            _validate_provider_price(values, asset.instrument.currency)
+            values = fetcher(mapping.provider_symbol, mapping.currency)
+            _validate_provider_price(values, mapping.currency)
         except Exception:
             candidates = local + ([provider_price] if provider_price else [])
             return LatestPriceResult(max(candidates, key=lambda row: row.date) if candidates else None, True)
         if cached is None:
-            cached = LatestMarketQuote(instrument_id=asset.instrument_id, source=source)
+            cached = LatestMarketQuote(provider_instrument_id=mapping.id, source=source)
             session.add(cached)
         cached.price = values['price']
-        cached.currency = values.get('currency', asset.instrument.currency)
+        cached.currency = values.get('currency', mapping.currency)
         cached.market_at = values.get('market_at')
         cached.retrieved_at = values.get('retrieved_at', now)
         # TIMESTAMPTZ retains the instant but discards the provider's timezone.
@@ -313,11 +322,12 @@ def get_latest(session, asset, fetcher=None, now=None):
 def history_for_domain(session, asset):
     """Provide the small quote shape expected by the pure calculation layer."""
     prices = _stored_history(session, asset)
-    cached = session.scalar(select(LatestMarketQuote).where(
-        LatestMarketQuote.instrument_id == asset.instrument_id,
-        LatestMarketQuote.source == market_data_provider(),
-    ))
-    if cached is not None:
+    cached_quotes = session.scalars(select(LatestMarketQuote).join(ProviderInstrument).where(
+        ProviderInstrument.instrument_id == asset.instrument_id,
+        ProviderInstrument.currency == asset.instrument.currency,
+        LatestMarketQuote.currency == asset.instrument.currency,
+    ).order_by(LatestMarketQuote.retrieved_at.desc()))
+    for cached in cached_quotes:
         quote = _as_resolved(cached)
         by_date = {row.date: row for row in prices}
         current = by_date.get(quote.date)

@@ -1,7 +1,11 @@
 import { test, expect } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, request }) => {
+  for (const [symbol, currency] of [['IMPORTTEST', 'USD'], ['FICTICIO-BR', 'BRL'], ['FICTICIO-US', 'USD']]) {
+    const response = await request.post('/api/instruments', { data: { symbol, currency, provider_symbol: symbol } })
+    expect(response.ok()).toBeTruthy()
+  }
   await page.goto('/')
   await page.getByRole('button', { name: '+ Carteira', exact: true }).click()
   await page.getByLabel('Nome da carteira', { exact: true }).fill('Import test ' + Date.now())
