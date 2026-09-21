@@ -108,6 +108,7 @@ def historical_profitability(transactions, history):
 
 def overview(transactions, assets):
     groups = defaultdict(list)
+    accounting_currencies = {}
     assets_by_identity = {
         getattr(asset, 'instrument_id', ('legacy', asset.ticker)): asset for asset in assets
     }
@@ -115,15 +116,19 @@ def overview(transactions, assets):
         identity = getattr(transaction, 'instrument_id', None)
         if identity is None:
             identity = ('legacy', transaction.asset)
+        currency = getattr(transaction, 'asset_currency', 'BRL')
+        previous_currency = accounting_currencies.setdefault(identity, currency)
+        if previous_currency != currency:
+            raise ValueError('Mixed transaction currencies for canonical instrument.')
         groups[(
             identity, transaction.broker, transaction.allocation_class,
-            getattr(transaction, 'asset_currency', 'BRL'),
         )].append(transaction)
 
     positions = []
-    for (identity, broker, allocation, currency), position_transactions in sorted(
+    for (identity, broker, allocation), position_transactions in sorted(
         groups.items(), key=lambda item: (item[0][2], str(item[0][0]), item[0][1])
     ):
+        currency = accounting_currencies[identity]
         asset = assets_by_identity.get(identity)
         ticker = asset.ticker if asset else position_transactions[0].asset
         quotes = asset.history if asset else []

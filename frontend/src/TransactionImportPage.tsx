@@ -88,7 +88,7 @@ function TransactionImporter({ portfolioId, busy, mutate }: Props) {
       {preview.already_imported && <p role="alert" className="negative">Este arquivo já foi importado para esta carteira.</p>}
       {preview.rows.filter(row => row.data && ['unresolved', 'ambiguous'].includes(row.instrument_resolution ?? '')).map(row => <div key={row.row} className="panel">
         <strong>Linha {row.row}: resolver {row.data!.asset} ({row.instrument_resolution})</strong>
-        <InstrumentPicker query={row.data!.asset} currency={row.data!.asset_currency} onSelect={async item => {
+        <InstrumentPicker query={row.data!.asset} onSelect={async item => {
           const data = await api<NonNullable<typeof row.data>>('/portfolios/' + portfolioId + '/transactions/import-resolve', 'POST', {
             ...row.data, instrument_id: item.instrument_id,
           })

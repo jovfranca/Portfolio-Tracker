@@ -32,7 +32,7 @@ def search_instruments(query):
         canonical_symbol = (
             str(item.get('fromCurrency')).upper()
             if quote_type == 'CRYPTOCURRENCY' and item.get('fromCurrency')
-            else provider_symbol.upper()
+            else '' if quote_type == 'CRYPTOCURRENCY' else provider_symbol.upper()
         )
         results.append({
             'symbol': canonical_symbol,
@@ -40,7 +40,8 @@ def search_instruments(query):
             'asset_type': type_map.get(quote_type, 'OTHER'),
             'exchange': item.get('exchange'),
             # Search metadata can omit currency; require explicit selection then.
-            'currency': currency.upper() if currency else '',
+            'currency': currency.upper() if currency and quote_type in ('EQUITY', 'ETF') else None,
+            'quote_currency': currency.upper() if currency else None,
             'provider': 'yfinance',
             'provider_symbol': provider_symbol.upper(),
             'provider_exchange': item.get('exchDisp') or item.get('exchange'),

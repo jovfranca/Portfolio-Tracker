@@ -38,6 +38,8 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
+  const [nativeCurrency, setNativeCurrency] = useState<string | null>(null)
+  const lockedCurrency = draft.instrument_id ? transactions.find(t => t.instrument_id === draft.instrument_id)?.asset_currency ?? nativeCurrency : null
   const [editing, setEditing] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [portfolioName, setPortfolioName] = useState('')
@@ -148,13 +150,18 @@ export default function App() {
               <label>Data da negociação<input required type="date" max={localDate().slice(0, 10)} value={draft.trade_date} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></label>
               <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
               <label>Instrumento<input required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
-              <InstrumentPicker key={draft.asset} query={draft.asset} currency={draft.asset_currency} onSelect={item => setDraft(current => ({ ...current,
-                instrument_id: item.instrument_id, asset: item.symbol, asset_currency: item.currency,
-                fx_rate: item.currency === current.asset_currency ? current.fx_rate : '',
-              }))} />
+              <InstrumentPicker query={draft.asset} onSelect={item => {
+                const fixed = ['STOCK', 'ETF'].includes(item.asset_type) ? item.currency : null
+                setNativeCurrency(fixed)
+                setDraft(current => {
+                  const currency = transactions.find(t => t.instrument_id === item.instrument_id)?.asset_currency ?? fixed ?? current.asset_currency
+                  return { ...current, instrument_id: item.instrument_id, asset: item.symbol, asset_currency: currency,
+                    fx_rate: currency === current.asset_currency ? current.fx_rate : '' }
+                })
+              }} />
               <label>Corretora<input required maxLength={120} value={draft.broker} onChange={e => setDraft({ ...draft, broker: e.target.value })} /></label>
               <label>Classe de alocação<input required maxLength={120} value={draft.allocation_class} onChange={e => setDraft({ ...draft, allocation_class: e.target.value })} placeholder="Ex.: Ações Brasil" /></label>
-              <label>Moeda do ativo<input required maxLength={3} pattern="[A-Za-z]{3}" value={draft.asset_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, asset_currency: currency, fx_rate: currency === draft.asset_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
+              <label>Moeda da transação<input disabled={!!lockedCurrency} required maxLength={3} pattern="[A-Za-z]{3}" value={draft.asset_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, asset_currency: currency, fx_rate: currency === draft.asset_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
               <label>Taxa FX<input type="number" min="0.000000000001" step="any" value={draft.fx_rate} disabled={draft.asset_currency === 'BRL'} onChange={e => setDraft({ ...draft, fx_rate: e.target.value })} placeholder={draft.asset_currency === 'BRL' ? '1' : 'Automática'} /></label>
               {([['quantity', 'Quantidade'], ['price', 'Preço unitário'], ['brokerage_fee', 'Corretagem'], ['other_fees', 'Outras taxas']] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min={key === 'quantity' ? '0.000000000001' : '0'} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value } as Draft)} /></label>)}
               <label className="wide">Observações<input maxLength={5000} value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></label>

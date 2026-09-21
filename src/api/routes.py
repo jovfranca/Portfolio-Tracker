@@ -4,13 +4,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.database import get_session
-from src.config import market_data_provider
+from src.database import Base, get_session
 from src.domain import historical_profitability
-from src.models import Portfolio, ProviderInstrument, Transaction, TransactionImport
+from src.models import Portfolio, Transaction, TransactionImport
 from src.instruments import add_alias, create_instrument, search_instruments
 from src.market_prices import get_history, get_latest, get_stored_history, save_user_price
 from src.rates import RateUnavailable, backfill_rates, get_rates
@@ -32,8 +31,9 @@ DB = Annotated[Session, Depends(get_session)]
 
 @router.get('/health')
 def health(session: DB):
-    session.execute(text('SELECT 1'))
-    session.execute(select(Portfolio.id).limit(1))
+    # Verify mapped columns as well as connectivity, without reading user data.
+    for table in Base.metadata.sorted_tables:
+        session.execute(select(table).limit(0))
     return {'status': 'ok', 'database': 'postgresql'}
 
 
@@ -62,32 +62,26 @@ def rename_portfolio(portfolio_id: int, payload: PortfolioInput, session: DB):
 
 
 @router.get('/instruments/search')
-def instrument_search(q: str, session: DB):
+def instrument_search(q: str, session: DB, category: str = 'ALL'):
     if not q.strip():
         raise HTTPException(422, 'Informe um símbolo ou nome para pesquisar.')
-    return search_instruments(session, q)
+    if category not in {'ALL', 'STOCK', 'ETF', 'CRYPTO', 'OTHER'}:
+        raise HTTPException(422, 'Unknown instrument category.')
+    return search_instruments(session, q, category=category)
 
 
 @router.post('/instruments', status_code=201)
 def select_instrument(payload: InstrumentSelection, session: DB):
-    provider = payload.provider or market_data_provider()
-    if payload.provider_symbol:
-        existing = session.scalar(select(ProviderInstrument).where(
-            ProviderInstrument.provider == provider,
-            ProviderInstrument.provider_symbol == payload.provider_symbol.upper(),
-            ProviderInstrument.currency == payload.currency,
-        ))
-        if existing is not None:
-            for alias in payload.aliases:
-                add_alias(session, existing.instrument, alias, 'selection')
-            session.commit()
-            return {'id': existing.instrument_id}
     values = payload.model_dump()
-    values['provider'] = provider
+    confirmed = values.pop('provider_currency_confirmed')
+    if payload.provider_symbol and not confirmed:
+        raise HTTPException(422, 'Confirme explicitamente a moeda da cotação no provedor antes de salvar o mapeamento.')
     values['alias_source'] = 'selection'
     instrument = create_instrument(session, **values)
     session.commit()
-    return {'id': instrument.id}
+    return {'id': instrument.id, 'symbol': instrument.symbol, 'name': instrument.name,
+            'currency': instrument.currency, 'asset_type': instrument.asset_type,
+            'exchange': instrument.exchange, 'status': instrument.status}
 
 
 @router.get('/portfolios/{portfolio_id}/overview')
@@ -157,7 +151,7 @@ def edit_transaction(
     )
     add_alias(session, instrument, payload.asset, 'manual-entry')
     ensure_asset_currency(
-        session, portfolio_id, instrument.id, payload.asset_currency, transaction_id
+        session, portfolio_id, instrument.id, payload.asset_currency
     )
     ensure_asset(session, portfolio_id, instrument)
     values = transaction_values(session, payload)

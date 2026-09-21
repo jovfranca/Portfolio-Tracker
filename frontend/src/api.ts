@@ -9,7 +9,9 @@ export type Transaction = {
 }
 export type InstrumentSearchResult = {
   instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'OTHER';
-  exchange: string | null; currency: string; status: 'ACTIVE' | 'INACTIVE' | 'DELISTED';
+  exchange: string | null; currency: string | null; status: 'ACTIVE' | 'INACTIVE' | 'DELISTED';
+  quote_currency?: string | null;
+  quote_currencies?: string[];
   provider: string | null; provider_symbol: string | null; provider_exchange?: string | null
 }
 export type ImportPreviewRow = {

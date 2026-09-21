@@ -22,6 +22,9 @@ def market_session():
         MarketPriceCoverage.__table__, LatestMarketQuote.__table__, UserDefinedPrice.__table__,
     ]:
         table.create(engine)
+    from sqlalchemy import text
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE transactions (id integer, instrument_id integer, asset_currency text, portfolio_id integer)'))
     with Session(engine) as session:
         instrument = Instrument(symbol='TEST', currency='USD')
         first = Portfolio(name='First')
@@ -30,7 +33,7 @@ def market_session():
         session.flush()
         session.add(ProviderInstrument(
             instrument_id=instrument.id, provider='yfinance',
-            provider_symbol='TEST-PROVIDER', currency='USD', active=True,
+            provider_symbol='TEST-PROVIDER', quote_currency='USD', active=True,
         ))
         session.add_all([
             Asset(portfolio_id=first.id, instrument_id=instrument.id, ticker='TEST'),

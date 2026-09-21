@@ -40,11 +40,11 @@ def require_instrument(session, identifier, currency, instrument_id=None):
             422,
             f'O instrumento {identifier} não foi resolvido. Pesquise e selecione um instrumento antes de salvar.',
         )
-    if resolution.instrument.currency != currency:
+    if resolution.instrument.asset_type in ('STOCK', 'ETF') and resolution.instrument.currency and resolution.instrument.currency != currency:
         raise HTTPException(
             422,
-            f'As cotações deste instrumento usam {resolution.instrument.currency}; '
-            'a moeda da transação deve coincidir. Conversão automática não é suportada.',
+            f'A moeda nativa desta ação/ETF é {resolution.instrument.currency}; '
+            'a moeda da transação deve coincidir.',
         )
     return resolution.instrument
 
@@ -65,18 +65,16 @@ def ensure_asset(session, portfolio_id, instrument):
     return asset
 
 
-def ensure_asset_currency(session, portfolio_id, instrument_id, currency, exclude_id=None):
+def ensure_asset_currency(session, portfolio_id, instrument_id, currency):
     query = select(Transaction.asset_currency).where(
         Transaction.portfolio_id == portfolio_id,
         Transaction.instrument_id == instrument_id,
     )
-    if exclude_id is not None:
-        query = query.where(Transaction.id != exclude_id)
-    existing = session.scalar(query.limit(1))
-    if existing is not None and existing != currency:
+    existing = set(session.scalars(query.distinct()))
+    if existing and existing != {currency}:
         raise HTTPException(
             422,
-            f'O instrumento já está registrado em {existing}; não misture moedas na mesma posição.',
+            f'O instrumento já está registrado em {", ".join(sorted(existing))}; não misture moedas na mesma posição.',
         )
 
 

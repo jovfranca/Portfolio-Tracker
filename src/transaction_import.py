@@ -183,11 +183,11 @@ def preview_import(session, filename, content, portfolio_id=None):
                     })
                     continue
                 resolved_instrument_id = resolution.instrument.id
-                if resolution.instrument.currency != payload.asset_currency:
+                if resolution.instrument.asset_type in ('STOCK', 'ETF') and resolution.instrument.currency and resolution.instrument.currency != payload.asset_currency:
                     result.append({
                         'row': number, 'valid': False, 'instrument_resolution': 'resolved',
                         'errors': [{'field': 'asset_currency', 'message':
-                            f'As cotações deste instrumento usam {resolution.instrument.currency}.'}],
+                            f'A moeda nativa desta ação/ETF é {resolution.instrument.currency}.'}],
                     })
                     continue
             existing = currencies.get(resolved_instrument_id)

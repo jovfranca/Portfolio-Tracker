@@ -12,14 +12,14 @@ from src.database import SessionLocal
 from src.models import Portfolio, Transaction, LegacyImport
 from src.market_prices import save_user_price
 from src.schemas import TransactionInput, QuoteInput
-from src.services import get_portfolio, ensure_asset, get_overview, transaction_values
+from src.services import get_portfolio, ensure_asset, ensure_asset_currency, get_overview, transaction_values
 from src.instruments import create_instrument, resolve_instrument
 
 
 def _legacy_instrument(session, identifier, currency='BRL'):
     resolution = resolve_instrument(session, identifier, currency=currency)
     if resolution.status == 'resolved':
-        if resolution.instrument.currency != currency:
+        if resolution.instrument.asset_type in ('STOCK', 'ETF') and resolution.instrument.currency and resolution.instrument.currency != currency:
             raise ValueError(
                 f'O instrumento {identifier} usa {resolution.instrument.currency}; '
                 f'o registro legado usa {currency}. Concilie as moedas antes de importar.'
@@ -29,7 +29,6 @@ def _legacy_instrument(session, identifier, currency='BRL'):
         raise ValueError(f'Identificador legado ambíguo: {identifier}.')
     return create_instrument(
         session, symbol=identifier, currency=currency,
-        provider='yfinance', provider_symbol=identifier,
         aliases=[identifier], alias_source='legacy',
     )
 
@@ -146,6 +145,7 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
         raise ValueError('Escolha uma carteira vazia para a migração inicial. Mesclar históricos exige conciliação.')
     for record in records:
         instrument = _legacy_instrument(session, record.asset, record.asset_currency)
+        ensure_asset_currency(session, portfolio_id, instrument.id, record.asset_currency)
         ensure_asset(session, portfolio_id, instrument)
         values = transaction_values(session, record)
         values['instrument_id'] = instrument.id
@@ -160,7 +160,7 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
                 setattr(asset, field, getattr(old, field, '') or '')
             for quote in quotes:
                 stored = save_user_price(
-                    session, asset, quote.date, quote.close, quote.currency,
+                    session, asset, quote.date, quote.close, quote.currency or 'BRL',
                     quote.dividends, quote.stock_splits,
                 )
                 stored.source = 'legacy'

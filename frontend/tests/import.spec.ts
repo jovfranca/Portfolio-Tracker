@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 
 test.beforeEach(async ({ page, request }) => {
   for (const [symbol, currency] of [['IMPORTTEST', 'USD'], ['FICTICIO-BR', 'BRL'], ['FICTICIO-US', 'USD']]) {
-    const response = await request.post('/api/instruments', { data: { symbol, currency, provider_symbol: symbol } })
+    const response = await request.post('/api/instruments', { data: { symbol, quote_currency: currency, provider_symbol: symbol, provider_currency_confirmed: true } })
     expect(response.ok()).toBeTruthy()
   }
   await page.goto('/')

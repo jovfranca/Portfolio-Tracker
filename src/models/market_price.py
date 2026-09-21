@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric,
-    String, UniqueConstraint,
+    String, UniqueConstraint, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,13 +13,19 @@ from src.database import Base
 
 class Instrument(Base):
     __tablename__ = 'instruments'
+    __table_args__ = (Index(
+        'uq_instruments_crypto_symbol', 'symbol', unique=True,
+        postgresql_where=text("asset_type = 'CRYPTO'"),
+        sqlite_where=text("asset_type = 'CRYPTO'"),
+    ),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     symbol: Mapped[str] = mapped_column(String(40))
     name: Mapped[str] = mapped_column(String(200), default='')
     asset_type: Mapped[str] = mapped_column(String(40), default='OTHER')
     exchange: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    currency: Mapped[str] = mapped_column(String(3))
+    # Native/listing currency, never the transaction or provider currency.
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default='ACTIVE')
     isin: Mapped[str | None] = mapped_column(String(12), nullable=True)
     provider_mappings: Mapped[list['ProviderInstrument']] = relationship(
@@ -33,7 +39,7 @@ class Instrument(Base):
 class ProviderInstrument(Base):
     __tablename__ = 'provider_instruments'
     __table_args__ = (
-        UniqueConstraint('provider', 'provider_symbol', 'currency'),
+        UniqueConstraint('provider', 'provider_symbol', 'quote_currency'),
         Index('ix_provider_instruments_instrument_provider', 'instrument_id', 'provider'),
     )
 
@@ -41,7 +47,7 @@ class ProviderInstrument(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='CASCADE'))
     provider: Mapped[str] = mapped_column(String(80))
     provider_symbol: Mapped[str] = mapped_column(String(80))
-    currency: Mapped[str] = mapped_column(String(3))
+    quote_currency: Mapped[str] = mapped_column(String(3))
     provider_exchange: Mapped[str | None] = mapped_column(String(80), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     instrument: Mapped[Instrument] = relationship(back_populates='provider_mappings')
