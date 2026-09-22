@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric } from './api'
+import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric, type CatalogInstrument } from './api'
 import TransactionImportPage from './TransactionImportPage'
 import InstrumentPicker from './InstrumentPicker'
 
-const tabPaths: Record<string, string> = { 'Posições': '/', 'Transações': '/transactions', 'Cotações': '/quotes', 'Desempenho': '/performance' }
+const tabPaths: Record<string, string> = { 'Posições': '/', 'Transações': '/transactions', 'Cotações': '/quotes', 'Desempenho': '/performance', 'Catálogo': '/catalog' }
 const currentPath = () => window.location.hash.slice(1) || '/'
 
 const fmt = (value: Numeric | null | undefined, digits = 2) => value == null ? '—' : Number(value).toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits })
@@ -27,6 +27,7 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [path, setPath] = useState(currentPath)
   const importing = path === '/transactions/import'
+  const cataloging = path === '/catalog'
   const tab = importing ? 'Transações' : Object.keys(tabPaths).find(key => tabPaths[key] === path) ?? 'Posições'
   useEffect(() => {
     const onHashChange = () => setPath(currentPath())
@@ -38,8 +39,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
-  const [nativeCurrency, setNativeCurrency] = useState<string | null>(null)
-  const lockedCurrency = draft.instrument_id ? transactions.find(t => t.instrument_id === draft.instrument_id)?.asset_currency ?? nativeCurrency : null
+  const lockedCurrency = draft.instrument_id ? transactions.find(t => t.instrument_id === draft.instrument_id)?.asset_currency ?? null : null
   const [editing, setEditing] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [portfolioName, setPortfolioName] = useState('')
@@ -95,6 +95,10 @@ export default function App() {
 
   async function saveTransaction(e: FormEvent) {
     e.preventDefault()
+    if (!draft.instrument_id) {
+      setError('Selecione um instrumento antes de salvar.')
+      return
+    }
     const url = '/portfolios/' + selected + '/transactions' + (editing === null ? '' : '/' + editing)
     const payload = { ...draft, fx_rate: draft.fx_rate === '' ? null : draft.fx_rate }
     if (await mutate(() => api(url, editing === null ? 'POST' : 'PUT', payload), 'Transação salva. Posições recalculadas.')) {
@@ -112,9 +116,9 @@ export default function App() {
     <aside className="sidebar">
       <a className="brand" href="/"><span className="brand-icon">P<span>↗</span></span><span>portfolio<span className="brand-sub">TRACKER</span></span></a>
       <div className="nav-label">MEU PATRIMÔNIO</div>
-      {['Posições', 'Transações', 'Cotações', 'Desempenho'].map((item, i) =>
+      {['Posições', 'Transações', 'Cotações', 'Desempenho', 'Catálogo'].map((item, i) =>
         <button className={'nav-item ' + (tab === item ? 'active' : '')} key={item} onClick={() => { window.location.hash = tabPaths[item] }}>
-          <span className="nav-symbol" aria-hidden="true">{['◫', '⇄', '⌁', '↗'][i]}</span>{item}
+          <span className="nav-symbol" aria-hidden="true">{['◫', '⇄', '⌁', '↗', '◎'][i]}</span>{item}
         </button>)}
       <div className="sidebar-footer"><span className="status-dot" /> Ambiente local<span>Seus registros em PostgreSQL</span></div>
     </aside>
@@ -130,7 +134,7 @@ export default function App() {
       <div className="content">
         <div className="page-heading"><div><div className="eyebrow">SEU PORTFOLIO, EM PERSPECTIVA</div><h1>{importing ? 'Importar transações' : tab}</h1>
           <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
-          {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : <div className="page-actions">
+          {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && <div className="page-actions">
             {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
             <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setEditing(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
           </div>}
@@ -142,23 +146,22 @@ export default function App() {
           <label>Nome da carteira<input required maxLength={120} value={portfolioName} onChange={e => setPortfolioName(e.target.value)} placeholder="Ex.: Investimentos pessoais" /></label>
           <button className="button primary" disabled={busy}>Criar carteira</button>
         </form>}
-        {formOpen && !importing && <form className="panel transaction-form" onSubmit={saveTransaction}>
+        {formOpen && !importing && !cataloging && <form className="panel transaction-form" onSubmit={saveTransaction}>
           <div className="section-heading"><h2>{editing === null ? 'Registrar transação' : 'Editar transação'}</h2><button type="button" className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div>
           <fieldset disabled={busy}>
             <div className="form-grid">
               <label>Operação<select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value as 'Buy' | 'Sell' })}><option value="Buy">Compra</option><option value="Sell">Venda</option></select></label>
               <label>Data da negociação<input required type="date" max={localDate().slice(0, 10)} value={draft.trade_date} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></label>
               <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
-              <label>Instrumento<input required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
-              <InstrumentPicker query={draft.asset} onSelect={item => {
-                const fixed = ['STOCK', 'ETF'].includes(item.asset_type) ? item.currency : null
-                setNativeCurrency(fixed)
+              <label>Instrumento<input readOnly={draft.instrument_id !== null} required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
+              {draft.instrument_id === null ? <InstrumentPicker query={draft.asset} onSelect={item => {
                 setDraft(current => {
-                  const currency = transactions.find(t => t.instrument_id === item.instrument_id)?.asset_currency ?? fixed ?? current.asset_currency
+                  const currency = transactions.find(t => t.instrument_id === item.instrument_id)?.asset_currency
+                    ?? (item.is_custom ? item.currency : null) ?? current.asset_currency
                   return { ...current, instrument_id: item.instrument_id, asset: item.symbol, asset_currency: currency,
                     fx_rate: currency === current.asset_currency ? current.fx_rate : '' }
                 })
-              }} />
+              }} /> : <div className="selected-instrument wide"><span>Instrumento selecionado: <strong>{draft.asset}</strong></span><button type="button" className="button quiet" onClick={() => setDraft({ ...draft, instrument_id: null, asset: '' })}>Trocar ativo</button></div>}
               <label>Corretora<input required maxLength={120} value={draft.broker} onChange={e => setDraft({ ...draft, broker: e.target.value })} /></label>
               <label>Classe de alocação<input required maxLength={120} value={draft.allocation_class} onChange={e => setDraft({ ...draft, allocation_class: e.target.value })} placeholder="Ex.: Ações Brasil" /></label>
               <label>Moeda da transação<input disabled={!!lockedCurrency} required maxLength={3} pattern="[A-Za-z]{3}" value={draft.asset_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, asset_currency: currency, fx_rate: currency === draft.asset_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
@@ -166,12 +169,13 @@ export default function App() {
               {([['quantity', 'Quantidade'], ['price', 'Preço unitário'], ['brokerage_fee', 'Corretagem'], ['other_fees', 'Outras taxas']] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min={key === 'quantity' ? '0.000000000001' : '0'} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value } as Draft)} /></label>)}
               <label className="wide">Observações<input maxLength={5000} value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></label>
             </div>
-            <div className="form-footer"><span>FX vazio usa a taxa histórica da data de liquidação; o valor salvo não muda depois.</span><button className="button primary">{busy ? 'Salvando…' : 'Salvar transação'}</button></div>
+            <div className="form-footer"><span>FX vazio usa a taxa histórica da data de liquidação; o valor salvo não muda depois.</span><button className="button primary" disabled={!draft.instrument_id}>{busy ? 'Salvando…' : 'Salvar transação'}</button></div>
           </fieldset>
         </form>}
         {loading && <div className="panel empty" role="status">Carregando sua carteira…</div>}
         {importing && <TransactionImportPage key={selected} portfolioId={selected} portfolioName={portfolios.find(p => p.id === selected)?.name ?? ''} busy={busy || loading} mutate={mutate} />}
-        {!importing && !loading && overview && <>
+        {cataloging && <CatalogPage />}
+        {!importing && !cataloging && !loading && overview && <>
           <div className="metrics">
             <article className="metric featured"><span>Valor das posições</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.summary.currencies.length > 1 ? 'Totais separados: ' + Object.entries(overview.summary.totals_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : overview.summary.missing_prices.length ? 'Parcial com cotação: ' + fmt(overview.summary.priced_value) : 'Na moeda do ativo'}</small></article>
             <article className="metric"><span>Ativos acompanhados</span><strong>{overview.summary.assets.toString().padStart(2, '0')}</strong><small>{overview.summary.positions} posições por corretora e classe</small></article>
@@ -198,6 +202,22 @@ export default function App() {
       </div>
     </main>
   </div>
+}
+
+function CatalogPage() {
+  const [items, setItems] = useState<CatalogInstrument[]>([])
+  const [error, setError] = useState('')
+  useEffect(() => { api<CatalogInstrument[]>('/instruments/catalog').then(setItems).catch(reason => setError(message(reason))) }, [])
+  return <section className="panel catalog-page">
+    <div className="section-heading"><div><h2>Catálogo de instrumentos</h2><p>Definições controladas pela aplicação. Esta página é somente leitura.</p></div></div>
+    {error && <div className="alert error">{error}</div>}
+    {!items.length && !error ? <div className="empty">Carregando catálogo…</div> : items.map(item => <article key={item.id}>
+      <div><strong>{item.symbol}</strong><span>{item.name}</span><small>{item.asset_type} · {item.exchange || 'Global'} · {item.currency || 'Sem moeda nativa'} · {item.status}</small></div>
+      <ul>{item.mappings.map(mapping => <li key={[mapping.provider, mapping.provider_symbol, mapping.quote_currency].join('|')}>
+        {mapping.provider} · {mapping.provider_symbol} · {mapping.quote_currency}{mapping.is_primary ? ' · PRINCIPAL' : ''}{!mapping.active ? ' · INATIVO' : ''}
+      </li>)}</ul>
+    </article>)}
+  </section>
 }
 
 type Mutate = (task: () => Promise<unknown>, success: string) => Promise<boolean>
@@ -229,7 +249,7 @@ function Quotes({ portfolioId, assets, busy, mutate }: { portfolioId: number; as
       if (await mutate(() => api(base + '/refresh', 'POST'), 'Histórico atualizado; preços manuais preservados.')) setVersion(version + 1)
     }}>{busy ? 'Processando…' : 'Atualizar pelo Yahoo Finance'}</button></div>
     {error && <div role="alert" className="alert error">{error}</div>}
-    {!rows.length ? <div className="empty">Ainda não há cotações para este ativo.</div> : <div className="table-wrap"><table><thead><tr><th>Data</th><th>Fechamento</th><th>Dividendos</th><th>Desdobramento</th><th>Fonte</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(q => <tr key={q.date}><td>{dateLabel(q.date)}</td><td>{fmt(q.close, 4)}</td><td>{fmt(q.dividends, 4)}</td><td>{fmt(q.stock_splits)}</td><td>{q.source}</td></tr>)}</tbody></table><p className="table-caption">Mostrando as {Math.min(rows.length, 100)} cotações mais recentes de {rows.length}.</p></div>}
+    {!rows.length ? <div className="empty">Ainda não há cotações para este ativo.</div> : <div className="table-wrap"><table><thead><tr><th>Data</th><th>Fechamento / moeda</th><th>Dividendos</th><th>Desdobramento</th><th>Fonte</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(q => <tr key={q.date}><td>{dateLabel(q.date)}</td><td>{fmt(q.close, 4)}<small>{q.currency}</small></td><td>{fmt(q.dividends, 4)}</td><td>{fmt(q.stock_splits)}</td><td>{q.source}</td></tr>)}</tbody></table><p className="table-caption">Mostrando as {Math.min(rows.length, 100)} cotações mais recentes de {rows.length}.</p></div>}
   </section>
 }
 

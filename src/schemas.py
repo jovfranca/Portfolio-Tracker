@@ -92,28 +92,16 @@ class TransactionOutput(TransactionInput):
     instrument_id: int
 
 
-class InstrumentSelection(Input):
-    instrument_id: int | None = Field(default=None, gt=0)
-    provider_currency_confirmed: bool = False
-    quote_currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] | None = None
-    symbol: Annotated[str, Field(min_length=1, max_length=40)]
-    name: Annotated[str, Field(max_length=200)] = ''
+class CustomInstrumentInput(Input):
+    symbol: Annotated[str, Field(min_length=1, max_length=40, pattern=r'^[A-Za-z0-9.^=:/_-]+$')]
+    name: Annotated[str, Field(min_length=1, max_length=200)]
     asset_type: Literal['STOCK', 'ETF', 'CRYPTO', 'OTHER'] = 'OTHER'
-    exchange: Annotated[str, Field(max_length=40)] | None = None
-    currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] | None = None
-    status: Literal['ACTIVE', 'INACTIVE', 'DELISTED'] = 'ACTIVE'
-    isin: Annotated[str, Field(min_length=12, max_length=12)] | None = None
-    provider: Annotated[str, Field(max_length=80)] | None = None
-    provider_symbol: Annotated[str, Field(max_length=80)] | None = None
-    provider_exchange: Annotated[str, Field(max_length=80)] | None = None
-    aliases: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
-        default_factory=list, max_length=20
-    )
+    currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')]
 
-    @field_validator('symbol', 'currency', 'quote_currency', 'status', 'asset_type')
+    @field_validator('symbol', 'asset_type', 'currency')
     @classmethod
-    def normalize_instrument_codes(cls, value):
-        return value.upper() if value else None
+    def normalize_custom_codes(cls, value):
+        return value.upper()
 
 
 class TransactionImportConfirm(Input):

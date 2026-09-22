@@ -19,6 +19,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.skipif(
 def test_canonical_identity_migration_backfills_transactions_and_prices():
     migration = importlib.import_module('migrations.versions.0008_canonical_instrument_identity')
     currency_migration = importlib.import_module('migrations.versions.0009_provider_quote_currency')
+    catalog_migration = importlib.import_module('migrations.versions.0010_catalog_primary_mapping')
     with engine.connect() as connection:
         transaction = connection.begin()
         try:
@@ -75,10 +76,15 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
             with Operations.context(MigrationContext.configure(connection)):
                 migration.upgrade()
                 currency_migration.upgrade()
+                catalog_migration.upgrade()
 
             assert connection.scalar(text('SELECT instrument_id FROM transactions WHERE id = 1')) == 1
-            assert connection.scalar(text('SELECT count(*) FROM provider_instruments')) == 2
+            assert connection.scalar(text('SELECT count(*) FROM provider_instruments')) == 1
             assert connection.scalar(text('SELECT quote_currency FROM provider_instruments WHERE instrument_id = 1')) == 'USD'
+            assert connection.scalar(text('SELECT active FROM provider_instruments WHERE instrument_id = 1')) is False
+            assert connection.scalar(text('SELECT is_primary FROM provider_instruments WHERE instrument_id = 1')) is False
+            assert connection.scalar(text("SELECT origin FROM instruments WHERE id = 1")) == 'MIGRATED'
+            assert connection.scalar(text('SELECT count(*) FROM provider_instruments WHERE instrument_id = 2')) == 0
             assert connection.scalar(text("SELECT is_nullable FROM information_schema.columns WHERE table_schema = :schema AND table_name = 'instruments' AND column_name = 'currency'"), {'schema': schema}) == 'YES'
             assert connection.scalar(text("SELECT count(*) FROM pg_indexes WHERE schemaname = :schema AND indexname = 'uq_instruments_crypto_symbol'"), {'schema': schema}) == 1
             assert connection.scalar(text('SELECT instrument_id FROM transactions WHERE id = 2')) == 2
@@ -91,6 +97,7 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
             assert connection.scalar(text('SELECT count(*) FROM market_price_coverage')) == 1
             assert connection.scalar(text('SELECT price FROM latest_market_quotes')) == 186
             with Operations.context(MigrationContext.configure(connection)):
+                catalog_migration.downgrade()
                 currency_migration.downgrade()
                 migration.downgrade()
             assert connection.scalar(text('SELECT instrument_id FROM market_prices')) == 1

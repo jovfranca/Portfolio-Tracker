@@ -40,12 +40,6 @@ def require_instrument(session, identifier, currency, instrument_id=None):
             422,
             f'O instrumento {identifier} não foi resolvido. Pesquise e selecione um instrumento antes de salvar.',
         )
-    if resolution.instrument.asset_type in ('STOCK', 'ETF') and resolution.instrument.currency and resolution.instrument.currency != currency:
-        raise HTTPException(
-            422,
-            f'A moeda nativa desta ação/ETF é {resolution.instrument.currency}; '
-            'a moeda da transação deve coincidir.',
-        )
     return resolution.instrument
 
 

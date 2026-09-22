@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from src.api.market_data import _fetch_yfinance_rates, _parse_ptax_rows
 from src.models import ExchangeRate
-from src.rates import backfill_rates, get_rates, store_rates
+from src.rates import backfill_rates, convert_amount, get_rates, store_rates
 
 
 @pytest.fixture
@@ -40,6 +40,12 @@ def test_exact_local_rate_does_not_call_provider(session):
     assert len(result) == 1
     assert result[0].rate == Decimal('5.000000000000')
     assert result[0].source == 'test-provider'
+
+
+def test_quote_to_display_currency_conversion_is_separate_from_transactions(session):
+    store_rates(session, [row(date(2024, 1, 8), '5.00')])
+    assert convert_amount(session, Decimal('860'), 'USD', 'BRL', date(2024, 1, 8)) == Decimal('4300')
+    assert convert_amount(session, Decimal('4300'), 'BRL', 'USD', date(2024, 1, 8)) == Decimal('860')
 
 
 def test_missing_business_date_is_fetched_and_stored(session):

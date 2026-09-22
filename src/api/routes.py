@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session
 from src.database import Base, get_session
 from src.domain import historical_profitability
 from src.models import Portfolio, Transaction, TransactionImport
-from src.instruments import add_alias, create_instrument, search_instruments
-from src.market_prices import get_history, get_latest, get_stored_history, save_user_price
+from src.instruments import (
+    add_alias, catalog_instruments, create_instrument, resolve_instrument, search_instruments,
+)
+from src.market_prices import get_history, get_latest, get_quote_history, get_stored_history, save_user_price
 from src.rates import RateUnavailable, backfill_rates, get_rates
 from src.schemas import (
-    InstrumentSelection, PortfolioInput, QuoteInput, RateBackfillInput,
+    CustomInstrumentInput, PortfolioInput, QuoteInput, RateBackfillInput,
     TransactionImportConfirm, TransactionSelectionInput, TransactionOutput,
 )
 from src.services import (
@@ -65,23 +67,45 @@ def rename_portfolio(portfolio_id: int, payload: PortfolioInput, session: DB):
 def instrument_search(q: str, session: DB, category: str = 'ALL'):
     if not q.strip():
         raise HTTPException(422, 'Informe um símbolo ou nome para pesquisar.')
-    if category not in {'ALL', 'STOCK', 'ETF', 'CRYPTO', 'OTHER'}:
+    if category not in {'ALL', 'LISTED', 'STOCK', 'ETF', 'CRYPTO'}:
         raise HTTPException(422, 'Unknown instrument category.')
     return search_instruments(session, q, category=category)
 
 
-@router.post('/instruments', status_code=201)
-def select_instrument(payload: InstrumentSelection, session: DB):
-    values = payload.model_dump()
-    confirmed = values.pop('provider_currency_confirmed')
-    if payload.provider_symbol and not confirmed:
-        raise HTTPException(422, 'Confirme explicitamente a moeda da cotação no provedor antes de salvar o mapeamento.')
-    values['alias_source'] = 'selection'
-    instrument = create_instrument(session, **values)
+@router.get('/instruments/catalog')
+def instrument_catalog(session: DB):
+    return catalog_instruments(session)
+
+
+@router.post('/instruments/custom', status_code=201)
+def create_custom_instrument(payload: CustomInstrumentInput, session: DB):
+    existing = resolve_instrument(session, payload.symbol)
+    if existing.status == 'resolved' and existing.instrument.origin == 'CUSTOM':
+        instrument = existing.instrument
+        if (instrument.name == payload.name and instrument.asset_type == payload.asset_type
+                and instrument.currency == (None if payload.asset_type == 'CRYPTO' else payload.currency)):
+            return {
+                'id': instrument.id, 'symbol': instrument.symbol, 'name': instrument.name,
+                'currency': instrument.currency, 'asset_type': instrument.asset_type,
+                'exchange': instrument.exchange, 'status': instrument.status,
+            }
+    if existing.status != 'unresolved':
+        raise HTTPException(409, 'Identifier already exists; select the existing instrument.')
+    instrument = create_instrument(
+        session, **payload.model_dump(), aliases=[payload.symbol],
+        alias_source='custom', origin='CUSTOM',
+    )
     session.commit()
-    return {'id': instrument.id, 'symbol': instrument.symbol, 'name': instrument.name,
-            'currency': instrument.currency, 'asset_type': instrument.asset_type,
-            'exchange': instrument.exchange, 'status': instrument.status}
+    return {
+        'id': instrument.id, 'symbol': instrument.symbol, 'name': instrument.name,
+        'currency': instrument.currency, 'asset_type': instrument.asset_type,
+        'exchange': instrument.exchange, 'status': instrument.status,
+    }
+
+
+@router.post('/instruments', status_code=201)
+def select_instrument():
+    raise HTTPException(410, 'Select a catalog instrument or use /instruments/custom; provider mappings are catalog-managed.')
 
 
 @router.get('/portfolios/{portfolio_id}/overview')
@@ -266,7 +290,7 @@ def asset_history(portfolio_id: int, asset_id: int, session: DB):
             'currency': history.currency,
             'retrieved_at': history.retrieved_at,
         }
-        for history in get_stored_history(session, asset)
+        for history in get_quote_history(session, asset)
     ]
 
 

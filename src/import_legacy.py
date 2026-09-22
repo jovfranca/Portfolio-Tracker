@@ -19,17 +19,12 @@ from src.instruments import create_instrument, resolve_instrument
 def _legacy_instrument(session, identifier, currency='BRL'):
     resolution = resolve_instrument(session, identifier, currency=currency)
     if resolution.status == 'resolved':
-        if resolution.instrument.asset_type in ('STOCK', 'ETF') and resolution.instrument.currency and resolution.instrument.currency != currency:
-            raise ValueError(
-                f'O instrumento {identifier} usa {resolution.instrument.currency}; '
-                f'o registro legado usa {currency}. Concilie as moedas antes de importar.'
-            )
         return resolution.instrument
     if resolution.status == 'ambiguous':
         raise ValueError(f'Identificador legado ambíguo: {identifier}.')
     return create_instrument(
         session, symbol=identifier, currency=currency,
-        aliases=[identifier], alias_source='legacy',
+        aliases=[identifier], alias_source='legacy', origin='MIGRATED',
     )
 
 

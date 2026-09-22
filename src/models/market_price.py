@@ -27,6 +27,9 @@ class Instrument(Base):
     # Native/listing currency, never the transaction or provider currency.
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default='ACTIVE')
+    # CATALOG is maintained from data/instruments.csv. CUSTOM is explicitly
+    # user-created; MIGRATED preserves pre-catalog history without trusting it.
+    origin: Mapped[str] = mapped_column(String(16), default='CUSTOM')
     isin: Mapped[str | None] = mapped_column(String(12), nullable=True)
     provider_mappings: Mapped[list['ProviderInstrument']] = relationship(
         back_populates='instrument', cascade='all, delete-orphan'
@@ -41,6 +44,11 @@ class ProviderInstrument(Base):
     __table_args__ = (
         UniqueConstraint('provider', 'provider_symbol', 'quote_currency'),
         Index('ix_provider_instruments_instrument_provider', 'instrument_id', 'provider'),
+        Index(
+            'uq_provider_instruments_primary', 'instrument_id', 'provider', unique=True,
+            postgresql_where=text('is_primary'), sqlite_where=text('is_primary'),
+        ),
+        CheckConstraint('NOT is_primary OR active', name='primary_mapping_active'),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -50,6 +58,7 @@ class ProviderInstrument(Base):
     quote_currency: Mapped[str] = mapped_column(String(3))
     provider_exchange: Mapped[str | None] = mapped_column(String(80), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     instrument: Mapped[Instrument] = relationship(back_populates='provider_mappings')
 
 

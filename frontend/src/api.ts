@@ -13,6 +13,12 @@ export type InstrumentSearchResult = {
   quote_currency?: string | null;
   quote_currencies?: string[];
   provider: string | null; provider_symbol: string | null; provider_exchange?: string | null
+  is_custom?: boolean
+}
+export type CatalogInstrument = {
+  id: number; symbol: string; name: string; asset_type: string; exchange: string | null;
+  currency: string | null; status: string; mappings: Array<{ provider: string; provider_symbol: string;
+    quote_currency: string; is_primary: boolean; active: boolean }>
 }
 export type ImportPreviewRow = {
   row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id' | 'instrument_id'> & { instrument_id?: number | null };
@@ -38,7 +44,7 @@ export type Overview = { positions: Position[]; assets: Asset[];
     totals_by_currency: Record<string, number> }; methodology: string }
 export type Performance = { date: string; total_gain: number; realized_gain: number;
   unrealized_gain: number; accumulated_profitability_pct: number | null; daily_profitability_pct: number }
-export type Quote = { date: string; close: number; dividends: number; stock_splits: number; source: string }
+export type Quote = { date: string; close: number; currency: string; dividends: number; stock_splits: number; source: string }
 export async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {

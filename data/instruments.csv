@@ -1,0 +1,7 @@
+canonical_symbol,name,asset_type,exchange,native_currency,status,provider,provider_symbol,quote_currency,is_primary,aliases
+AAPL,Apple Inc.,STOCK,NASDAQ,USD,ACTIVE,yfinance,AAPL,USD,true,APPLE
+PETR4,Petrobras PN,STOCK,B3,BRL,ACTIVE,yfinance,PETR4.SA,BRL,true,PETR4.SA
+ARKX,ARK Space & Defense Innovation ETF,ETF,CBOE,USD,ACTIVE,yfinance,ARKX,USD,true,
+BTC,Bitcoin,CRYPTO,,,ACTIVE,yfinance,BTC-USD,USD,true,BTCUSD|BTC-USD
+BTC,Bitcoin,CRYPTO,,,ACTIVE,yfinance,BTC-BRL,BRL,false,BTCBRL|BTC-BRL
+BTC,Bitcoin,CRYPTO,,,ACTIVE,yfinance,BTC-EUR,EUR,false,BTCEUR|BTC-EUR

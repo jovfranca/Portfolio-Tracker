@@ -13,6 +13,8 @@ performance views are calculated from them.
   and keep manual portfolio prices private.
 - View the legacy gain calculation as a table and chart.
 - Import the original transaction and quote pickle files through a local CLI.
+- Select stocks, ETFs, and crypto from a version-controlled canonical catalog.
+- Keep transaction currency independent from the provider quote currency.
 
 ## Run locally
 
