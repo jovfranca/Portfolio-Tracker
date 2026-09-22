@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from src.schemas import TransactionInput
 from src.models import Transaction
+from src.instruments import resolve_instrument
 from src.services import transaction_values
 
 
@@ -158,7 +159,7 @@ def _errors(error):
 
 def preview_import(session, filename, content, portfolio_id=None):
     result = []
-    currencies = dict(session.execute(select(Transaction.asset, Transaction.asset_currency).where(
+    currencies = dict(session.execute(select(Transaction.instrument_id, Transaction.asset_currency).where(
         Transaction.portfolio_id == portfolio_id,
     )).all()) if portfolio_id is not None else {}
     for number, raw in read_rows(filename, content, include_line_numbers=True):
@@ -166,18 +167,45 @@ def preview_import(session, filename, content, portfolio_id=None):
             # Imports must never infer BRL from an absent or misspelled column.
             raw.setdefault('asset_currency', '')
             payload = TransactionInput.model_validate(raw)
-            existing = currencies.get(payload.asset)
+            resolution = None
+            resolved_instrument_id = None
+            if portfolio_id is not None:
+                resolution = resolve_instrument(
+                    session, payload.asset, currency=payload.asset_currency,
+                )
+                if resolution.status != 'resolved':
+                    result.append({
+                        'row': number, 'valid': False,
+                        'data': payload.model_dump(mode='json'),
+                        'instrument_resolution': resolution.status,
+                        'errors': [{'field': 'asset', 'message':
+                            f'Instrumento {resolution.status}; selecione uma correspondência explícita.'}],
+                    })
+                    continue
+                resolved_instrument_id = resolution.instrument.id
+                if resolution.instrument.asset_type in ('STOCK', 'ETF') and resolution.instrument.currency and resolution.instrument.currency != payload.asset_currency:
+                    result.append({
+                        'row': number, 'valid': False, 'instrument_resolution': 'resolved',
+                        'errors': [{'field': 'asset_currency', 'message':
+                            f'A moeda nativa desta ação/ETF é {resolution.instrument.currency}.'}],
+                    })
+                    continue
+            existing = currencies.get(resolved_instrument_id)
             if existing is not None and existing != payload.asset_currency:
                 result.append({
                     'row': number, 'valid': False,
+                    'instrument_resolution': 'resolved',
                     'errors': [{'field': 'asset_currency', 'message':
-                        f'O ativo {payload.asset} já está registrado em {existing}; não misture moedas no mesmo ticker.'}],
+                        f'O instrumento já está registrado em {existing}; não misture moedas na mesma posição.'}],
                 })
                 continue
-            currencies[payload.asset] = payload.asset_currency
+            if resolved_instrument_id is not None:
+                currencies[resolved_instrument_id] = payload.asset_currency
             values = transaction_values(session, payload)
             values.pop('date_time')
             normalized = TransactionInput.model_validate(values).model_dump(mode='json')
+            if resolved_instrument_id is not None:
+                normalized['instrument_id'] = resolved_instrument_id
         except ValidationError as error:
             result.append({'row': number, 'valid': False, 'errors': _errors(error)})
         except ValueError as error:
@@ -186,7 +214,10 @@ def preview_import(session, filename, content, portfolio_id=None):
                 'errors': [{'field': 'fx_rate', 'message': str(error)}],
             })
         else:
-            result.append({'row': number, 'valid': True, 'data': normalized, 'errors': []})
+            result.append({
+                'row': number, 'valid': True, 'data': normalized, 'errors': [],
+                'instrument_resolution': 'resolved' if resolution else 'not_requested',
+            })
     return {
         'digest': sha256(content).hexdigest(),
         'filename': Path(filename).name[:255],

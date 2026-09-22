@@ -17,6 +17,7 @@ class Transaction(Base):
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
+    instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))
     date_time: Mapped[datetime] = mapped_column(DateTime)
     type: Mapped[str] = mapped_column(String(4))
     asset: Mapped[str] = mapped_column(String(40))
@@ -32,3 +33,4 @@ class Transaction(Base):
     other_fees: Mapped[Decimal] = mapped_column(Numeric(28, 12), default=Decimal('0'))
     notes: Mapped[str] = mapped_column(Text, default='')
     portfolio: Mapped['Portfolio'] = relationship(back_populates='transactions')
+    instrument: Mapped['Instrument'] = relationship()

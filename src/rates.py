@@ -1,5 +1,6 @@
 """Local-first retrieval and insert-only storage for historical rates."""
 from datetime import date, timedelta
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +12,28 @@ from src.models import ExchangeRate
 
 class RateUnavailable(ValueError):
     pass
+
+
+def convert_amount(session, amount, source_currency, target_currency, reference_date, fetcher=None):
+    """Convert through BRL without changing transaction-level FX history.
+
+    FX rows are BRL per unit of their named currency, so cross rates use BRL as
+    the bridge. This boundary is suitable for quote/display conversion; it does
+    not read or mutate ``Transaction.fx_rate``.
+    """
+    source, _ = _normalize(source_currency, 'FX')
+    target, _ = _normalize(target_currency, 'FX')
+    amount = Decimal(str(amount))
+    if source == target:
+        return amount
+
+    def brl_per_unit(currency):
+        if currency == 'BRL':
+            return Decimal('1')
+        rates = get_rates(session, currency, 'FX', reference_date, fetcher=fetcher)
+        return next(rate.rate for rate in rates if rate.rate_side == 'MARKET')
+
+    return amount * brl_per_unit(source) / brl_per_unit(target)
 
 
 def _normalize(currency, rate_type):

@@ -2,12 +2,27 @@ export type Portfolio = { id: number; name: string }
 export type Numeric = number | string
 export type Transaction = {
   id: number; portfolio_id: number; trade_date: string; settlement_date: string;
+  instrument_id: number;
   type: 'Buy' | 'Sell'; asset: string; broker: string; allocation_class: string;
   asset_currency: string; fx_rate: Numeric | null; quantity: Numeric;
   price: Numeric; brokerage_fee: Numeric; other_fees: Numeric; notes: string
 }
+export type InstrumentSearchResult = {
+  instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'OTHER';
+  exchange: string | null; currency: string | null; status: 'ACTIVE' | 'INACTIVE' | 'DELISTED';
+  quote_currency?: string | null;
+  quote_currencies?: string[];
+  provider: string | null; provider_symbol: string | null; provider_exchange?: string | null
+  is_custom?: boolean
+}
+export type CatalogInstrument = {
+  id: number; symbol: string; name: string; asset_type: string; exchange: string | null;
+  currency: string | null; status: string; mappings: Array<{ provider: string; provider_symbol: string;
+    quote_currency: string; is_primary: boolean; active: boolean }>
+}
 export type ImportPreviewRow = {
-  row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id'>;
+  row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id' | 'instrument_id'> & { instrument_id?: number | null };
+  instrument_resolution?: 'resolved' | 'unresolved' | 'ambiguous' | 'not_requested';
   errors: { field: string; message: string }[]
 }
 export type ImportPreview = {
@@ -15,6 +30,7 @@ export type ImportPreview = {
   rows: ImportPreviewRow[]
 }
 export type Position = {
+  asset_id: number | null;
   asset: string; broker: string; allocation_class: string; asset_currency: string; quantity: number;
   average_cost: number; current_price: number | null; total_value: number | null;
   current_total_gain: number | null; current_accumulated_profitability: number | null;
@@ -28,7 +44,7 @@ export type Overview = { positions: Position[]; assets: Asset[];
     totals_by_currency: Record<string, number> }; methodology: string }
 export type Performance = { date: string; total_gain: number; realized_gain: number;
   unrealized_gain: number; accumulated_profitability_pct: number | null; daily_profitability_pct: number }
-export type Quote = { date: string; close: number; dividends: number; stock_splits: number; source: string }
+export type Quote = { date: string; close: number; currency: string; dividends: number; stock_splits: number; source: string }
 export async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {

@@ -9,8 +9,9 @@ Abra a pasta do projeto e **Terminal → Novo Terminal**. Na raiz, execute:
 ```
 
 Abra **http://127.0.0.1:8000**. Esse comando inicia o PostgreSQL portátil preparado
-em `.local`, verifica o banco, aplica migrações pendentes e serve a API e a interface
-React compilada no mesmo endereço. Não limpa nem reinicializa o banco.
+em `.local`, verifica o banco, aplica migrações pendentes, carrega idempotentemente
+`data/instruments.csv` e serve a API e a interface React compilada no mesmo endereço.
+Não limpa nem reinicializa o banco.
 
 Se a política do PowerShell impedir a execução do script, use somente para essa execução:
 
@@ -27,6 +28,33 @@ Use `Ctrl+C` para parar a aplicação. O PostgreSQL continua ativo. Para encerr�
 Para recompilar a interface após mudanças, execute o script sem `-SkipBuild`.
 Não inicie duas instâncias da API na mesma porta.
 
+## Reinicializar o banco local de desenvolvimento
+
+Para começar um teste manual sem dados antigos, encerre a API e execute:
+
+```powershell
+.\scripts\reset-local-db.ps1 -ConfirmReset
+```
+
+Esse comando é destrutivo: encerra conexões, remove e recria o banco, aplica todas
+as migrações e carrega o catálogo. Há três proteções: a confirmação explícita é
+obrigatória, o host de `DATABASE_URL` deve ser `localhost`/`127.0.0.1`, e o nome do
+banco deve ser exatamente `portfolio_tracker` ou terminar em `_dev`. O script recusa
+qualquer outro alvo. Ele não pertence a migrações de produção e não é executado no
+startup normal.
+
+O reset rejeita opções de query na URL e exige o driver `postgresql+psycopg`,
+evitando que a migração use um destino diferente do banco local validado.
+
+Para somente reaplicar o catálogo controlado, sem apagar dados:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.instrument_catalog
+```
+
+A carga é idempotente e falha se um símbolo de provedor já pertencer a outro
+instrumento canônico.
+
 ## Desenvolvimento com atualização automática
 
 Com PostgreSQL ativo, abra dois terminais na raiz:
@@ -34,6 +62,7 @@ Com PostgreSQL ativo, abra dois terminais na raiz:
 ```powershell
 # Terminal 1: API
 .\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m src.instrument_catalog
 .\.venv\Scripts\python.exe -m uvicorn src.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
@@ -77,6 +106,7 @@ Com PostgreSQL ativo:
 ```powershell
 .\.venv\Scripts\python.exe -m src.bootstrap
 .\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m src.instrument_catalog
 cd frontend
 npm ci
 npm run build

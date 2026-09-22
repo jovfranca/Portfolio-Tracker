@@ -22,3 +22,4 @@ htmlcov/
 *.sqlite
 *.sqlite3
 src/db/*.pkl
+.codex-remote-attachments/
