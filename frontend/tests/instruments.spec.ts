@@ -20,11 +20,17 @@ test('selects trusted ARKX without exposing canonical or provider metadata', asy
   await result.click()
   await expect(page.getByLabel('Instrumento', { exact: true })).toHaveValue('ARKX')
   await expect(page.getByLabel('Instrumento', { exact: true })).toHaveAttribute('readonly', '')
+  await expect(page.getByLabel('Moeda da transação', { exact: true })).toHaveValue('USD')
+  await expect(page.getByLabel('Moeda da transação', { exact: true })).toBeDisabled()
   await expect(page.getByText(/Símbolo no provedor|Moeda da cotação do provedor|Símbolo canônico/)).toHaveCount(0)
   await page.getByLabel('Corretora', { exact: true }).fill('Example')
   await page.getByLabel('Classe de alocação', { exact: true }).fill('ETF')
+  await page.getByLabel('Taxa FX', { exact: true }).fill('5')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
   await expect(page.getByText('Transação salva. Posições recalculadas.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Transações', exact: true }).click()
+  await page.getByRole('button', { name: 'Editar', exact: true }).click()
+  await expect(page.getByLabel('Moeda da transação', { exact: true })).toBeDisabled()
 })
 
 test('selects Bitcoin and saves a BRL transaction without mapping configuration', async ({ page, request }) => {
@@ -42,9 +48,12 @@ test('selects Bitcoin and saves a BRL transaction without mapping configuration'
   await page.getByLabel('Preço unitário', { exact: true }).fill('398000')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
   await expect(page.getByText('Transação salva. Posições recalculadas.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Transações', exact: true }).click()
+  await page.getByRole('button', { name: 'Editar', exact: true }).click()
+  await expect(page.getByLabel('Moeda da transação', { exact: true })).toBeEnabled()
   const transactions = await (await request.get(`/api/portfolios/${portfolioId}/transactions`)).json()
   expect(transactions[0].asset).toBe('BTC')
-  expect(transactions[0].asset_currency).toBe('BRL')
+  expect(transactions[0].transaction_currency).toBe('BRL')
 })
 
 test('creates an explicitly manual custom asset', async ({ page, request }) => {
@@ -68,7 +77,7 @@ test('resolves an unknown import only through explicit custom creation', async (
   await page.goto('/#/transactions/import')
   await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
   const file = { name: 'resolve.csv', mimeType: 'text/csv', buffer: Buffer.from(
-    'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,asset_currency\n' +
+    'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency\n' +
     `${raw},Example,Buy,2024-01-02,2024-01-03,1,10,BRL\n`) }
   await page.locator('input[type=file]').setInputFiles(file)
   await expect(page.getByRole('button', { name: 'Confirmar importação', exact: true })).toBeDisabled()

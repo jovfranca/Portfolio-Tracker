@@ -186,7 +186,7 @@ cabeçalho são rejeitados. Colunas desconhecidas são ignoradas.
 | `settlement_date` | Obrigatória | Data | `AAAA-MM-DD` ou célula de data no XLSX | `2024-01-04` | Igual ou posterior à negociação. Alias: `settlement date`. |
 | `quantity` | Obrigatória | Decimal | Maior que zero | `10.5` | Quantidade. |
 | `unit_price` | Obrigatória | Decimal | Zero ou positivo | `25.50` | Preço unitário. Aliases: `price`, `unit price`. |
-| `asset_currency` | Obrigatória | Texto | Exatamente 3 letras A–Z/a–z | `BRL` | Convertida para maiúsculas. Aliases: `currency`, `asset currency`. |
+| `transaction_currency` | Condicional | Texto | Exatamente 3 letras A–Z/a–z | `BRL` | Obrigatória para cripto e ativos personalizados. Ações e ETFs resolvidos pelo catálogo usam a moeda nativa quando omitida; um valor diferente é rejeitado. Alias: `currency`. |
 | `fx_rate` | Opcional | Decimal | Maior que zero quando informado | `5.25` | Vazio: 1 para BRL; busca histórica para moeda estrangeira. Alias: `fx rate`. |
 | `allocation_class` | Opcional | Texto | 1–120 caracteres quando informado | `Exemplo` | Vazio/ausente: `Sem classe`. Alias: `allocation class`. |
 | `brokerage_fee` | Opcional | Decimal | Zero ou positivo | `1.25` | Vazio/ausente: 0. Alias: `brokerage fee`. |
@@ -217,8 +217,9 @@ de ser substituído por 1. Para outra moeda sem FX, a prévia busca a taxa hist�
 da liquidação; pode usar uma taxa anterior dentro da janela configurada. Sem taxa
 disponível, a linha fica inválida. O FX resolvido é armazenado e não muda depois.
 Liquidações futuras são aceitas em BRL ou com FX informado. A moeda é validada
-apenas como três letras, sem garantia de cobertura pelo provedor. Não misture
-moedas no mesmo ticker da carteira.
+apenas como três letras, sem garantia de cobertura pelo provedor. A moeda da
+transação não altera a identidade canônica do instrumento: por exemplo, BTC
+pode ter operações em BRL e USD.
 
 `GET /api/transactions/import-template.xlsx` gera o download `modelo-transacoes.xlsx`
 com `openpyxl`, já instalado. Não consulta banco ou provedor. O modelo inclui todos

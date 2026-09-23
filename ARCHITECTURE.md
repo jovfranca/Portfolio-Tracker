@@ -68,12 +68,11 @@ create instruments or provider mappings implicitly.
 universal currency for owning or pricing the asset. Known stocks/ETFs have a fixed
 native currency. CRYPTO has no native currency. For a CUSTOM/OTHER instrument the
 field is the explicit manual-pricing default entered by the user, not an exchange fact.
-`Transaction.asset_currency` is the currency of the entered transaction price;
+`Transaction.transaction_currency` is the currency of the entered transaction price;
 historical prices and FX rates are never reconstructed from provider quotes.
-One portfolio/instrument uses one transaction currency after its first transaction,
-including edits and imports. This is an accounting restriction preserving the
-existing formulas, not a component of canonical identity. Different portfolios
-may account for the same crypto instrument in different currencies.
+Stocks and ETFs use their canonical native currency, while crypto may use a
+different transaction currency per operation. Values in different transaction
+currencies remain separate; this is not a component of canonical identity.
 
 `ProviderInstrument.quote_currency` owns the configured provider's quote currency,
 alongside its symbol, provider exchange, active flag, and `is_primary` preference.
@@ -83,7 +82,7 @@ not merely by canonical instrument and currency.
 Inactive mappings are excluded from network retrieval, while stored observations
 and cached quotes remain attached to their original mapping and currency. Network
 retrieval uses the single active primary mapping for the configured provider; it
-never selects a mapping from `Transaction.asset_currency`. A unique legacy mapping
+never selects a mapping from `Transaction.transaction_currency`. A unique legacy mapping
 is a compatibility fallback, while multiple mappings without a primary fail closed.
 There is no provider failover. Without a mapping, automatic data is unavailable and
 stored/manual prices remain available. No path
@@ -166,7 +165,7 @@ Currency roles are deliberately independent:
 - provider quote currency belongs to one provider mapping and its observations;
 - portfolio display currency is a future preference and uses FX conversion.
 
-Changing display currency must never rewrite `Transaction.asset_currency` or
+Changing display currency must never rewrite `Transaction.transaction_currency` or
 `Transaction.fx_rate`.
 
 The files under `src/db/` are legacy migration sources, not active persistence.

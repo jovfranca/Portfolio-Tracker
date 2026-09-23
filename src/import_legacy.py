@@ -12,7 +12,7 @@ from src.database import SessionLocal
 from src.models import Portfolio, Transaction, LegacyImport
 from src.market_prices import save_user_price
 from src.schemas import TransactionInput, QuoteInput
-from src.services import get_portfolio, ensure_asset, ensure_asset_currency, get_overview, transaction_values
+from src.services import get_portfolio, ensure_asset, get_overview, transaction_values
 from src.instruments import create_instrument, resolve_instrument
 
 
@@ -118,7 +118,7 @@ def read_transactions(path):
         values.update({
             'trade_date': timestamp.date(),
             'settlement_date': timestamp.date(),
-            'asset_currency': 'BRL',
+            'transaction_currency': 'BRL',
             'fx_rate': 1,
         })
         if timestamp.tzinfo is not None:
@@ -139,8 +139,7 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
     if session.scalar(select(Transaction.id).where(Transaction.portfolio_id == portfolio_id).limit(1)):
         raise ValueError('Escolha uma carteira vazia para a migração inicial. Mesclar históricos exige conciliação.')
     for record in records:
-        instrument = _legacy_instrument(session, record.asset, record.asset_currency)
-        ensure_asset_currency(session, portfolio_id, instrument.id, record.asset_currency)
+        instrument = _legacy_instrument(session, record.asset, record.transaction_currency)
         ensure_asset(session, portfolio_id, instrument)
         values = transaction_values(session, record)
         values['instrument_id'] = instrument.id

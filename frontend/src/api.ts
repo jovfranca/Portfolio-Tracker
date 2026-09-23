@@ -4,8 +4,9 @@ export type Transaction = {
   id: number; portfolio_id: number; trade_date: string; settlement_date: string;
   instrument_id: number;
   type: 'Buy' | 'Sell'; asset: string; broker: string; allocation_class: string;
-  asset_currency: string; fx_rate: Numeric | null; quantity: Numeric;
-  price: Numeric; brokerage_fee: Numeric; other_fees: Numeric; notes: string
+  transaction_currency: string; fx_rate: Numeric | null; quantity: Numeric;
+  price: Numeric; brokerage_fee: Numeric; other_fees: Numeric; notes: string;
+  transaction_currency_locked: boolean
 }
 export type InstrumentSearchResult = {
   instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'OTHER';
@@ -21,7 +22,7 @@ export type CatalogInstrument = {
     quote_currency: string; is_primary: boolean; active: boolean }>
 }
 export type ImportPreviewRow = {
-  row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id' | 'instrument_id'> & { instrument_id?: number | null };
+  row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id' | 'instrument_id' | 'transaction_currency_locked'> & { instrument_id?: number | null };
   instrument_resolution?: 'resolved' | 'unresolved' | 'ambiguous' | 'not_requested';
   errors: { field: string; message: string }[]
 }
@@ -31,12 +32,12 @@ export type ImportPreview = {
 }
 export type Position = {
   asset_id: number | null;
-  asset: string; broker: string; allocation_class: string; asset_currency: string; quantity: number;
+  asset: string; broker: string; allocation_class: string; transaction_currency: string; quantity: number;
   average_cost: number; current_price: number | null; total_value: number | null;
   current_total_gain: number | null; current_accumulated_profitability: number | null;
   price_date: string | null; gain_date: string | null; history_behind_transactions: boolean
 }
-export type Asset = { id: number; ticker: string; asset_currency: string; quantity: number; average_cost: number;
+export type Asset = { id: number; ticker: string; transaction_currency: string; quantity: number; average_cost: number;
   current_price: number | null; total_value: number | null; price_date: string | null }
 export type Overview = { positions: Position[]; assets: Asset[];
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;

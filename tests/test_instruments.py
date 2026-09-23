@@ -26,7 +26,7 @@ def session():
         table.create(engine)
     from sqlalchemy import text
     with engine.begin() as connection:
-        connection.execute(text('CREATE TABLE transactions (id integer, instrument_id integer, asset_currency text, portfolio_id integer)'))
+        connection.execute(text('CREATE TABLE transactions (id integer, instrument_id integer, transaction_currency text, portfolio_id integer)'))
     with Session(engine) as value:
         yield value
 
@@ -214,7 +214,7 @@ def test_transaction_currency_is_independent_from_native_and_quote_currency(sess
         session, symbol='AAPL', currency='USD', asset_type='STOCK',
         provider_symbol='AAPL', quote_currency='USD',
     )
-    assert require_instrument(session, 'AAPL', 'BRL', instrument.id) is instrument
+    assert require_instrument(session, 'AAPL', instrument.id) is instrument
 
 
 def test_legacy_resolution_preserves_transaction_currency_independently(session):
@@ -259,7 +259,7 @@ def test_provider_discovery_filters_unsupported_options_and_futures(monkeypatch)
 def test_unresolved_import_preserves_row_for_explicit_selection(session):
     from sqlalchemy import text
     from src.transaction_import import preview_import
-    content = (b'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,asset_currency\n'
+    content = (b'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency\n'
                b'UNKNOWN,Example,Buy,2024-01-02,2024-01-03,1,10,BRL\n')
     result = preview_import(session, 'input.csv', content, portfolio_id=1)
     row = result['rows'][0]
@@ -269,12 +269,44 @@ def test_unresolved_import_preserves_row_for_explicit_selection(session):
     assert row['data']['price'] == '10'
 
 
+def test_import_defaults_listed_currency_and_requires_crypto_currency(session):
+    from src.transaction_import import preview_import
+    portfolio = Portfolio(name='Currency import')
+    listed = create_instrument(
+        session, symbol='AAPL', asset_type='STOCK', currency='USD',
+        provider_symbol='AAPL', quote_currency='USD',
+    )
+    create_instrument(
+        session, symbol='BTC', asset_type='CRYPTO',
+        provider_symbol='BTC-USD', quote_currency='USD',
+    )
+    session.add(portfolio)
+    session.flush()
+
+    listed_csv = (
+        'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,fx_rate\n'
+        'AAPL,Example,Buy,2024-01-02,2024-01-03,1,100,5\n'
+    ).encode()
+    listed_preview = preview_import(session, 'listed.csv', listed_csv, portfolio.id)
+    assert listed_preview['valid']
+    assert listed_preview['rows'][0]['data']['instrument_id'] == listed.id
+    assert listed_preview['rows'][0]['data']['transaction_currency'] == 'USD'
+
+    crypto_csv = (
+        'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,fx_rate\n'
+        'BTC,Example,Buy,2024-01-02,2024-01-03,1,100,5\n'
+    ).encode()
+    crypto_preview = preview_import(session, 'crypto.csv', crypto_csv, portfolio.id)
+    assert not crypto_preview['valid']
+    assert crypto_preview['rows'][0]['errors'][0]['field'] == 'transaction_currency'
+
+
 def test_positions_expose_asset_identity_for_duplicate_symbols():
     from types import SimpleNamespace
     from src.domain import overview
     transactions = [SimpleNamespace(
         id=i, instrument_id=i, asset='SAME', broker='Example', allocation_class='Stocks',
-        asset_currency='BRL', type='Buy', quantity=Decimal('1'), price=Decimal('10'),
+        transaction_currency='BRL', type='Buy', quantity=Decimal('1'), price=Decimal('10'),
         trade_date=date(2024, 1, 2), date_time=datetime(2024, 1, 2),
     ) for i in (1, 2)]
     assets = [SimpleNamespace(id=i + 10, instrument_id=i, ticker='SAME', history=[]) for i in (1, 2)]
@@ -288,7 +320,7 @@ def test_crypto_pairs_reuse_identity_and_allow_brl(session):
     second = create_instrument(session, quote_currency='EUR', symbol='BTC', asset_type='CRYPTO', currency='EUR', provider_symbol='BTC-EUR')
     assert first.id == second.id
     assert first.currency is None
-    assert require_instrument(session, 'BTC', 'BRL', first.id) is first
+    assert require_instrument(session, 'BTC', first.id) is first
     assert len(list(session.scalars(select(ProviderInstrument)))) == 2
 
 
@@ -376,14 +408,15 @@ def test_explicit_petr4_market_variant_keeps_primary_deterministic(session):
     assert provider_mapping(session, stock).provider_symbol == 'PETR4.SA'
 
 
-def test_domain_rejects_mixed_currency_across_brokers_for_one_instrument():
+def test_domain_separates_mixed_transaction_currencies_for_one_instrument():
     from types import SimpleNamespace
     from src.domain import overview
     transactions = [SimpleNamespace(id=i, instrument_id=1, asset='BTC', broker=str(i), allocation_class='Crypto',
-        asset_currency=currency, type='Buy', quantity=Decimal('1'), price=Decimal('10'),
+        transaction_currency=currency, type='Buy', quantity=Decimal('1'), price=Decimal('10'),
         trade_date=date(2024, 1, 2), date_time=datetime(2024, 1, 2)) for i, currency in enumerate(['BRL', 'USD'])]
-    with pytest.raises(ValueError, match='Mixed transaction currencies'):
-        overview(transactions, [])
+    result = overview(transactions, [])
+    assert [position['transaction_currency'] for position in result['positions']] == ['BRL', 'USD']
+    assert result['summary']['totals_by_currency'] == {'BRL': Decimal('0'), 'USD': Decimal('0')}
 
 
 def test_database_rejects_duplicate_crypto_identity(session):
@@ -591,7 +624,7 @@ def test_catalog_repairs_migration_placeholder_currency_without_changing_transac
     seed_catalog(session)
     assert (legacy.id, legacy.currency, legacy.exchange, legacy.origin) == (original_id, 'USD', 'NASDAQ', 'CATALOG')
     assert provider_mapping(session, legacy).quote_currency == 'USD'
-    assert session.execute(text('SELECT instrument_id, asset_currency FROM transactions')).one() == (original_id, 'BRL')
+    assert session.execute(text('SELECT instrument_id, transaction_currency FROM transactions')).one() == (original_id, 'BRL')
 
 
 def test_catalog_adopts_native_currency_placeholder_when_legacy_symbol_is_duplicated(session):
@@ -615,7 +648,7 @@ def test_catalog_adopts_native_currency_placeholder_when_legacy_symbol_is_duplic
     )
     assert provider_mapping(session, brl).provider_symbol == 'GOLD11.SA'
     assert session.execute(text(
-        'SELECT instrument_id, asset_currency FROM transactions ORDER BY id'
+        'SELECT instrument_id, transaction_currency FROM transactions ORDER BY id'
     )).all() == [(brl.id, 'BRL'), (usd.id, 'USD')]
 
 
@@ -714,7 +747,7 @@ def test_btc_brl_transaction_fetches_primary_usd_mapping_and_stores_usd(session)
     session.flush()
     asset = ensure_asset(session, portfolio.id, btc)
     session.execute(text(
-        "INSERT INTO transactions (id, instrument_id, asset_currency, portfolio_id) "
+        "INSERT INTO transactions (id, instrument_id, transaction_currency, portfolio_id) "
         "VALUES (1, :instrument_id, 'BRL', :portfolio_id)"
     ), {'instrument_id': btc.id, 'portfolio_id': portfolio.id})
     calls = []

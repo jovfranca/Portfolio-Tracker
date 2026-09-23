@@ -13,7 +13,7 @@ def transaction_template():
     sheet.title = 'Transacoes'
     sheet.append([
         'ticker', 'broker', 'type', 'trade_date', 'settlement_date', 'quantity',
-        'unit_price', 'asset_currency', 'fx_rate', 'allocation_class',
+        'unit_price', 'transaction_currency', 'fx_rate', 'allocation_class',
         'brokerage_fee', 'other_fees', 'notes',
     ])
     sheet.append([

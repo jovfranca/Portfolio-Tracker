@@ -86,14 +86,14 @@ def _missing_ranges(start, end, coverage):
 
 def valuation_currency(session, asset):
     """Portfolio accounting currency; quote pairs never determine it."""
-    currencies = set(session.scalars(select(Transaction.asset_currency).where(
+    currencies = set(session.scalars(select(Transaction.transaction_currency).where(
         Transaction.portfolio_id == asset.portfolio_id,
         Transaction.instrument_id == asset.instrument_id,
     ).distinct()))
-    if len(currencies) > 1:
-        raise ValueError('Mixed transaction currencies for canonical instrument.')
     if currencies:
-        return next(iter(currencies))
+        if len(currencies) == 1:
+            return next(iter(currencies))
+        return asset.instrument.currency
     if asset.instrument.currency:
         return asset.instrument.currency
     manual_currencies = set(session.scalars(select(UserDefinedPrice.currency).where(
@@ -124,10 +124,9 @@ def _stored_history(session, asset, start=None, end=None, *, currency=None):
         MarketPrice.currency == target_currency,
         MarketPrice.interval == '1d',
     )
-    manual_query = select(UserDefinedPrice).where(
-        UserDefinedPrice.asset_id == asset.id,
-        UserDefinedPrice.currency == target_currency,
-    )
+    manual_query = select(UserDefinedPrice).where(UserDefinedPrice.asset_id == asset.id)
+    if target_currency is not None:
+        manual_query = manual_query.where(UserDefinedPrice.currency == target_currency)
     if start is not None:
         shared_query = shared_query.where(MarketPrice.reference_at >= _daily_reference(start))
         manual_query = manual_query.where(UserDefinedPrice.reference_date >= start)
@@ -169,9 +168,9 @@ def _stored_mapping_filter(mapping):
     )
 
 
-def get_stored_history(session, asset, start=None, end=None):
+def get_stored_history(session, asset, start=None, end=None, *, currency=None):
     """Resolve local daily history, with private values winning on the same date."""
-    return _stored_history(session, asset, start, end)
+    return _stored_history(session, asset, start, end, currency=currency)
 
 
 def get_quote_history(session, asset, start=None, end=None):
@@ -383,11 +382,11 @@ def get_latest(session, asset, fetcher=None, now=None):
     return LatestPriceResult(max(candidates, key=lambda row: (row.date, row.origin == 'user-defined')))
 
 
-def history_for_domain(session, asset):
+def history_for_domain(session, asset, *, currency=None):
     """Provide the small quote shape expected by the pure calculation layer."""
-    target_currency = valuation_currency(session, asset)
+    target_currency = currency or valuation_currency(session, asset)
     mapping = _stored_mapping(session, asset)
-    prices = _stored_history(session, asset)
+    prices = _stored_history(session, asset, currency=target_currency)
     cached_quotes = session.scalars(select(LatestMarketQuote).join(ProviderInstrument).where(
         ProviderInstrument.instrument_id == asset.instrument_id,
         _stored_mapping_filter(mapping),

@@ -24,7 +24,7 @@ def market_session():
         table.create(engine)
     from sqlalchemy import text
     with engine.begin() as connection:
-        connection.execute(text('CREATE TABLE transactions (id integer, instrument_id integer, asset_currency text, portfolio_id integer)'))
+        connection.execute(text('CREATE TABLE transactions (id integer, instrument_id integer, transaction_currency text, portfolio_id integer)'))
     with Session(engine) as session:
         instrument = Instrument(symbol='TEST', currency='USD')
         first = Portfolio(name='First')
@@ -187,6 +187,28 @@ def test_today_manual_quote_does_not_call_provider(market_session):
     assert calls == []
     assert result.price.origin == 'user-defined'
     assert not result.stale
+
+
+def test_manual_quote_remains_visible_with_mixed_transaction_currencies(market_session):
+    from sqlalchemy import text
+    asset = assets(market_session)[0]
+    asset.instrument.currency = None
+    market_session.execute(text(
+        "INSERT INTO transactions (id, instrument_id, transaction_currency, portfolio_id) "
+        "VALUES (1, :instrument_id, 'BRL', :portfolio_id), "
+        "(2, :instrument_id, 'USD', :portfolio_id)"
+    ), {'instrument_id': asset.instrument_id, 'portfolio_id': asset.portfolio_id})
+    now = datetime(2024, 1, 10, 12, tzinfo=timezone.utc)
+    save_user_price(market_session, asset, now.date(), Decimal('12'), 'BRL')
+
+    result = get_latest(
+        market_session, asset,
+        lambda *args: pytest.fail('Current manual quote should prevent a provider fetch'),
+        now,
+    )
+
+    assert result.price.close == Decimal('12.000000000000')
+    assert result.price.currency == 'BRL'
 
 
 def test_local_today_manual_quote_wins_after_utc_midnight(market_session, monkeypatch):

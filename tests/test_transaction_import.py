@@ -13,7 +13,7 @@ from src.transaction_import import preview_import, read_rows
 def csv_bytes(rows):
     header = (
         'ticker,broker,type,trade_date,settlement_date,quantity,'
-        'unit_price,asset_currency,fx_rate\n'
+        'unit_price,transaction_currency,fx_rate\n'
     )
     return (header + rows).encode()
 
@@ -41,7 +41,7 @@ def test_csv_preview_normalizes_rows_and_uses_settlement_fx(monkeypatch):
         'allocation_class': 'Sem classe',
         'quantity': '2.5',
         'price': '100.01',
-        'asset_currency': 'USD',
+        'transaction_currency': 'USD',
         'fx_rate': 'ignored',
         'brokerage_fee': '0',
         'other_fees': '0',
@@ -88,7 +88,7 @@ def test_preview_explicitly_rejects_unresolved_or_ambiguous_instruments(monkeypa
 def test_xlsx_reader_accepts_required_columns():
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(['ticker', 'broker', 'type', 'trade_date', 'settlement_date', 'quantity', 'unit_price', 'asset_currency'])
+    sheet.append(['ticker', 'broker', 'type', 'trade_date', 'settlement_date', 'quantity', 'unit_price', 'transaction_currency'])
     sheet.append(['PETR4.SA', 'Example', 'Sell', date(2024, 1, 2), date(2024, 1, 3), 1, 30, 'BRL'])
     content = BytesIO()
     workbook.save(content)
@@ -101,10 +101,21 @@ def test_brl_rate_is_always_one():
     payload = TransactionInput.model_validate({
         'trade_date': '2024-01-02', 'settlement_date': '2024-01-03',
         'type': 'Buy', 'asset': 'PETR4.SA', 'broker': 'Example',
-        'quantity': '0.1', 'price': '10.01', 'asset_currency': 'brl', 'fx_rate': '9',
+        'quantity': '0.1', 'price': '10.01', 'transaction_currency': 'brl', 'fx_rate': '9',
     })
     assert payload.fx_rate == Decimal('1')
     assert payload.quantity * payload.price == Decimal('1.001')
+
+
+def test_resolved_brl_currency_overrides_supplied_fx_rate():
+    from src.services import transaction_values
+    payload = TransactionInput.model_validate({
+        'trade_date': '2024-01-02', 'settlement_date': '2024-01-03',
+        'type': 'Buy', 'asset': 'PETR4', 'broker': 'Example',
+        'quantity': '1', 'price': '10', 'fx_rate': '9',
+    })
+    assert payload.transaction_currency is None
+    assert transaction_values(None, payload, 'BRL')['fx_rate'] == Decimal('1')
 
 
 @pytest.mark.parametrize('currency, rate', [('BRL', None), ('USD', '5')])
@@ -113,7 +124,7 @@ def test_known_fx_allows_pending_settlement(currency, rate):
     payload = TransactionInput.model_validate({
         'trade_date': date.today(), 'settlement_date': date.today() + timedelta(days=2),
         'type': 'Buy', 'asset': 'TEST', 'broker': 'Example',
-        'quantity': '1', 'price': '10', 'asset_currency': currency, 'fx_rate': rate,
+        'quantity': '1', 'price': '10', 'transaction_currency': currency, 'fx_rate': rate,
     })
     assert payload.fx_rate == Decimal(rate or '1')
 
@@ -124,11 +135,11 @@ def test_ambiguous_csv_headers_are_rejected(header):
         read_rows('bad.csv', (header + '\nAAPL,PETR4.SA\n').encode())
 
 
-def test_import_requires_explicit_currency():
+def test_unresolved_import_can_defer_currency_until_instrument_selection():
     result = preview_import(object(), 'bad.csv', csv_bytes(
         'AAPL,Example,Buy,2024-01-02,2024-01-03,1,100,,\n'))
     assert not result['valid']
-    assert result['rows'][0]['errors'][0]['field'] == 'asset_currency'
+    assert result['rows'][0]['errors'][0]['field'] == 'fx_rate'
 
 
 def test_csv_extra_cells_are_not_silently_discarded():
@@ -209,5 +220,5 @@ def test_downloaded_template_matches_import_contract_without_network(monkeypatch
     assert result['valid'], result
     assert len(result['rows']) == 3
     assert {row['data']['type'] for row in result['rows']} == {'Buy', 'Sell'}
-    assert {row['data']['asset_currency'] for row in result['rows']} == {'BRL', 'USD'}
+    assert {row['data']['transaction_currency'] for row in result['rows']} == {'BRL', 'USD'}
     assert all('fictício' in row['data']['notes'] for row in result['rows'])
