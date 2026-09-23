@@ -5,3 +5,23 @@ ARKX,ARK Space & Defense Innovation ETF,ETF,CBOE,USD,ACTIVE,yfinance,ARKX,USD,tr
 BTC,Bitcoin,CRYPTO,,,ACTIVE,yfinance,BTC-USD,USD,true,BTCUSD|BTC-USD
 BTC,Bitcoin,CRYPTO,,,ACTIVE,yfinance,BTC-BRL,BRL,false,BTCBRL|BTC-BRL
 BTC,Bitcoin,CRYPTO,,,ACTIVE,yfinance,BTC-EUR,EUR,false,BTCEUR|BTC-EUR
+GLD,SPDR Gold Shares,ETF,NYSE ARCA,USD,ACTIVE,yfinance,GLD,USD,true,
+SGOV,iShares 0-3 Month Treasury Bond ETF,ETF,NYSE,USD,ACTIVE,yfinance,SGOV,USD,true,
+GOLD11,TREND ETF LBMA OURO FDO. INV. INDICE - INVEST. EXT,ETF,B3,BRL,ACTIVE,yfinance,GOLD11.SA,BRL,true,GOLD11.SA
+ARGT,Global X MSCI Argentina ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,ARGT,USD,true,
+BCIC11,B-Index Morningstar Setores Ciclicos Brasil Fundo de Indice,ETF,B3,BRL,ACTIVE,yfinance,BCIC11.SA,BRL,true,BCIC11.SA
+BDEF11,B-Index Morningstar Setores Defensivos Brasil Fundo de Indice,ETF,B3,BRL,ACTIVE,yfinance,BDEF11.SA,BRL,true,BDEF11.SA
+BOTZ,Global X Robotics & Artificial Intelligence ETF,ETF,NASDAQ,USD,ACTIVE,yfinance,BOTZ,USD,true,
+BOVA11,iShares Ibovespa Fundo de Indice,ETF,B3,BRL,ACTIVE,yfinance,BOVA11.SA,BRL,true,BOVA11.SA
+MATB11,IT NOW IMAT Fundo de Indice,ETF,B3,BRL,ACTIVE,yfinance,MATB11.SA,BRL,true,MATB11.SA
+SMAL11,iShares BM&FBOVESPA Small Cap Fundo de Indice,ETF,B3,BRL,ACTIVE,yfinance,SMAL11.SA,BRL,true,SMAL11.SA
+XLB,State Street Materials Select Sector SPDR ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XLB,USD,true,
+XLC,State Street Communication Services Select Sector SPDR ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XLC,USD,true,
+XLF,State Street Financial Select Sector SPDR ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XLF,USD,true,
+XLI,State Street Industrial Select Sector SPDR ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XLI,USD,true,
+XLK,State Street Technology Select Sector SPDR ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XLK,USD,true,
+XLU,State Street Utilities Select Sector SPDR ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XLU,USD,true,
+XLV,State Street Health Care Select Sector SPDR ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XLV,USD,true,
+XOP,State Street SPDR S&P Oil & Gas Exploration & Production ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,XOP,USD,true,
+IEMG,iShares Core MSCI Emerging Markets ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,IEMG,USD,true,
+IEUR,iShares Core MSCI Europe ETF,ETF,NYSE ARCA,USD,ACTIVE,yfinance,IEUR,USD,true,

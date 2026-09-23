@@ -131,7 +131,15 @@ def _instrument_for_row(session, row):
         func.upper(Instrument.symbol) == row.symbol,
     )))
     if len(legacy) > 1:
-        raise ValueError(f'Ambiguous migrated identity for {row.symbol}.')
+        # Before canonical identities, the same ticker could be duplicated by
+        # transaction currency. Adopt only the unique row matching the trusted
+        # native/listing currency; keep every other history-bearing row intact.
+        native_currency_matches = [
+            instrument for instrument in legacy if instrument.currency == row.currency
+        ]
+        if len(native_currency_matches) != 1:
+            raise ValueError(f'Ambiguous migrated identity for {row.symbol}.')
+        legacy = native_currency_matches
     if legacy:
         instrument = legacy[0]
         # Before 0008, Instrument.currency was copied from transaction currency.

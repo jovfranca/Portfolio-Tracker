@@ -438,14 +438,70 @@ def test_catalog_seed_is_idempotent_and_loads_aliases_and_mappings(session):
     from src.instrument_catalog import seed_catalog
     first = seed_catalog(session)
     second = seed_catalog(session)
-    assert first == second == {'instruments': 4, 'mappings': 6}
-    assert session.scalar(select(func.count()).select_from(Instrument)) == 4
-    assert session.scalar(select(func.count()).select_from(ProviderInstrument)) == 6
+    assert first == second == {'instruments': 24, 'mappings': 26}
+    assert session.scalar(select(func.count()).select_from(Instrument)) == 24
+    assert session.scalar(select(func.count()).select_from(ProviderInstrument)) == 26
     assert resolve_instrument(session, 'PETR4.SA').instrument.symbol == 'PETR4'
     assert resolve_instrument(session, 'BTCBRL').instrument.symbol == 'BTC'
     btc = session.scalar(select(Instrument).where(Instrument.symbol == 'BTC'))
     assert btc.origin == 'CATALOG'
     assert provider_mapping(session, btc).provider_symbol == 'BTC-USD'
+
+
+def test_mvp_catalog_metadata_mappings_and_symbols_are_resolvable(session):
+    from src.instrument_catalog import seed_catalog
+    seed_catalog(session)
+
+    expected_rows = [
+        ('AAPL', 'Apple Inc.', 'STOCK', 'NASDAQ', 'USD', 'AAPL', 'USD', True),
+        ('PETR4', 'Petrobras PN', 'STOCK', 'B3', 'BRL', 'PETR4.SA', 'BRL', True),
+        ('ARKX', 'ARK Space & Defense Innovation ETF', 'ETF', 'CBOE', 'USD', 'ARKX', 'USD', True),
+        ('BTC', 'Bitcoin', 'CRYPTO', None, None, 'BTC-USD', 'USD', True),
+        ('BTC', 'Bitcoin', 'CRYPTO', None, None, 'BTC-BRL', 'BRL', False),
+        ('BTC', 'Bitcoin', 'CRYPTO', None, None, 'BTC-EUR', 'EUR', False),
+        ('GLD', 'SPDR Gold Shares', 'ETF', 'NYSE ARCA', 'USD', 'GLD', 'USD', True),
+        ('SGOV', 'iShares 0-3 Month Treasury Bond ETF', 'ETF', 'NYSE', 'USD', 'SGOV', 'USD', True),
+        ('GOLD11', 'TREND ETF LBMA OURO FDO. INV. INDICE - INVEST. EXT', 'ETF', 'B3', 'BRL', 'GOLD11.SA', 'BRL', True),
+        ('ARGT', 'Global X MSCI Argentina ETF', 'ETF', 'NYSE ARCA', 'USD', 'ARGT', 'USD', True),
+        ('BCIC11', 'B-Index Morningstar Setores Ciclicos Brasil Fundo de Indice', 'ETF', 'B3', 'BRL', 'BCIC11.SA', 'BRL', True),
+        ('BDEF11', 'B-Index Morningstar Setores Defensivos Brasil Fundo de Indice', 'ETF', 'B3', 'BRL', 'BDEF11.SA', 'BRL', True),
+        ('BOTZ', 'Global X Robotics & Artificial Intelligence ETF', 'ETF', 'NASDAQ', 'USD', 'BOTZ', 'USD', True),
+        ('BOVA11', 'iShares Ibovespa Fundo de Indice', 'ETF', 'B3', 'BRL', 'BOVA11.SA', 'BRL', True),
+        ('MATB11', 'IT NOW IMAT Fundo de Indice', 'ETF', 'B3', 'BRL', 'MATB11.SA', 'BRL', True),
+        ('SMAL11', 'iShares BM&FBOVESPA Small Cap Fundo de Indice', 'ETF', 'B3', 'BRL', 'SMAL11.SA', 'BRL', True),
+        ('XLB', 'State Street Materials Select Sector SPDR ETF', 'ETF', 'NYSE ARCA', 'USD', 'XLB', 'USD', True),
+        ('XLC', 'State Street Communication Services Select Sector SPDR ETF', 'ETF', 'NYSE ARCA', 'USD', 'XLC', 'USD', True),
+        ('XLF', 'State Street Financial Select Sector SPDR ETF', 'ETF', 'NYSE ARCA', 'USD', 'XLF', 'USD', True),
+        ('XLI', 'State Street Industrial Select Sector SPDR ETF', 'ETF', 'NYSE ARCA', 'USD', 'XLI', 'USD', True),
+        ('XLK', 'State Street Technology Select Sector SPDR ETF', 'ETF', 'NYSE ARCA', 'USD', 'XLK', 'USD', True),
+        ('XLU', 'State Street Utilities Select Sector SPDR ETF', 'ETF', 'NYSE ARCA', 'USD', 'XLU', 'USD', True),
+        ('XLV', 'State Street Health Care Select Sector SPDR ETF', 'ETF', 'NYSE ARCA', 'USD', 'XLV', 'USD', True),
+        ('XOP', 'State Street SPDR S&P Oil & Gas Exploration & Production ETF', 'ETF', 'NYSE ARCA', 'USD', 'XOP', 'USD', True),
+        ('IEMG', 'iShares Core MSCI Emerging Markets ETF', 'ETF', 'NYSE ARCA', 'USD', 'IEMG', 'USD', True),
+        ('IEUR', 'iShares Core MSCI Europe ETF', 'ETF', 'NYSE ARCA', 'USD', 'IEUR', 'USD', True),
+    ]
+    instruments = {
+        instrument.symbol: instrument
+        for instrument in session.scalars(select(Instrument)).all()
+    }
+    assert set(instruments) == {row[0] for row in expected_rows}
+
+    for symbol, name, asset_type, exchange, currency, provider_symbol, quote_currency, primary in expected_rows:
+        instrument = instruments[symbol]
+        assert (instrument.name, instrument.asset_type, instrument.exchange, instrument.currency) == (
+            name, asset_type, exchange, currency,
+        )
+        mapping = session.scalar(select(ProviderInstrument).where(
+            ProviderInstrument.instrument_id == instrument.id,
+            ProviderInstrument.provider == 'yfinance',
+            ProviderInstrument.provider_symbol == provider_symbol,
+        ))
+        assert mapping is not None
+        assert (mapping.quote_currency, mapping.is_primary, mapping.active) == (
+            quote_currency, primary, True,
+        )
+        assert resolve_instrument(session, symbol).instrument.id == instrument.id
+        assert resolve_instrument(session, provider_symbol).instrument.id == instrument.id
 
 
 def test_catalog_replacement_retires_mapping_without_hiding_its_history(session, monkeypatch):
@@ -536,6 +592,31 @@ def test_catalog_repairs_migration_placeholder_currency_without_changing_transac
     assert (legacy.id, legacy.currency, legacy.exchange, legacy.origin) == (original_id, 'USD', 'NASDAQ', 'CATALOG')
     assert provider_mapping(session, legacy).quote_currency == 'USD'
     assert session.execute(text('SELECT instrument_id, asset_currency FROM transactions')).one() == (original_id, 'BRL')
+
+
+def test_catalog_adopts_native_currency_placeholder_when_legacy_symbol_is_duplicated(session):
+    from src.instrument_catalog import seed_catalog
+    brl = Instrument(symbol='GOLD11', name='', asset_type='OTHER', currency='BRL', origin='MIGRATED')
+    usd = Instrument(symbol='GOLD11', name='', asset_type='OTHER', currency='USD', origin='MIGRATED')
+    session.add_all([brl, usd])
+    session.flush()
+    add_alias(session, brl, 'GOLD11', 'migration')
+    add_alias(session, usd, 'GOLD11', 'migration')
+    session.execute(text("INSERT INTO transactions VALUES (1, :iid, 'BRL', 1)"), {'iid': brl.id})
+    session.execute(text("INSERT INTO transactions VALUES (2, :iid, 'USD', 1)"), {'iid': usd.id})
+
+    seed_catalog(session)
+
+    assert (brl.asset_type, brl.exchange, brl.currency, brl.origin) == (
+        'ETF', 'B3', 'BRL', 'CATALOG',
+    )
+    assert (usd.asset_type, usd.exchange, usd.currency, usd.origin) == (
+        'OTHER', None, 'USD', 'MIGRATED',
+    )
+    assert provider_mapping(session, brl).provider_symbol == 'GOLD11.SA'
+    assert session.execute(text(
+        'SELECT instrument_id, asset_currency FROM transactions ORDER BY id'
+    )).all() == [(brl.id, 'BRL'), (usd.id, 'USD')]
 
 
 def test_catalog_reuses_migrated_crypto_with_provider_market_label(session):
