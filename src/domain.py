@@ -25,7 +25,7 @@ class Position:
     asset: str
     broker: str
     allocation_class: str
-    asset_currency: str
+    transaction_currency: str
     quantity: Decimal = ZERO
     average_cost: Decimal = ZERO
     current_price: Decimal | None = None
@@ -108,28 +108,27 @@ def historical_profitability(transactions, history):
 
 def overview(transactions, assets):
     groups = defaultdict(list)
-    accounting_currencies = {}
     assets_by_identity = {
-        getattr(asset, 'instrument_id', ('legacy', asset.ticker)): asset for asset in assets
+        (
+            getattr(asset, 'instrument_id', ('legacy', asset.ticker)),
+            getattr(asset, 'transaction_currency', 'BRL'),
+        ): asset
+        for asset in assets
     }
     for transaction in ordered(transactions):
         identity = getattr(transaction, 'instrument_id', None)
         if identity is None:
             identity = ('legacy', transaction.asset)
-        currency = getattr(transaction, 'asset_currency', 'BRL')
-        previous_currency = accounting_currencies.setdefault(identity, currency)
-        if previous_currency != currency:
-            raise ValueError('Mixed transaction currencies for canonical instrument.')
+        currency = getattr(transaction, 'transaction_currency', 'BRL')
         groups[(
-            identity, transaction.broker, transaction.allocation_class,
+            identity, currency, transaction.broker, transaction.allocation_class,
         )].append(transaction)
 
     positions = []
-    for (identity, broker, allocation), position_transactions in sorted(
-        groups.items(), key=lambda item: (item[0][2], str(item[0][0]), item[0][1])
+    for (identity, currency, broker, allocation), position_transactions in sorted(
+        groups.items(), key=lambda item: (item[0][3], str(item[0][0]), item[0][2], item[0][1])
     ):
-        currency = accounting_currencies[identity]
-        asset = assets_by_identity.get(identity)
+        asset = assets_by_identity.get((identity, currency))
         ticker = asset.ticker if asset else position_transactions[0].asset
         quotes = asset.history if asset else []
         average, quantity = cost_and_quantity(position_transactions)
@@ -157,23 +156,28 @@ def overview(transactions, assets):
 
     asset_rows = []
     identities = {
-        getattr(transaction, 'instrument_id', None) or ('legacy', transaction.asset)
+        (
+            getattr(transaction, 'instrument_id', None) or ('legacy', transaction.asset),
+            getattr(transaction, 'transaction_currency', 'BRL'),
+        )
         for transaction in transactions
     }
-    for identity in sorted(identities, key=str):
+    for identity, currency in sorted(identities, key=str):
         asset_transactions = [
             transaction for transaction in transactions
-            if (getattr(transaction, 'instrument_id', None) or ('legacy', transaction.asset)) == identity
+            if (
+                getattr(transaction, 'instrument_id', None) or ('legacy', transaction.asset),
+                getattr(transaction, 'transaction_currency', 'BRL'),
+            ) == (identity, currency)
         ]
-        currency = getattr(asset_transactions[0], 'asset_currency', 'BRL')
         average, quantity = cost_and_quantity(asset_transactions)
-        asset = assets_by_identity.get(identity)
+        asset = assets_by_identity.get((identity, currency))
         ticker = asset.ticker if asset else asset_transactions[0].asset
         latest = max(asset.history, key=lambda quote: quote.date) if asset and asset.history else None
         asset_rows.append({
             'id': asset.id if asset else None,
             'ticker': ticker,
-            'asset_currency': currency,
+            'transaction_currency': currency,
             'quantity': quantity,
             'average_cost': average,
             'current_price': decimal(latest.close) if latest else None,
@@ -182,11 +186,11 @@ def overview(transactions, assets):
         })
 
     missing = [asset['ticker'] for asset in asset_rows if asset['total_value'] is None]
-    currencies = sorted({asset['asset_currency'] for asset in asset_rows})
+    currencies = sorted({asset['transaction_currency'] for asset in asset_rows})
     totals_by_currency = {
         currency: sum((
             asset['total_value'] or ZERO for asset in asset_rows
-            if asset['asset_currency'] == currency
+            if asset['transaction_currency'] == currency
         ), ZERO)
         for currency in currencies
     }
@@ -197,7 +201,7 @@ def overview(transactions, assets):
         'summary': {
             'transactions': len(transactions),
             'positions': len(positions),
-            'assets': len(asset_rows),
+            'assets': len({asset['id'] for asset in asset_rows}),
             'priced_value': priced_value,
             'total_value': None if missing or len(currencies) != 1 else priced_value,
             'missing_prices': missing,

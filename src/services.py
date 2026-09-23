@@ -1,4 +1,5 @@
 from datetime import datetime, time
+from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -29,10 +30,8 @@ def get_asset(session, portfolio_id, asset_id):
     return asset
 
 
-def require_instrument(session, identifier, currency, instrument_id=None):
-    resolution = resolve_instrument(
-        session, identifier, currency=currency, instrument_id=instrument_id,
-    )
+def require_instrument(session, identifier, instrument_id=None):
+    resolution = resolve_instrument(session, identifier, instrument_id=instrument_id)
     if resolution.status == 'ambiguous':
         raise HTTPException(422, f'O identificador {identifier} corresponde a mais de um instrumento.')
     if resolution.status == 'unresolved':
@@ -59,24 +58,29 @@ def ensure_asset(session, portfolio_id, instrument):
     return asset
 
 
-def ensure_asset_currency(session, portfolio_id, instrument_id, currency):
-    query = select(Transaction.asset_currency).where(
-        Transaction.portfolio_id == portfolio_id,
-        Transaction.instrument_id == instrument_id,
-    )
-    existing = set(session.scalars(query.distinct()))
-    if existing and existing != {currency}:
-        raise HTTPException(
-            422,
-            f'O instrumento já está registrado em {", ".join(sorted(existing))}; não misture moedas na mesma posição.',
-        )
+def transaction_currency_for(instrument, supplied_currency):
+    """Resolve a transaction currency without changing canonical identity."""
+    if instrument.asset_type in ('STOCK', 'ETF'):
+        if not instrument.currency:
+            raise HTTPException(422, 'O instrumento listado não tem moeda nativa configurada.')
+        if supplied_currency and supplied_currency != instrument.currency:
+            raise HTTPException(422, f'A moeda nativa desta ação/ETF é {instrument.currency}.')
+        return instrument.currency
+    if not supplied_currency:
+        raise HTTPException(422, 'Informe a moeda da transação.')
+    return supplied_currency
 
 
-def transaction_values(session, payload):
+def transaction_values(session, payload, transaction_currency=None):
     """Resolve and freeze values that every saved transaction must carry."""
     values = payload.model_dump()
-    if values['fx_rate'] is None:
-        rates = get_rates(session, values['asset_currency'], 'FX', values['settlement_date'])
+    values['transaction_currency'] = transaction_currency or values['transaction_currency']
+    if not values['transaction_currency']:
+        raise ValueError('Informe a moeda da transação.')
+    if values['transaction_currency'] == 'BRL':
+        values['fx_rate'] = Decimal('1')
+    elif values['fx_rate'] is None:
+        rates = get_rates(session, values['transaction_currency'], 'FX', values['settlement_date'])
         values['fx_rate'] = next(rate.rate for rate in rates if rate.rate_side == 'MARKET')
     values['date_time'] = datetime.combine(values['trade_date'], time.min)
     return values
@@ -91,8 +95,14 @@ def get_overview(session, portfolio_id):
     calculation_assets = [
         SimpleNamespace(
             id=asset.id, instrument_id=asset.instrument_id,
-            ticker=asset.instrument.symbol, history=history_for_domain(session, asset),
+            ticker=asset.instrument.symbol, transaction_currency=currency,
+            history=history_for_domain(session, asset, currency=currency),
         )
         for asset in assets
+        for currency in sorted({
+            transaction.transaction_currency
+            for transaction in transactions
+            if transaction.instrument_id == asset.instrument_id
+        })
     ]
     return overview(transactions, calculation_assets)

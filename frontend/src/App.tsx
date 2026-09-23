@@ -13,11 +13,11 @@ const localDate = () => {
 }
 const dateLabel = (value: string | null) => value ? value.slice(0, 10).split('-').reverse().join('/') : 'Sem cotação'
 const message = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível concluir.'
-type Draft = Omit<Transaction, 'id' | 'portfolio_id' | 'fx_rate' | 'instrument_id'> & {
+type Draft = Omit<Transaction, 'id' | 'portfolio_id' | 'fx_rate' | 'instrument_id' | 'transaction_currency_locked'> & {
   instrument_id: number | null; fx_rate: Numeric | ''
 }
 const emptyDraft = (): Draft => ({ trade_date: localDate().slice(0, 10), settlement_date: localDate().slice(0, 10),
-  type: 'Buy', asset: '', instrument_id: null, broker: '', allocation_class: '', asset_currency: 'BRL', fx_rate: '',
+  type: 'Buy', asset: '', instrument_id: null, broker: '', allocation_class: '', transaction_currency: 'BRL', fx_rate: '',
   quantity: 1, price: 0, brokerage_fee: 0, other_fees: 0, notes: '' })
 
 export default function App() {
@@ -39,7 +39,8 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<Draft>(emptyDraft)
-  const lockedCurrency = draft.instrument_id ? transactions.find(t => t.instrument_id === draft.instrument_id)?.asset_currency ?? null : null
+  const [listedCurrency, setListedCurrency] = useState<string | null>(null)
+  const lockedCurrency = listedCurrency
   const [editing, setEditing] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [portfolioName, setPortfolioName] = useState('')
@@ -68,7 +69,7 @@ export default function App() {
   }, [selected])
 
   useEffect(() => {
-    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setEditing(null); setFormOpen(false); setQuery('')
+    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(false); setQuery('')
     if (selected === null) return
     const controller = new AbortController()
     setLoading(true); setError('')
@@ -106,8 +107,8 @@ export default function App() {
     }
   }
   function edit(tx: Transaction) {
-    const { id, portfolio_id: _portfolioId, ...values } = tx
-    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setEditing(id); setFormOpen(true)
+    const { id, portfolio_id: _portfolioId, transaction_currency_locked: currencyLocked, ...values } = tx
+    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
   const filteredPositions = overview?.positions.filter(p => [p.asset, p.broker, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
@@ -136,7 +137,7 @@ export default function App() {
           <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
           {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && <div className="page-actions">
             {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
-            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setEditing(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
+            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
           </div>}
         </div>
         {error && <div role="alert" className="alert error">{error} <button className="button quiet" disabled={busy} onClick={() => void loadPortfolios().then(() => reload()).catch(e => setError(message(e)))}>Tentar novamente</button></div>}
@@ -155,17 +156,19 @@ export default function App() {
               <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
               <label>Instrumento<input readOnly={draft.instrument_id !== null} required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
               {draft.instrument_id === null ? <InstrumentPicker query={draft.asset} onSelect={item => {
+                setListedCurrency(item.asset_type === 'STOCK' || item.asset_type === 'ETF' ? item.currency : null)
                 setDraft(current => {
-                  const currency = transactions.find(t => t.instrument_id === item.instrument_id)?.asset_currency
-                    ?? (item.is_custom ? item.currency : null) ?? current.asset_currency
-                  return { ...current, instrument_id: item.instrument_id, asset: item.symbol, asset_currency: currency,
-                    fx_rate: currency === current.asset_currency ? current.fx_rate : '' }
+                  const currency = (item.asset_type === 'STOCK' || item.asset_type === 'ETF')
+                    ? item.currency ?? current.transaction_currency
+                    : (item.is_custom ? item.currency : null) ?? current.transaction_currency
+                  return { ...current, instrument_id: item.instrument_id, asset: item.symbol, transaction_currency: currency,
+                    fx_rate: currency === current.transaction_currency ? current.fx_rate : '' }
                 })
-              }} /> : <div className="selected-instrument wide"><span>Instrumento selecionado: <strong>{draft.asset}</strong></span><button type="button" className="button quiet" onClick={() => setDraft({ ...draft, instrument_id: null, asset: '' })}>Trocar ativo</button></div>}
+              }} /> : <div className="selected-instrument wide"><span>Instrumento selecionado: <strong>{draft.asset}</strong></span><button type="button" className="button quiet" onClick={() => { setDraft({ ...draft, instrument_id: null, asset: '' }); setListedCurrency(null) }}>Trocar ativo</button></div>}
               <label>Corretora<input required maxLength={120} value={draft.broker} onChange={e => setDraft({ ...draft, broker: e.target.value })} /></label>
               <label>Classe de alocação<input required maxLength={120} value={draft.allocation_class} onChange={e => setDraft({ ...draft, allocation_class: e.target.value })} placeholder="Ex.: Ações Brasil" /></label>
-              <label>Moeda da transação<input disabled={!!lockedCurrency} required maxLength={3} pattern="[A-Za-z]{3}" value={draft.asset_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, asset_currency: currency, fx_rate: currency === draft.asset_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
-              <label>Taxa FX<input type="number" min="0.000000000001" step="any" value={draft.fx_rate} disabled={draft.asset_currency === 'BRL'} onChange={e => setDraft({ ...draft, fx_rate: e.target.value })} placeholder={draft.asset_currency === 'BRL' ? '1' : 'Automática'} /></label>
+              <label>Moeda da transação<input disabled={!!lockedCurrency} required maxLength={3} pattern="[A-Za-z]{3}" value={draft.transaction_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, transaction_currency: currency, fx_rate: currency === draft.transaction_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
+              <label>Taxa FX<input type="number" min="0.000000000001" step="any" value={draft.fx_rate} disabled={draft.transaction_currency === 'BRL'} onChange={e => setDraft({ ...draft, fx_rate: e.target.value })} placeholder={draft.transaction_currency === 'BRL' ? '1' : 'Automática'} /></label>
               {([['quantity', 'Quantidade'], ['price', 'Preço unitário'], ['brokerage_fee', 'Corretagem'], ['other_fees', 'Outras taxas']] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min={key === 'quantity' ? '0.000000000001' : '0'} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value } as Draft)} /></label>)}
               <label className="wide">Observações<input maxLength={5000} value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></label>
             </div>
@@ -185,13 +188,13 @@ export default function App() {
           {tab === 'Posições' && <section className="panel">
             <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição para cada ativo, corretora e classe.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo, corretora ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
             {!overview.positions.length ? <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
-              <div className="table-wrap"><table><thead><tr><th>Ativo / classe</th><th>Corretora</th><th>Quantidade</th><th>Preço médio</th><th>Cotação</th><th>Valor atual</th><th>Ganho histórico</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={[p.asset_id, p.broker, p.allocation_class].join('|')}>
-                <td><strong>{p.asset}</strong><small>{p.allocation_class}</small></td><td>{p.broker}</td><td>{fmt(p.quantity, 6)}</td><td>{fmt(p.average_cost, 4)}</td><td>{fmt(p.current_price)}<small>{dateLabel(p.price_date)}</small></td><td>{fmt(p.total_value)}</td>
+              <div className="table-wrap"><table><thead><tr><th>Ativo / classe / moeda</th><th>Corretora</th><th>Quantidade</th><th>Preço médio</th><th>Cotação</th><th>Valor atual</th><th>Ganho histórico</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={[p.asset_id, p.transaction_currency, p.broker, p.allocation_class].join('|')}>
+                <td><strong>{p.asset}</strong><small>{p.allocation_class} · {p.transaction_currency}</small></td><td>{p.broker}</td><td>{fmt(p.quantity, 6)}</td><td>{fmt(p.average_cost, 4)}</td><td>{fmt(p.current_price)}<small>{dateLabel(p.price_date)}</small></td><td>{fmt(p.total_value)}</td>
                 <td className={(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{fmt(p.current_total_gain)}<small>{fmt(p.current_accumulated_profitability)}%{p.history_behind_transactions ? ' · histórico incompleto' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
           {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar recalcula as posições automaticamente.</p></div></div>
-            {!transactions.length ? <div className="empty">Nenhuma transação registrada.</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.asset_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
+            {!transactions.length ? <div className="empty">Nenhuma transação registrada.</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
               if (window.confirm('Excluir esta transação e recalcular as posições?')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída.')
             }}>Excluir</button></div></td></tr>)}</tbody></table></div>}
           </section>}
@@ -222,13 +225,14 @@ function CatalogPage() {
 
 type Mutate = (task: () => Promise<unknown>, success: string) => Promise<boolean>
 function Quotes({ portfolioId, assets, busy, mutate }: { portfolioId: number; assets: Asset[]; busy: boolean; mutate: Mutate }) {
-  const [id, setId] = useState(assets[0]?.id ?? 0)
+  const quoteAssets = assets.filter((asset, index) => assets.findIndex(item => item.id === asset.id) === index)
+  const [id, setId] = useState(quoteAssets[0]?.id ?? 0)
   const [rows, setRows] = useState<Quote[]>([])
   const [error, setError] = useState('')
   const [version, setVersion] = useState(0)
   const [draft, setDraft] = useState({ date: localDate().slice(0, 10), close: '', dividends: '0', stock_splits: '0' })
   useEffect(() => {
-    if (!assets.some(asset => asset.id === id)) setId(assets[0]?.id ?? 0)
+    if (!quoteAssets.some(asset => asset.id === id)) setId(quoteAssets[0]?.id ?? 0)
   }, [assets, id])
   const base = '/portfolios/' + portfolioId + '/assets/' + id
   useEffect(() => {
@@ -237,8 +241,8 @@ function Quotes({ portfolioId, assets, busy, mutate }: { portfolioId: number; as
     api<Quote[]>(base + '/history', 'GET', undefined, controller.signal).then(setRows).catch(e => { if (!controller.signal.aborted) setError(message(e)) })
     return () => controller.abort()
   }, [base, id, version])
-  if (!assets.length) return <div className="panel empty">Registre uma transação para adicionar cotações ao ativo.</div>
-  return <section className="panel"><div className="section-heading"><div><h2>Histórico de cotações</h2><p>Adicione preços manualmente ou atualize pelo Yahoo Finance.</p></div><label>Ativo<select value={id} disabled={busy} onChange={e => setId(Number(e.target.value))}>{assets.map(a => <option key={a.id} value={a.id}>{a.ticker}</option>)}</select></label></div>
+  if (!quoteAssets.length) return <div className="panel empty">Registre uma transação para adicionar cotações ao ativo.</div>
+  return <section className="panel"><div className="section-heading"><div><h2>Histórico de cotações</h2><p>Adicione preços manualmente ou atualize pelo Yahoo Finance.</p></div><label>Ativo<select value={id} disabled={busy} onChange={e => setId(Number(e.target.value))}>{quoteAssets.map(a => <option key={a.id} value={a.id}>{a.ticker}</option>)}</select></label></div>
     <div className="quote-controls"><form onSubmit={async e => {
       e.preventDefault()
       if (await mutate(() => api(base + '/quote', 'PUT', { date: draft.date, close: Number(draft.close), dividends: Number(draft.dividends), stock_splits: Number(draft.stock_splits) }), 'Cotação salva.')) setVersion(version + 1)
@@ -267,14 +271,14 @@ function PerformancePanel({ portfolioId, overview }: { portfolioId: number; over
     setRows([]); setError('')
     if (!p || !assetId) return
     const controller = new AbortController(); setLoading(true)
-    const params = new URLSearchParams({ asset_id: String(assetId), broker: p.broker, allocation_class: p.allocation_class })
+    const params = new URLSearchParams({ asset_id: String(assetId), broker: p.broker, allocation_class: p.allocation_class, transaction_currency: p.transaction_currency })
     api<Performance[]>('/portfolios/' + portfolioId + '/performance?' + params, 'GET', undefined, controller.signal)
       .then(setRows).catch(e => { if (!controller.signal.aborted) setError(message(e)) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [portfolioId, assetId, p])
   return <section className="panel"><div className="section-heading"><div><h2>Evolução do ganho por posição</h2><p>Ganho realizado + ganho não realizado, conforme a fórmula original.</p></div>
-    <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset} · {pos.broker} · {pos.allocation_class}</option>)}</select></label></div>
+    <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset} · {pos.broker} · {pos.allocation_class} · {pos.transaction_currency}</option>)}</select></label></div>
     <div className="method-note">O percentual acumulado divide o ganho pelas compras acumuladas. A variação diária compara ganhos; não representa retorno diário da carteira.</div>
     {error && <div role="alert" className="alert error">{error}</div>}
     {loading ? <div className="empty">Carregando histórico…</div> : !rows.length ? <div className="empty">Adicione cotações para visualizar o histórico desta posição.</div> : <>

@@ -26,7 +26,7 @@ class TransactionInput(Input):
     allocation_class: Name = 'Sem classe'
     quantity: PositiveDecimalAmount
     price: DecimalAmount
-    asset_currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] = 'BRL'
+    transaction_currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] | None = None
     fx_rate: PositiveDecimalAmount | None = None
     brokerage_fee: DecimalAmount = Decimal('0')
     other_fees: DecimalAmount = Decimal('0')
@@ -37,10 +37,10 @@ class TransactionInput(Input):
     def normalize_ticker(cls, value):
         return value.upper()
 
-    @field_validator('asset_currency')
+    @field_validator('transaction_currency')
     @classmethod
     def normalize_currency(cls, value):
-        return value.upper()
+        return value.upper() if value else value
 
     @field_validator('type', mode='before')
     @classmethod
@@ -56,7 +56,7 @@ class TransactionInput(Input):
             raise ValueError('A data de negociação não pode estar no futuro.')
         if self.settlement_date < self.trade_date:
             raise ValueError('A data de liquidação deve ser igual ou posterior à negociação.')
-        if self.asset_currency == 'BRL':
+        if self.transaction_currency == 'BRL':
             self.fx_rate = Decimal('1')
         return self
 
@@ -90,6 +90,7 @@ class TransactionOutput(TransactionInput):
     id: int
     portfolio_id: int
     instrument_id: int
+    transaction_currency_locked: bool
 
 
 class CustomInstrumentInput(Input):

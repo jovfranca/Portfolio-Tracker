@@ -2,6 +2,7 @@
 import importlib
 import os
 import uuid
+from decimal import Decimal
 
 import pytest
 from alembic.migration import MigrationContext
@@ -20,6 +21,7 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
     migration = importlib.import_module('migrations.versions.0008_canonical_instrument_identity')
     currency_migration = importlib.import_module('migrations.versions.0009_provider_quote_currency')
     catalog_migration = importlib.import_module('migrations.versions.0010_catalog_primary_mapping')
+    transaction_currency_migration = importlib.import_module('migrations.versions.0011_transaction_currency')
     with engine.connect() as connection:
         transaction = connection.begin()
         try:
@@ -35,7 +37,7 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
                 CONSTRAINT uq_assets_portfolio_id UNIQUE (portfolio_id, ticker))'''))
             connection.execute(text('''CREATE TABLE transactions (
                 id integer PRIMARY KEY, portfolio_id integer NOT NULL, asset varchar(40) NOT NULL,
-                asset_currency varchar(3) NOT NULL)'''))
+                asset_currency varchar(3) NOT NULL, fx_rate numeric NOT NULL)'''))
             connection.execute(text('''CREATE TABLE market_prices (
                 id integer PRIMARY KEY, instrument_id integer NOT NULL REFERENCES instruments(id),
                 interval varchar(12) NOT NULL, reference_at timestamptz NOT NULL,
@@ -59,9 +61,9 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
             connection.execute(text("INSERT INTO instruments VALUES (1, 'AAPL', 'USD')"))
             connection.execute(text("INSERT INTO instruments VALUES (2, 'PRIVATE', 'BRL')"))
             connection.execute(text("INSERT INTO assets VALUES (1, 10, 'AAPL', 1)"))
-            connection.execute(text("INSERT INTO transactions VALUES (1, 10, 'AAPL', 'USD')"))
+            connection.execute(text("INSERT INTO transactions VALUES (1, 10, 'AAPL', 'USD', 5.12)"))
             connection.execute(text("INSERT INTO assets VALUES (2, 10, 'PRIVATE', 2)"))
-            connection.execute(text("INSERT INTO transactions VALUES (2, 10, 'PRIVATE', 'BRL')"))
+            connection.execute(text("INSERT INTO transactions VALUES (2, 10, 'PRIVATE', 'BRL', 1)"))
             connection.execute(text('CREATE TABLE user_defined_prices (id integer PRIMARY KEY, asset_id integer, price numeric, source text)'))
             connection.execute(text("INSERT INTO user_defined_prices VALUES (1, 2, 123.45, 'manual')"))
             connection.execute(text('CREATE TABLE exchange_rates (id integer PRIMARY KEY, currency text, rate_type text, rate numeric)'))
@@ -77,6 +79,7 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
                 migration.upgrade()
                 currency_migration.upgrade()
                 catalog_migration.upgrade()
+                transaction_currency_migration.upgrade()
 
             assert connection.scalar(text('SELECT instrument_id FROM transactions WHERE id = 1')) == 1
             assert connection.scalar(text('SELECT count(*) FROM provider_instruments')) == 1
@@ -88,6 +91,8 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
             assert connection.scalar(text("SELECT is_nullable FROM information_schema.columns WHERE table_schema = :schema AND table_name = 'instruments' AND column_name = 'currency'"), {'schema': schema}) == 'YES'
             assert connection.scalar(text("SELECT count(*) FROM pg_indexes WHERE schemaname = :schema AND indexname = 'uq_instruments_crypto_symbol'"), {'schema': schema}) == 1
             assert connection.scalar(text('SELECT instrument_id FROM transactions WHERE id = 2')) == 2
+            assert connection.scalar(text('SELECT transaction_currency FROM transactions WHERE id = 1')) == 'USD'
+            assert connection.scalar(text('SELECT fx_rate FROM transactions WHERE id = 1')) == Decimal('5.12')
             assert connection.scalar(text('SELECT price FROM user_defined_prices')) == connection.scalar(text('SELECT 123.45::numeric'))
             assert connection.scalar(text('SELECT count(*) FROM exchange_rates')) == 2
             assert connection.scalar(text("SELECT provider_symbol FROM provider_instruments WHERE instrument_id = 1")) == 'AAPL'
@@ -97,6 +102,7 @@ def test_canonical_identity_migration_backfills_transactions_and_prices():
             assert connection.scalar(text('SELECT count(*) FROM market_price_coverage')) == 1
             assert connection.scalar(text('SELECT price FROM latest_market_quotes')) == 186
             with Operations.context(MigrationContext.configure(connection)):
+                transaction_currency_migration.downgrade()
                 catalog_migration.downgrade()
                 currency_migration.downgrade()
                 migration.downgrade()

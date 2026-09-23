@@ -21,7 +21,7 @@ test.beforeEach(async ({ page, request }) => {
 test('review import values, reject duplicates, and preserve manual decimals', async ({ page, request }) => {
   const file = {
     name: 'records.csv', mimeType: 'text/csv', buffer: Buffer.from(
-      'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,asset_currency,fx_rate\n' +
+      'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency,fx_rate\n' +
       'IMPORTTEST,Example,Buy,2024-01-02,2024-01-03,12345.123456789012,10.000000000001,USD,5.123456789012\n'),
   }
   await page.locator('input[type=file]').setInputFiles(file)
@@ -82,7 +82,7 @@ test('download and import the XLSX template, navigate back and render on mobile'
 
 test('show backend row errors and malformed file errors without saving', async ({ page, request }) => {
   await page.locator('input[type=file]').setInputFiles({ name: 'invalid.csv', mimeType: 'text/csv', buffer: Buffer.from(
-    'ticker,type,trade_date,settlement_date,quantity,unit_price,asset_currency\n' +
+    'ticker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency\n' +
     'FICTICIO,Dividend,31/12/2024,2024-01-04,abc,10,BRL\n'),
   })
   const errors = page.getByRole('table', { name: 'Erros de importação' })

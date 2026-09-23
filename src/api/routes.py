@@ -20,8 +20,8 @@ from src.schemas import (
     TransactionImportConfirm, TransactionSelectionInput, TransactionOutput,
 )
 from src.services import (
-    ensure_asset, ensure_asset_currency, get_asset, get_overview, get_portfolio,
-    require_instrument, transaction_values,
+    ensure_asset, get_asset, get_overview, get_portfolio, require_instrument,
+    transaction_currency_for, transaction_values,
 )
 from src.transaction_import import MAX_IMPORT_BYTES, preview_import
 from src.import_template import transaction_template
@@ -130,13 +130,12 @@ def transactions(portfolio_id: int, session: DB):
 )
 def add_transaction(portfolio_id: int, payload: TransactionSelectionInput, session: DB):
     get_portfolio(session, portfolio_id, lock=True)
-    instrument = require_instrument(
-        session, payload.asset, payload.asset_currency, payload.instrument_id,
-    )
+    instrument = require_instrument(session, payload.asset, payload.instrument_id)
     add_alias(session, instrument, payload.asset, 'manual-entry')
-    ensure_asset_currency(session, portfolio_id, instrument.id, payload.asset_currency)
     ensure_asset(session, portfolio_id, instrument)
-    values = transaction_values(session, payload)
+    values = transaction_values(session, payload, transaction_currency_for(
+        instrument, payload.transaction_currency,
+    ))
     values['instrument_id'] = instrument.id
     transaction = Transaction(
         portfolio_id=portfolio_id, **values
@@ -170,15 +169,12 @@ def edit_transaction(
 ):
     get_portfolio(session, portfolio_id, lock=True)
     transaction = find_transaction(session, portfolio_id, transaction_id)
-    instrument = require_instrument(
-        session, payload.asset, payload.asset_currency, payload.instrument_id,
-    )
+    instrument = require_instrument(session, payload.asset, payload.instrument_id)
     add_alias(session, instrument, payload.asset, 'manual-entry')
-    ensure_asset_currency(
-        session, portfolio_id, instrument.id, payload.asset_currency
-    )
     ensure_asset(session, portfolio_id, instrument)
-    values = transaction_values(session, payload)
+    values = transaction_values(session, payload, transaction_currency_for(
+        instrument, payload.transaction_currency,
+    ))
     values['instrument_id'] = instrument.id
     if transaction.trade_date == payload.trade_date:
         values['date_time'] = transaction.date_time
@@ -231,9 +227,10 @@ async def import_preview(portfolio_id: int, filename: str, request: Request, ses
 @router.post('/portfolios/{portfolio_id}/transactions/import-resolve')
 def resolve_import_row(portfolio_id: int, payload: TransactionSelectionInput, session: DB):
     get_portfolio(session, portfolio_id)
-    instrument = require_instrument(session, payload.asset, payload.asset_currency, payload.instrument_id)
-    ensure_asset_currency(session, portfolio_id, instrument.id, payload.asset_currency)
-    values = transaction_values(session, payload)
+    instrument = require_instrument(session, payload.asset, payload.instrument_id)
+    values = transaction_values(session, payload, transaction_currency_for(
+        instrument, payload.transaction_currency,
+    ))
     values.pop('date_time')
     values['instrument_id'] = instrument.id
     return TransactionSelectionInput.model_validate(values)
@@ -253,13 +250,12 @@ def import_transactions(
     if previous is not None:
         raise HTTPException(409, 'Este arquivo já foi importado para esta carteira.')
     for row in payload.rows:
-        instrument = require_instrument(
-            session, row.asset, row.asset_currency, row.instrument_id,
-        )
-        ensure_asset_currency(session, portfolio_id, instrument.id, row.asset_currency)
+        instrument = require_instrument(session, row.asset, row.instrument_id)
         ensure_asset(session, portfolio_id, instrument)
         add_alias(session, instrument, row.asset, 'import')
-        values = transaction_values(session, row)
+        values = transaction_values(session, row, transaction_currency_for(
+            instrument, row.transaction_currency,
+        ))
         values['instrument_id'] = instrument.id
         session.add(Transaction(
             portfolio_id=portfolio_id, **values
@@ -363,6 +359,7 @@ def performance(
     asset_id: int,
     broker: str,
     allocation_class: str,
+    transaction_currency: str,
 ):
     asset = get_asset(session, portfolio_id, asset_id)
     transactions = list(session.scalars(select(Transaction).where(
@@ -370,8 +367,11 @@ def performance(
         Transaction.instrument_id == asset.instrument_id,
         Transaction.broker == broker,
         Transaction.allocation_class == allocation_class,
+        Transaction.transaction_currency == transaction_currency,
     )))
-    return historical_profitability(transactions, get_stored_history(session, asset))
+    return historical_profitability(
+        transactions, get_stored_history(session, asset, currency=transaction_currency),
+    )
 
 
 @router.get('/rates/{rate_type}/{currency}/{reference_date}')

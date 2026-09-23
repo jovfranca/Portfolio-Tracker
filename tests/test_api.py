@@ -73,7 +73,7 @@ def test_crud_prices_isolation_and_rollback(client, monkeypatch):
     base = f'/api/portfolios/{pid}'
     payload = dict(trade_date='2024-01-02', settlement_date='2024-01-03', type='Buy',
                    asset='test', instrument_id=instrument_id, broker='Broker', allocation_class='Stocks', quantity=10,
-                   price=20, asset_currency='BRL', brokerage_fee=1, other_fees=2, notes='')
+                   price=20, transaction_currency='BRL', brokerage_fee=1, other_fees=2, notes='')
     response = c.post(base + '/transactions', json=payload)
     assert response.status_code == 201, response.text
     assert response.json()['instrument_id'] == instrument_id
@@ -108,7 +108,7 @@ def test_quote_endpoint_keeps_manual_prices_private_and_checks_currency(client, 
     instrument_id = register_instrument(c, 'QUOTE-TEST', 'USD')
     payload = dict(trade_date='2024-01-02', settlement_date='2024-01-02', type='Buy',
                    asset='QUOTE-TEST', instrument_id=instrument_id, broker='Example', quantity='1', price='10',
-                   asset_currency='USD', fx_rate='5')
+                   transaction_currency='USD', fx_rate='5')
     asset_ids = []
     for pid in (first, second):
         assert c.post(f'/api/portfolios/{pid}/transactions', json=payload).status_code == 201
@@ -178,7 +178,7 @@ def test_refresh_reports_unavailable_latest_and_still_attempts_it(client, monkey
     base = f'/api/portfolios/{pid}'
     response = c.post(base + '/transactions', json=dict(
         trade_date=day, settlement_date=day, type='Buy', asset='REFRESH-FAIL', instrument_id=instrument_id,
-        broker='Synthetic', quantity='1', price='10', asset_currency='BRL',
+        broker='Synthetic', quantity='1', price='10', transaction_currency='BRL',
     ))
     assert response.status_code == 201
     aid = c.get(base + '/overview').json()['assets'][0]['id']
@@ -279,7 +279,7 @@ def test_transaction_import_preview_fx_and_duplicate_protection(client, monkeypa
 
     monkeypatch.setattr('src.api.market_data.fetch_rates', fetch)
     csv = (
-        'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,asset_currency,fx_rate\n'
+        'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency,fx_rate\n'
         'AAPL,Example,Buy,2024-01-02,2024-01-03,2.5,100.01,USD,\n'
     ).encode()
     base = f'/api/portfolios/{pid}/transactions'
@@ -314,16 +314,16 @@ def test_import_conflicts_preview_and_atomic_rollback(client):
     new_instrument_id = register_instrument(c, 'NEW', 'BRL')
     base = f'/api/portfolios/{pid}/transactions'
     row = dict(trade_date='2024-01-02', settlement_date='2024-01-03', type='Buy',
-               asset='TEST', instrument_id=test_instrument_id, broker='Example', quantity='1', price='10', asset_currency='BRL')
+               asset='TEST', instrument_id=test_instrument_id, broker='Example', quantity='1', price='10', transaction_currency='BRL')
     assert c.post(base, json=row).status_code == 201
-    csv = ('ticker,broker,type,trade_date,settlement_date,quantity,unit_price,asset_currency,fx_rate\n'
+    csv = ('ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency,fx_rate\n'
            'TEST,Example,Buy,2024-01-02,2024-01-03,1,10,USD,5\n')
     preview = c.post(base + '/import-preview?filename=conflict.csv', content=csv).json()
     assert not preview['valid']
-    assert preview['rows'][0]['errors'][0]['field'] == 'asset_currency'
+    assert preview['rows'][0]['errors'][0]['field'] == 'transaction_currency'
     result = c.post(base + '/import', json={
         'digest': 'a' * 64, 'filename': 'conflict.csv',
-        'rows': [row | {'asset': 'NEW', 'instrument_id': new_instrument_id}, row | {'asset_currency': 'USD', 'fx_rate': '5'}],
+        'rows': [row | {'asset': 'NEW', 'instrument_id': new_instrument_id}, row | {'transaction_currency': 'USD', 'fx_rate': '5'}],
     })
     assert result.status_code == 422
     assert len(c.get(base).json()) == 1
@@ -344,7 +344,7 @@ def test_manual_fx_precision_and_edit_preserve_history(client, monkeypatch):
     monkeypatch.setattr('src.services.get_rates', rates)
     payload = dict(trade_date='2024-01-02', settlement_date='2024-01-04', type='Buy',
                    asset='USDTEST', instrument_id=instrument_id, broker='Example', quantity='12345.123456789012',
-                   price='10.000000000001', asset_currency='USD')
+                   price='10.000000000001', transaction_currency='USD')
     response = c.post(base, json=payload)
     assert response.status_code == 201, response.text
     saved = response.json()
@@ -353,7 +353,10 @@ def test_manual_fx_precision_and_edit_preserve_history(client, monkeypatch):
     assert calls == [date(2024, 1, 4)]
     timestamp = datetime(2024, 1, 2, 15, 30)
     connection.execute(Transaction.__table__.update().where(Transaction.id == saved['id']).values(date_time=timestamp))
-    edit = {key: value for key, value in saved.items() if key not in {'id', 'portfolio_id'}}
+    edit = {
+        key: value for key, value in saved.items()
+        if key not in {'id', 'portfolio_id', 'transaction_currency_locked'}
+    }
     edit['notes'] = 'Edited note'
     response = c.put(base + '/' + str(saved['id']), json=edit)
     assert response.status_code == 200, response.text
@@ -367,7 +370,7 @@ def test_import_explicit_resolution_and_alias_reuse(client):
     pid = c.post('/api/portfolios', json={'name': 'Resolution'}).json()['id']
     base = f'/api/portfolios/{pid}/transactions'
     raw_identifier = 'UNRESOLVED-IMPORT-ALIAS'
-    csv = ('ticker,broker,type,trade_date,settlement_date,quantity,unit_price,asset_currency\n'
+    csv = ('ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency\n'
            f'{raw_identifier},Example,Buy,2024-01-02,2024-01-03,1,10,BRL\n')
     preview = c.post(base + '/import-preview?filename=crypto.csv', content=csv).json()
     assert not preview['valid']
@@ -392,15 +395,21 @@ def test_import_explicit_resolution_and_alias_reuse(client):
 
 
 @pytest.mark.parametrize('asset_type', ['STOCK', 'ETF'])
-def test_transaction_currency_may_differ_from_native_currency(client, asset_type):
+def test_listed_transactions_use_native_currency_and_reject_conflicts(client, asset_type):
     c, _ = client
     pid = c.post('/api/portfolios', json={'name': 'Currency safety'}).json()['id']
     iid = register_instrument(c, 'USDONLY', 'USD', asset_type=asset_type)
     base = f'/api/portfolios/{pid}/transactions'
     row = dict(trade_date='2024-01-02', settlement_date='2024-01-03', type='Buy',
-               asset='USDONLY', instrument_id=iid, broker='Example', quantity='1', price='10', asset_currency='BRL')
-    assert c.post(base, json=row).status_code == 201
-    assert c.post(base + '/import-resolve', json=row).status_code == 200
+               asset='USDONLY', instrument_id=iid, broker='Example', quantity='1', price='10', fx_rate='5')
+    saved = c.post(base, json=row)
+    assert saved.status_code == 201, saved.text
+    assert saved.json()['transaction_currency'] == 'USD'
+    assert saved.json()['transaction_currency_locked'] is True
+    assert c.post(base, json=row | {'transaction_currency': 'BRL'}).status_code == 422
+    resolved = c.post(base + '/import-resolve', json=row)
+    assert resolved.status_code == 200
+    assert resolved.json()['transaction_currency'] == 'USD'
     assert len(c.get(base).json()) == 1
 
 
@@ -415,13 +424,18 @@ def test_crypto_accounting_currency_is_separate_from_provider_quotes(client, mon
     assert connection.scalar(select(Instrument.currency).where(Instrument.id == iid)) is None
     base = f'/api/portfolios/{pid}/transactions'
     row = dict(trade_date='2024-01-02', settlement_date='2024-01-03', type='Buy',
-               asset='BTC', instrument_id=iid, broker='Example', quantity='0.01', price='320000', asset_currency='BRL')
+               asset='BTC', instrument_id=iid, broker='Example', quantity='0.01', price='320000', transaction_currency='BRL')
     saved = c.post(base, json=row)
     assert saved.status_code == 201, saved.text
+    assert saved.json()['transaction_currency_locked'] is False
     tid = saved.json()['id']
-    assert c.post(base, json=row | {'asset_currency': 'EUR', 'fx_rate': '6'}).status_code == 422
-    assert c.put(base + f'/{tid}', json=row | {'asset_currency': 'USD', 'fx_rate': '5'}).status_code == 422
-    csv = ('ticker,broker,type,trade_date,settlement_date,quantity,unit_price,asset_currency\n'
+    second = c.post(base, json=row | {'transaction_currency': 'EUR', 'fx_rate': '6'})
+    assert second.status_code == 201, second.text
+    assert c.put(base + f'/{tid}', json=row | {'transaction_currency': 'USD', 'fx_rate': '5'}).status_code == 200
+    transactions = c.get(base).json()
+    assert {transaction['instrument_id'] for transaction in transactions} == {iid}
+    assert {transaction['transaction_currency'] for transaction in transactions} == {'EUR', 'USD'}
+    csv = ('ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency\n'
            'BTC,Example,Buy,2024-01-02,2024-01-03,0.01,320000,BRL\n')
     preview = c.post(base + '/import-preview?filename=btc.csv', content=csv).json()
     assert preview['valid'], preview
@@ -440,8 +454,9 @@ def test_crypto_accounting_currency_is_separate_from_provider_quotes(client, mon
     monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *a: pytest.fail('Fresh USD quote fetched again'))
     monkeypatch.setattr('src.api.market_data.fetch_history', lambda *a: history_calls.append(a) or [])
     overview = c.get(f'/api/portfolios/{pid}/overview').json()
-    position = overview['positions'][0]
-    assert position['current_price'] is None
+    assert {position['transaction_currency'] for position in overview['positions']} == {'BRL', 'EUR', 'USD'}
+    position = next(position for position in overview['positions'] if position['transaction_currency'] == 'USD')
+    assert position['current_price'] == 61000
     assert Decimal(str(position['average_cost'])) == 320000
     asset_id = position['asset_id']
     quote_url = f'/api/portfolios/{pid}/assets/{asset_id}/quote'
@@ -452,7 +467,10 @@ def test_crypto_accounting_currency_is_separate_from_provider_quotes(client, mon
     assert history_calls and history_calls[0][:2] == ('BTC-USD', 'USD')
     assert c.put(quote_url, json={'date': date.today().isoformat(), 'close': '330000', 'currency': 'BRL'}).status_code == 200
     assert c.get(quote_url).json()['currency'] == 'BRL'
-    assert Decimal(str(c.get(f'/api/portfolios/{pid}/overview').json()['positions'][0]['current_price'])) == 330000
+    assert Decimal(str(next(
+        position for position in c.get(f'/api/portfolios/{pid}/overview').json()['positions']
+        if position['transaction_currency'] == 'USD'
+    )['current_price'])) == 61000
     assert c.get(base).json()[0]['price'] == '320000.000000000000'
 
 
@@ -465,7 +483,7 @@ def test_legacy_provider_registration_is_disabled(client):
 
 
 @pytest.mark.parametrize('asset_type', ['CRYPTO', 'OTHER'])
-def test_selectable_initial_currency_then_portfolio_accounting_lock(client, asset_type):
+def test_selectable_transaction_currency_allows_multiple_values_per_instrument(client, asset_type):
     c, _ = client
     pid = c.post('/api/portfolios', json={'name': 'Selectable'}).json()['id']
     instrument = c.post('/api/instruments/custom', json={
@@ -473,7 +491,7 @@ def test_selectable_initial_currency_then_portfolio_accounting_lock(client, asse
     }).json()
     assert instrument['currency'] == (None if asset_type == 'CRYPTO' else 'EUR')
     row = dict(trade_date='2024-01-02', settlement_date='2024-01-03', type='Buy',
-               asset='MANUAL', instrument_id=instrument['id'], broker='Example', quantity=1, price=10, asset_currency='EUR', fx_rate=6)
+               asset='MANUAL', instrument_id=instrument['id'], broker='Example', quantity=1, price=10, transaction_currency='EUR', fx_rate=6)
     base = f'/api/portfolios/{pid}/transactions'
     assert c.post(base, json=row).status_code == 201
-    assert c.post(base, json=row | {'asset_currency': 'BRL'}).status_code == 422
+    assert c.post(base, json=row | {'transaction_currency': 'BRL'}).status_code == 201

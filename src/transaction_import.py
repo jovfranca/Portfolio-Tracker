@@ -7,12 +7,13 @@ from pathlib import Path
 from zipfile import ZipFile, BadZipFile
 
 from pydantic import ValidationError
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from src.schemas import TransactionInput
 from src.models import Transaction
 from src.instruments import resolve_instrument
-from src.services import transaction_values
+from src.services import transaction_currency_for, transaction_values
 
 
 MAX_IMPORT_BYTES = 5_000_000
@@ -25,9 +26,9 @@ ALIASES = {
     'settlement date': 'settlement_date',
     'unit_price': 'price',
     'unit price': 'price',
-    'currency': 'asset_currency',
+    'currency': 'transaction_currency',
     'fx rate': 'fx_rate',
-    'asset currency': 'asset_currency',
+    'transaction currency': 'transaction_currency',
     'allocation class': 'allocation_class',
     'brokerage fee': 'brokerage_fee',
     'other fees': 'other_fees',
@@ -159,20 +160,13 @@ def _errors(error):
 
 def preview_import(session, filename, content, portfolio_id=None):
     result = []
-    currencies = dict(session.execute(select(Transaction.instrument_id, Transaction.asset_currency).where(
-        Transaction.portfolio_id == portfolio_id,
-    )).all()) if portfolio_id is not None else {}
     for number, raw in read_rows(filename, content, include_line_numbers=True):
         try:
-            # Imports must never infer BRL from an absent or misspelled column.
-            raw.setdefault('asset_currency', '')
             payload = TransactionInput.model_validate(raw)
             resolution = None
             resolved_instrument_id = None
             if portfolio_id is not None:
-                resolution = resolve_instrument(
-                    session, payload.asset, currency=payload.asset_currency,
-                )
+                resolution = resolve_instrument(session, payload.asset)
                 if resolution.status != 'resolved':
                     result.append({
                         'row': number, 'valid': False,
@@ -183,24 +177,10 @@ def preview_import(session, filename, content, portfolio_id=None):
                     })
                     continue
                 resolved_instrument_id = resolution.instrument.id
-                if resolution.instrument.asset_type in ('STOCK', 'ETF') and resolution.instrument.currency and resolution.instrument.currency != payload.asset_currency:
-                    result.append({
-                        'row': number, 'valid': False, 'instrument_resolution': 'resolved',
-                        'errors': [{'field': 'asset_currency', 'message':
-                            f'A moeda nativa desta ação/ETF é {resolution.instrument.currency}.'}],
-                    })
-                    continue
-            existing = currencies.get(resolved_instrument_id)
-            if existing is not None and existing != payload.asset_currency:
-                result.append({
-                    'row': number, 'valid': False,
-                    'instrument_resolution': 'resolved',
-                    'errors': [{'field': 'asset_currency', 'message':
-                        f'O instrumento já está registrado em {existing}; não misture moedas na mesma posição.'}],
-                })
-                continue
-            if resolved_instrument_id is not None:
-                currencies[resolved_instrument_id] = payload.asset_currency
+                currency = transaction_currency_for(
+                    resolution.instrument, payload.transaction_currency,
+                )
+                payload = payload.model_copy(update={'transaction_currency': currency})
             values = transaction_values(session, payload)
             values.pop('date_time')
             normalized = TransactionInput.model_validate(values).model_dump(mode='json')
@@ -208,6 +188,12 @@ def preview_import(session, filename, content, portfolio_id=None):
                 normalized['instrument_id'] = resolved_instrument_id
         except ValidationError as error:
             result.append({'row': number, 'valid': False, 'errors': _errors(error)})
+        except HTTPException as error:
+            result.append({
+                'row': number, 'valid': False,
+                'instrument_resolution': 'resolved' if resolution else 'not_requested',
+                'errors': [{'field': 'transaction_currency', 'message': str(error.detail)}],
+            })
         except ValueError as error:
             result.append({
                 'row': number, 'valid': False,

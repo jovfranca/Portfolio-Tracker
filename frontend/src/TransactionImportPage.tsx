@@ -17,8 +17,8 @@ const columns = [
   ['trade_date', 'Obrigatória', 'Data', 'AAAA-MM-DD; célula de data no XLSX', '2024-01-02', 'Data da negociação, até hoje. Alias: trade date.'],
   ['settlement_date', 'Obrigatória', 'Data', 'AAAA-MM-DD; célula de data no XLSX', '2024-01-04', 'Igual ou posterior à negociação. Pode ser futura com BRL ou FX informado. Alias: settlement date.'],
   ['quantity', 'Obrigatória', 'Decimal', 'Maior que zero; ponto decimal', '10.5', 'Quantidade negociada.'],
-  ['unit_price', 'Obrigatória', 'Decimal', 'Zero ou positivo; ponto decimal', '25.50', 'Preço unitário na moeda do ativo. Aliases: price, unit price.'],
-  ['asset_currency', 'Obrigatória', 'Texto', 'Exatamente 3 letras A–Z/a–z', 'BRL', 'Convertida para maiúsculas. Não misture moedas no mesmo ticker da carteira. Aliases: currency, asset currency.'],
+  ['unit_price', 'Obrigatória', 'Decimal', 'Zero ou positivo; ponto decimal', '25.50', 'Preço unitário na moeda da transação. Aliases: price, unit price.'],
+  ['transaction_currency', 'Condicional', 'Texto', 'Exatamente 3 letras A–Z/a–z', 'BRL', 'Obrigatória para cripto e ativos personalizados. Em ações/ETFs do catálogo, pode ser omitida e usa a moeda nativa; um valor diferente é rejeitado. Alias: currency.'],
   ['fx_rate', 'Opcional', 'Decimal', 'Maior que zero quando informado; ponto decimal', '5.25', 'BRL usa 1. Para moeda estrangeira, vazio busca FX histórico da liquidação. Alias: fx rate.'],
   ['allocation_class', 'Opcional', 'Texto', '1–120 caracteres quando informado', 'Exemplo', 'Vazio ou ausente: Sem classe. Alias: allocation class.'],
   ['brokerage_fee', 'Opcional', 'Decimal', 'Zero ou positivo; ponto decimal', '1.25', 'Vazio ou ausente: 0. Registrada sem alterar o cálculo atual de ganho. Alias: brokerage fee.'],
@@ -107,7 +107,7 @@ function TransactionImporter({ portfolioId, busy, mutate }: Props) {
         </tbody></table></div>
       </div>}
       {preview.rows.some(row => row.valid) && <div className="table-wrap" tabIndex={0} role="region" aria-label="Prévia, role horizontalmente para ver todas as colunas"><table aria-label="Prévia da importação"><thead><tr><th>Linha</th><th>Ativo / moeda</th><th>Operação</th><th>Negociação / liquidação</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Corretagem / outras taxas</th><th>Observações</th></tr></thead><tbody>
-        {preview.rows.filter(row => row.valid && row.data).map(row => { const tx = row.data!; return <tr key={row.row}><td>{row.row}</td><td>{tx.asset}<small>{tx.asset_currency}</small></td><td>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</td><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{tx.quantity}</td><td>{tx.price}<small>FX {tx.fx_rate}</small></td><td>{tx.brokerage_fee}<small>{tx.other_fees}</small></td><td>{tx.notes}</td></tr> })}
+        {preview.rows.filter(row => row.valid && row.data).map(row => { const tx = row.data!; return <tr key={row.row}><td>{row.row}</td><td>{tx.asset}<small>{tx.transaction_currency}</small></td><td>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</td><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{tx.quantity}</td><td>{tx.price}<small>FX {tx.fx_rate}</small></td><td>{tx.brokerage_fee}<small>{tx.other_fees}</small></td><td>{tx.notes}</td></tr> })}
       </tbody></table></div>}
       <div className="form-footer"><span>Confira a carteira selecionada e todos os valores antes de salvar.</span><button className="button primary" disabled={busy || loading || !preview.valid || preview.already_imported} onClick={async () => {
         const rows = preview.rows.map(row => row.data).filter((row): row is NonNullable<typeof row> => row !== undefined)

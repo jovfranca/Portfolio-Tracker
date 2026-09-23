@@ -91,13 +91,13 @@ def test_asset_cost_pooling_is_characterized():
 
 def test_overview_does_not_combine_different_currencies():
     brl = tx(1, 'Buy', 2, 10, 1)
-    brl.asset_currency = 'BRL'
+    brl.transaction_currency = 'BRL'
     usd = tx(2, 'Buy', 1, 20, 1)
     usd.asset = 'USD-ASSET'
-    usd.asset_currency = 'USD'
+    usd.transaction_currency = 'USD'
     assets = [
-        Obj(id=1, ticker='TEST', history=[Obj(date=date(2024, 1, 2), close=10)]),
-        Obj(id=2, ticker='USD-ASSET', history=[Obj(date=date(2024, 1, 2), close=20)]),
+        Obj(id=1, instrument_id=('legacy', 'TEST'), ticker='TEST', transaction_currency='BRL', history=[Obj(date=date(2024, 1, 2), close=10)]),
+        Obj(id=2, instrument_id=('legacy', 'USD-ASSET'), ticker='USD-ASSET', transaction_currency='USD', history=[Obj(date=date(2024, 1, 2), close=20)]),
     ]
     result = overview([brl, usd], assets)
     assert result['summary']['total_value'] is None
