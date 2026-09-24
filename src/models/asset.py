@@ -18,3 +18,6 @@ class Asset(Base):
     manual_prices: Mapped[list['UserDefinedPrice']] = relationship(
         back_populates='asset', cascade='all, delete-orphan',
         order_by='UserDefinedPrice.reference_date')
+    corporate_events: Mapped[list['UserCorporateEvent']] = relationship(
+        back_populates='asset', cascade='all, delete-orphan',
+        order_by='(UserCorporateEvent.effective_date, UserCorporateEvent.id)')

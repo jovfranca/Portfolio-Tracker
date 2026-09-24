@@ -82,7 +82,12 @@ Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.
 3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 na data atual.
 4. Confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
 5. Abra **Desempenho** para ver o ganho legado de 100.
-6. Edite a quantidade para 5, confira o recálculo e recarregue a página para confirmar persistência.
+6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2 e confira
+   quantidade 20 e preço médio 10 em **Posições**.
+7. Adicione um dividendo manual e confira seu valor bruto e a linha correspondente
+   em **Atividade do ativo**.
+8. Edite a quantidade da transação para 5, confira o recálculo e recarregue a página
+   para confirmar persistência.
 
 Não use os valores fictícios acima na carteira real. Os resultados não têm conversão
 de moedas. O histórico antigo de cotações termina na data do cache original;
@@ -301,6 +306,38 @@ O histórico Yahoo antigo usava preços ajustados e pode diferir entre carteiras
 somente novas consultas verificadas alimentam a base compartilhada. Datas de
 consulta desconhecidas permanecem nulas, sem inventar cobertura de intervalos.
 
+## Eventos corporativos
+
+Dividendos e desdobramentos retornados com o histórico Yahoo são normalizados em
+registros de eventos corporativos compartilhados pelo instrumento canônico. O cache
+de cobertura é independente do cache de preços e também registra intervalos
+consultados sem eventos. Os campos legados `dividends` e `stock_splits` das cotações
+continuam disponíveis para compatibilidade e exibição, mas não alteram posições.
+
+Na aba **Cotações**, a seção **Eventos corporativos** permite criar, editar e excluir
+eventos manuais privados da carteira. Um evento manual do mesmo tipo e data substitui
+o evento do provedor somente naquela carteira; desdobramento e grupamento são
+considerados o mesmo evento para evitar aplicação dupla na mesma data. A seção **Atividade do ativo** combina
+compras, vendas e eventos em uma leitura cronológica sem misturar seus modelos de
+persistência.
+
+Desdobramentos e grupamentos são aplicados antes das negociações da mesma data,
+ajustam quantidade e preço médio inversamente e preservam o custo remanescente.
+Dividendos, JCP e amortizações calculam o direito pela quantidade elegível e mantêm
+a renda separada por moeda nativa. Amortização permanece um tipo distinto e, nesta
+versão, não aplica uma regra genérica de redução de custo. Não há conversão automática
+da renda; valores em moedas diferentes nunca são somados.
+
+Os endpoints do ativo são:
+
+```text
+GET  /api/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events
+POST /api/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events
+PUT  /api/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events/{event_id}
+DELETE /api/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events/{event_id}
+GET  /api/portfolios/{portfolio_id}/assets/{asset_id}/activity
+```
+
 Para o teste real de navegador, tenha Microsoft Edge instalado e PostgreSQL ativo.
 Compile o frontend; no primeiro terminal execute `scripts/start-browser-test.ps1`.
 Ele usa o banco separado `portfolio_tracker_e2e` na porta HTTP 8001. No segundo:
@@ -315,8 +352,10 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 
 ## Limites mantidos e ajustes da migração
 
-- Preço médio, ganho realizado e ganho não realizado preservam as fórmulas Buy/Sell.
-- Taxas, dividendos e desdobramentos são registrados, sem aplicação financeira adicional.
+- Preço médio, ganho realizado e ganho não realizado preservam as fórmulas Buy/Sell,
+  com quantidade e preço médio ajustados por desdobramentos explícitos.
+- Taxas continuam fora dos cálculos; renda corporativa é calculada e apresentada
+  separadamente do ganho de negociação.
 - A variação diária é a variação do ganho; não é TWR ou retorno total com proventos.
 - Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
   cotações históricas continuam no formato legado.

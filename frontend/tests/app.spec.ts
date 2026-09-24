@@ -20,6 +20,8 @@ test('create, price, edit and delete a position through the real API', async ({ 
   await page.getByRole('button', { name: 'Criar ativo personalizado', exact: true }).click()
   await page.getByLabel('Corretora', { exact: true }).fill('Teste')
   await page.getByLabel('Classe de alocação', { exact: true }).fill('Ações')
+  await page.getByLabel('Data da negociação', { exact: true }).fill('2024-01-02')
+  await page.getByLabel('Data da liquidação', { exact: true }).fill('2024-01-03')
   await page.getByLabel('Quantidade', { exact: true }).fill('10')
   await page.getByLabel('Preço unitário', { exact: true }).fill('20')
   await expect(page.getByRole('button', { name: 'Salvar transação', exact: true })).toBeDisabled()
@@ -30,7 +32,18 @@ test('create, price, edit and delete a position through the real API', async ({ 
   await page.getByRole('button', { name: 'Cotações', exact: true }).click()
   await page.getByLabel('Fechamento', { exact: true }).fill('30')
   await page.getByRole('button', { name: 'Salvar cotação', exact: true }).click()
-  await expect(page.locator('tbody')).toContainText('30,0000')
+  await expect(page.getByRole('cell', { name: '30,0000' })).toBeVisible()
+  await page.getByLabel('Data efetiva', { exact: true }).fill('2024-01-04')
+  await page.getByLabel('Valor por unidade', { exact: true }).fill('12345.123456789012')
+  let savedEventAmount: string | undefined
+  await page.route('**/api/portfolios/*/assets/*/corporate-events', async route => {
+    if (route.request().method() === 'POST') savedEventAmount = route.request().postDataJSON().amount_per_unit
+    await route.continue()
+  })
+  await page.getByRole('button', { name: 'Adicionar evento', exact: true }).click()
+  await expect(page.getByText(/Bruto 123\.451,2346 BRL/).first()).toBeVisible()
+  expect(savedEventAmount).toBe('12345.123456789012')
+  await expect(page.getByRole('heading', { name: 'Atividade do ativo' })).toBeVisible()
   await page.getByRole('button', { name: 'Posições', exact: true }).click()
   await expect(page.locator('tbody')).toContainText('300,00')
   await page.screenshot({ path: 'test-results/positions-desktop.png', fullPage: true })

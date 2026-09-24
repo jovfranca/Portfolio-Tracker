@@ -81,6 +81,55 @@ class QuoteInput(Input):
         return value
 
 
+class CorporateEventInput(Input):
+    event_type: Literal['STOCK_SPLIT', 'REVERSE_SPLIT', 'DIVIDEND', 'JCP', 'AMORTIZATION']
+    effective_date: date
+    payment_date: date | None = None
+    amount_per_unit: DecimalAmount | None = None
+    conversion_factor: PositiveDecimalAmount | None = None
+    currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] | None = None
+    notes: Annotated[str, Field(max_length=5000)] = ''
+
+    @field_validator('event_type', mode='before')
+    @classmethod
+    def normalize_event_type(cls, value):
+        return str(value).strip().upper().replace(' ', '_').replace('-', '_')
+
+    @field_validator('currency')
+    @classmethod
+    def normalize_event_currency(cls, value):
+        return value.upper() if value else value
+
+    @model_validator(mode='after')
+    def valid_event_values(self):
+        if self.effective_date > date.today():
+            raise ValueError('A data efetiva não pode estar no futuro.')
+        if self.payment_date is not None and self.payment_date < self.effective_date:
+            raise ValueError('A data de pagamento não pode preceder a data efetiva.')
+        if self.event_type in {'STOCK_SPLIT', 'REVERSE_SPLIT'}:
+            if self.conversion_factor is None or self.conversion_factor == 1:
+                raise ValueError('Informe um fator de conversão positivo e diferente de 1.')
+            if self.event_type == 'STOCK_SPLIT' and self.conversion_factor < 1:
+                raise ValueError('Um desdobramento deve ter fator maior que 1.')
+            if self.event_type == 'REVERSE_SPLIT' and self.conversion_factor > 1:
+                raise ValueError('Um grupamento deve ter fator menor que 1.')
+            if self.amount_per_unit is not None or self.currency is not None:
+                raise ValueError('Desdobramentos usam somente o fator de conversão.')
+        else:
+            if self.amount_per_unit is None or not self.currency:
+                raise ValueError('Eventos de renda exigem valor por unidade e moeda.')
+            if self.conversion_factor is not None:
+                raise ValueError('Eventos de renda não usam fator de conversão.')
+        return self
+
+
+class CorporateEventOutput(CorporateEventInput):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    asset_id: int
+    source: str
+
+
 class TransactionSelectionInput(TransactionInput):
     instrument_id: int | None = Field(default=None, gt=0)
 

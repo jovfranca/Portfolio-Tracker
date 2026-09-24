@@ -1,5 +1,5 @@
 """HTTP routes for portfolios, transactions and market data."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,15 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
-from src.domain import historical_profitability
-from src.models import Portfolio, Transaction, TransactionImport
+from src.domain import corporate_event_effects, historical_profitability
+from src.models import Portfolio, Transaction, TransactionImport, UserCorporateEvent
+from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
     add_alias, catalog_instruments, create_instrument, resolve_instrument, search_instruments,
 )
 from src.market_prices import get_history, get_latest, get_quote_history, get_stored_history, save_user_price
 from src.rates import RateUnavailable, backfill_rates, get_rates
 from src.schemas import (
-    CustomInstrumentInput, PortfolioInput, QuoteInput, RateBackfillInput,
+    CorporateEventInput, CorporateEventOutput, CustomInstrumentInput, PortfolioInput, QuoteInput, RateBackfillInput,
     TransactionImportConfirm, TransactionSelectionInput, TransactionOutput,
 )
 from src.services import (
@@ -297,12 +298,155 @@ def save_quote(portfolio_id: int, asset_id: int, payload: QuoteInput, session: D
     try:
         save_user_price(
             session, asset, payload.date, payload.close, payload.currency,
-            payload.dividends, payload.stock_splits,
+            payload.dividends if 'dividends' in payload.model_fields_set else None,
+            payload.stock_splits if 'stock_splits' in payload.model_fields_set else None,
         )
     except ValueError as error:
         raise HTTPException(422, str(error))
     session.commit()
     return {'saved': 1}
+
+
+def _event_payload(event):
+    return {
+        'id': event.id,
+        'event_type': event.event_type,
+        'effective_date': event.effective_date,
+        'payment_date': event.payment_date,
+        'amount_per_unit': event.amount_per_unit,
+        'conversion_factor': event.conversion_factor,
+        'currency': event.currency,
+        'source': event.source,
+        'origin': event.origin,
+        'retrieved_at': event.retrieved_at,
+        'notes': event.notes,
+    }
+
+
+@router.get('/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events')
+def corporate_events(portfolio_id: int, asset_id: int, session: DB):
+    asset = get_asset(session, portfolio_id, asset_id)
+    transactions = list(session.scalars(select(Transaction).where(
+        Transaction.portfolio_id == portfolio_id,
+        Transaction.instrument_id == asset.instrument_id,
+    )))
+    events = get_stored_actions(session, asset)
+    effects = corporate_event_effects(transactions, events)
+    return [
+        _event_payload(effect['event']) | {
+            key: value for key, value in effect.items() if key != 'event'
+        }
+        for effect in effects
+    ]
+
+
+@router.post(
+    '/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events',
+    response_model=CorporateEventOutput,
+    status_code=201,
+)
+def add_corporate_event(
+    portfolio_id: int, asset_id: int, payload: CorporateEventInput, session: DB,
+):
+    get_portfolio(session, portfolio_id, lock=True)
+    asset = get_asset(session, portfolio_id, asset_id)
+    event_types = SPLIT_TYPES if payload.event_type in SPLIT_TYPES else {payload.event_type}
+    duplicate = session.scalar(select(UserCorporateEvent.id).where(
+        UserCorporateEvent.asset_id == asset.id,
+        UserCorporateEvent.event_type.in_(event_types),
+        UserCorporateEvent.effective_date == payload.effective_date,
+    ))
+    if duplicate is not None:
+        raise HTTPException(409, 'Já existe um evento manual equivalente nesta data.')
+    event = UserCorporateEvent(
+        asset_id=asset.id, source='manual', **payload.model_dump(),
+    )
+    session.add(event)
+    session.flush()
+    get_overview(session, portfolio_id)
+    session.commit()
+    return event
+
+
+def _manual_event(session, portfolio_id, asset_id, event_id):
+    get_asset(session, portfolio_id, asset_id)
+    event = session.scalar(select(UserCorporateEvent).where(
+        UserCorporateEvent.id == event_id,
+        UserCorporateEvent.asset_id == asset_id,
+    ))
+    if event is None:
+        raise HTTPException(404, 'Evento manual não encontrado neste ativo.')
+    return event
+
+
+@router.put(
+    '/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events/{event_id}',
+    response_model=CorporateEventOutput,
+)
+def edit_corporate_event(
+    portfolio_id: int, asset_id: int, event_id: int,
+    payload: CorporateEventInput, session: DB,
+):
+    get_portfolio(session, portfolio_id, lock=True)
+    event = _manual_event(session, portfolio_id, asset_id, event_id)
+    event_types = SPLIT_TYPES if payload.event_type in SPLIT_TYPES else {payload.event_type}
+    duplicate = session.scalar(select(UserCorporateEvent.id).where(
+        UserCorporateEvent.asset_id == asset_id,
+        UserCorporateEvent.event_type.in_(event_types),
+        UserCorporateEvent.effective_date == payload.effective_date,
+        UserCorporateEvent.id != event.id,
+    ))
+    if duplicate is not None:
+        raise HTTPException(409, 'Já existe um evento manual equivalente nesta data.')
+    for key, value in payload.model_dump().items():
+        setattr(event, key, value)
+    event.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    get_overview(session, portfolio_id)
+    session.commit()
+    return event
+
+
+@router.delete(
+    '/portfolios/{portfolio_id}/assets/{asset_id}/corporate-events/{event_id}',
+    status_code=204,
+)
+def delete_corporate_event(
+    portfolio_id: int, asset_id: int, event_id: int, session: DB,
+):
+    get_portfolio(session, portfolio_id, lock=True)
+    event = _manual_event(session, portfolio_id, asset_id, event_id)
+    session.delete(event)
+    session.flush()
+    get_overview(session, portfolio_id)
+    session.commit()
+
+
+@router.get('/portfolios/{portfolio_id}/assets/{asset_id}/activity')
+def asset_activity(portfolio_id: int, asset_id: int, session: DB):
+    asset = get_asset(session, portfolio_id, asset_id)
+    transactions = list(session.scalars(select(Transaction).where(
+        Transaction.portfolio_id == portfolio_id,
+        Transaction.instrument_id == asset.instrument_id,
+    )))
+    effects = corporate_event_effects(transactions, get_stored_actions(session, asset))
+    rows = [{
+        'kind': 'TRANSACTION', 'id': row.id, 'date': row.trade_date,
+        'type': row.type, 'quantity': row.quantity, 'price': row.price,
+        'currency': row.transaction_currency, 'broker': row.broker,
+        'allocation_class': row.allocation_class,
+    } for row in transactions]
+    rows.extend({
+        'kind': 'CORPORATE_ACTION', 'date': effect['event'].effective_date,
+        **_event_payload(effect['event']),
+        **{key: value for key, value in effect.items() if key != 'event'},
+    } for effect in effects)
+    return sorted(rows, key=lambda row: (
+        row['date'],
+        (0 if row['event_type'] in {'STOCK_SPLIT', 'REVERSE_SPLIT'} else 1)
+        if row['kind'] == 'CORPORATE_ACTION' else 2,
+        row['id'],
+    ))
 
 
 @router.get('/portfolios/{portfolio_id}/assets/{asset_id}/quote')
@@ -337,18 +481,28 @@ def refresh_quotes(portfolio_id: int, asset_id: int, session: DB):
     start = min(transaction.trade_date for transaction in transactions)
     history_end = date.today() - timedelta(days=1)
     result = get_history(session, asset, start, history_end) if start <= history_end else None
+    action_result = get_actions(session, asset, start, history_end) if start <= history_end else None
     latest = get_latest(session, asset)
     session.commit()
-    if (result is not None and not result.complete) or not latest.available or latest.stale:
+    if not latest.available or latest.stale:
         raise HTTPException(
             502,
             'Não foi possível obter cotações. Verifique o ticker ou registre uma '
             'cotação manual; os dados anteriores foram mantidos.',
         )
+    complete = ((result is None or result.complete)
+                and (action_result is None or action_result.complete))
     return {
         'received': len(result.prices) if result is not None else 0,
         'latest_available': latest.available,
-        'message': 'Histórico atualizado. Cotações manuais foram preservadas.',
+        'complete': complete,
+        'missing_ranges': result.missing_ranges if result is not None else [],
+        'missing_action_ranges': action_result.missing_ranges if action_result is not None else [],
+        'message': (
+            'Histórico atualizado. Cotações manuais foram preservadas.' if complete else
+            'Histórico parcial. Alguns fechamentos ou eventos não foram retornados pelo Yahoo '
+            'Finance. Tente novamente mais tarde; cotações anteriores e preços manuais preservados.'
+        ),
     }
 
 
@@ -371,6 +525,7 @@ def performance(
     )))
     return historical_profitability(
         transactions, get_stored_history(session, asset, currency=transaction_currency),
+        get_stored_actions(session, asset),
     )
 
 

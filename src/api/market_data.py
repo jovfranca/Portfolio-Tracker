@@ -70,15 +70,23 @@ def fetch_history(ticker, currency, start, end):
             continue
         if trading_date >= retrieved_at.astimezone(exchange_timezone).date():
             raise ValueError('O fechamento diário ainda não é final no fuso do mercado.')
-        close = float(row['Close'])
-        if not math.isfinite(close) or close <= 0:
-            raise ValueError('O provedor retornou um fechamento inválido.')
+        try:
+            close = float(row['Close'])
+        except (TypeError, ValueError):
+            close = math.nan
+        # Yahoo sometimes returns actions and valid neighbouring closes with a
+        # NaN close for one day. Leave that date retryable without losing them.
+        price = Decimal(str(close)) if math.isfinite(close) and close > 0 else None
         dividends = float(row.get('Dividends', 0))
         splits = float(row.get('Stock Splits', 0))
+        if not math.isfinite(dividends) or dividends < 0:
+            raise ValueError('Invalid provider dividend.')
+        if not math.isfinite(splits) or splits < 0:
+            raise ValueError('Invalid provider split factor.')
         rows.append({
-            'date': trading_date, 'price': Decimal(str(close)),
-            'dividends': Decimal(str(dividends)) if math.isfinite(dividends) else Decimal('0'),
-            'stock_splits': Decimal(str(splits)) if math.isfinite(splits) else Decimal('0'),
+            'date': trading_date, 'price': price,
+            'dividends': Decimal(str(dividends)),
+            'stock_splits': Decimal(str(splits)),
             'currency': currency, 'source': 'yfinance', 'retrieved_at': retrieved_at,
         })
     return rows
