@@ -7,9 +7,11 @@ from sqlalchemy.orm import Session
 
 from src.database import Base
 from src.market_prices import get_history, get_latest, get_stored_history, save_user_price
+from src.corporate_actions import get_actions, get_stored_actions
 from src.models import (
     Asset, Instrument, LatestMarketQuote, MarketPrice, MarketPriceCoverage, Portfolio,
-    ProviderInstrument, UserDefinedPrice,
+    ProviderInstrument, UserDefinedPrice, CorporateAction, CorporateActionCoverage,
+    UserCorporateEvent,
 )
 
 
@@ -20,6 +22,8 @@ def market_session():
         Portfolio.__table__, Instrument.__table__, ProviderInstrument.__table__,
         Asset.__table__, MarketPrice.__table__,
         MarketPriceCoverage.__table__, LatestMarketQuote.__table__, UserDefinedPrice.__table__,
+        CorporateAction.__table__, CorporateActionCoverage.__table__,
+        UserCorporateEvent.__table__,
     ]:
         table.create(engine)
     from sqlalchemy import text
@@ -75,6 +79,74 @@ def test_provider_history_is_shared_across_portfolios_and_not_refetched(market_s
     ).prices[0].close == Decimal('10.000000000000')
     assert len(calls) == 1
     assert market_session.scalar(select(func.count()).select_from(MarketPrice)) == 1
+
+
+def test_price_fetch_normalizes_actions_and_records_separate_coverage(market_session):
+    asset = assets(market_session)[0]
+    day = date(2024, 1, 8)
+    row = history_row(day) | {
+        'dividends': Decimal('0.5'), 'stock_splits': Decimal('2'),
+    }
+    assert get_history(market_session, asset, day, day, lambda *args: [row]).complete
+    assert [event.event_type for event in get_stored_actions(market_session, asset)] == [
+        'STOCK_SPLIT', 'DIVIDEND',
+    ]
+    cached = get_actions(
+        market_session, asset, day, day,
+        lambda *args: pytest.fail('price fetch already covered corporate actions'),
+    )
+    assert cached.complete
+
+
+def test_action_refresh_reuses_verified_cached_price_history(market_session):
+    asset = assets(market_session)[0]
+    provider = mapping(market_session)
+    start, end = date(2024, 1, 8), date(2024, 1, 9)
+    retrieved_at = datetime(2024, 1, 10, tzinfo=timezone.utc)
+    market_session.add_all([
+        MarketPrice(
+            provider_instrument_id=provider.id, interval='1d',
+            reference_at=datetime(2024, 1, 8, tzinfo=timezone.utc),
+            price=Decimal('10'), dividends=Decimal('0.5'), stock_splits=Decimal('2'),
+            currency='USD', source='yfinance', retrieved_at=retrieved_at,
+        ),
+        MarketPriceCoverage(
+            provider_instrument_id=provider.id, interval='1d', source='yfinance',
+            start_date=start, end_date=end, retrieved_at=retrieved_at,
+        ),
+    ])
+    market_session.flush()
+
+    result = get_actions(
+        market_session, asset, start, end,
+        lambda *args: pytest.fail('verified cached provider history must be reused'),
+    )
+
+    assert result.complete
+    assert [event.event_type for event in result.actions] == ['STOCK_SPLIT', 'DIVIDEND']
+    assert market_session.scalar(select(func.count()).select_from(CorporateActionCoverage)) == 1
+
+
+def test_action_refresh_fetches_only_dates_not_covered_by_price_cache(market_session):
+    asset = assets(market_session)[0]
+    provider = mapping(market_session)
+    market_session.add(MarketPriceCoverage(
+        provider_instrument_id=provider.id, interval='1d', source='yfinance',
+        start_date=date(2024, 1, 8), end_date=date(2024, 1, 9),
+        retrieved_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+    ))
+    market_session.flush()
+    calls = []
+
+    def fetch(symbol, currency, start, end):
+        calls.append((start, end))
+        return []
+
+    result = get_actions(market_session, asset, date(2024, 1, 8), date(2024, 1, 10), fetch)
+
+    assert result.complete
+    assert calls == [(date(2024, 1, 10), date(2024, 1, 10))]
+    assert market_session.scalar(select(func.count()).select_from(CorporateActionCoverage)) == 2
 
 
 def test_history_fetches_only_uncovered_subranges(market_session):
@@ -136,6 +208,46 @@ def test_manual_price_wins_same_date_and_stays_private(market_session):
     assert get_stored_history(market_session, second)[0].close == Decimal('10.000000000000')
     with pytest.raises(ValueError, match='conversão de moedas'):
         save_user_price(market_session, first, date(2024, 1, 9), Decimal('12'), 'BRL')
+
+
+def test_price_only_update_preserves_legacy_event_metadata(market_session):
+    asset = assets(market_session)[0]
+    day = date(2024, 1, 8)
+    save_user_price(
+        market_session, asset, day, Decimal('10'), 'USD',
+        dividends=Decimal('0.5'), stock_splits=Decimal('2'),
+    )
+
+    save_user_price(market_session, asset, day, Decimal('12'), 'USD')
+    updated = get_stored_history(market_session, asset)[0]
+    assert updated.close == Decimal('12')
+    assert updated.dividends == Decimal('0.5')
+    assert updated.stock_splits == Decimal('2')
+
+    save_user_price(market_session, asset, day, Decimal('13'), 'USD', dividends=Decimal('0'))
+    cleared = get_stored_history(market_session, asset)[0]
+    assert cleared.dividends == 0
+    assert cleared.stock_splits == Decimal('2')
+
+
+def test_quote_route_preserves_omitted_legacy_metadata(market_session):
+    from src.api.routes import save_quote
+    from src.schemas import QuoteInput
+
+    asset = assets(market_session)[0]
+    day = date(2024, 1, 8)
+    save_user_price(
+        market_session, asset, day, Decimal('10'), 'USD',
+        dividends=Decimal('0.5'), stock_splits=Decimal('2'),
+    )
+
+    save_quote(
+        asset.portfolio_id, asset.id,
+        QuoteInput(date=day, close=Decimal('12')), market_session,
+    )
+    updated = get_stored_history(market_session, asset)[0]
+    assert updated.dividends == Decimal('0.5')
+    assert updated.stock_splits == Decimal('2')
 
 
 def test_latest_quote_uses_ttl_then_refreshes_and_keeps_market_timestamp(market_session):
@@ -275,7 +387,10 @@ def test_stored_dates_without_coverage_are_not_downloaded_again(market_session):
     assert calls == [(date(2024, 1, 9), date(2024, 1, 9))]
 
 
-@pytest.mark.parametrize('bad_value', [{'currency': 'BRL'}, {'price': Decimal('NaN')}])
+@pytest.mark.parametrize('bad_value', [
+    {'currency': 'BRL'}, {'price': Decimal('NaN')},
+    {'dividends': Decimal('NaN')}, {'stock_splits': Decimal('-2')},
+])
 def test_invalid_provider_history_is_not_persisted_or_marked_complete(market_session, bad_value):
     asset = assets(market_session)[0]
     day = date(2024, 1, 8)
@@ -284,6 +399,67 @@ def test_invalid_provider_history_is_not_persisted_or_marked_complete(market_ses
     assert not result.complete
     assert not result.prices
     assert market_session.scalar(select(func.count()).select_from(MarketPriceCoverage)) == 0
+    assert market_session.scalar(select(func.count()).select_from(CorporateActionCoverage)) == (
+        1 if 'price' in bad_value else 0
+    )
+
+
+def test_missing_close_keeps_valid_prices_and_events_without_covering_bad_day(market_session):
+    asset = assets(market_session)[0]
+    first, missing_day = date(2024, 1, 8), date(2024, 1, 9)
+    rows = [
+        history_row(first) | {'dividends': Decimal('0.5'), 'stock_splits': Decimal('0')},
+        history_row(missing_day) | {'price': None, 'dividends': Decimal('0'), 'stock_splits': Decimal('0')},
+    ]
+
+    result = get_history(market_session, asset, first, missing_day, lambda *args: rows)
+
+    assert not result.complete
+    assert result.missing_ranges == [(missing_day, missing_day)]
+    assert [price.date for price in result.prices] == [first]
+    assert [event.event_type for event in get_stored_actions(market_session, asset)] == ['DIVIDEND']
+    assert [(row.start_date, row.end_date) for row in market_session.scalars(
+        select(MarketPriceCoverage)
+    )] == [(first, first)]
+    assert get_actions(
+        market_session, asset, first, missing_day,
+        lambda *args: pytest.fail('actions already checked in the same Yahoo response'),
+    ).complete
+    calls = []
+    retry = get_history(
+        market_session, asset, first, missing_day,
+        lambda symbol, currency, start, end: calls.append((start, end)) or [history_row(missing_day)],
+    )
+    assert retry.complete
+    assert calls == [(missing_day, missing_day)]
+    assert [price.date for price in retry.prices] == [first, missing_day]
+    assert len(get_stored_actions(market_session, asset)) == 1
+
+
+def test_refresh_reports_partial_history_when_latest_quote_is_fresh(monkeypatch):
+    from types import SimpleNamespace
+
+    from src.api import routes
+    from src.market_prices import HistoricalPriceResult
+
+    day = date(2024, 1, 8)
+    session = SimpleNamespace(
+        scalars=lambda query: [SimpleNamespace(trade_date=day)],
+        commit=lambda: None,
+    )
+    monkeypatch.setattr(routes, 'get_asset', lambda *args: SimpleNamespace(instrument_id=1))
+    monkeypatch.setattr(routes, 'get_history', lambda *args: HistoricalPriceResult([], [(day, day)]))
+    monkeypatch.setattr(routes, 'get_actions', lambda *args: SimpleNamespace(
+        complete=True, missing_ranges=[],
+    ))
+    monkeypatch.setattr(routes, 'get_latest', lambda *args: SimpleNamespace(available=True, stale=False))
+
+    response = routes.refresh_quotes(1, 2, session)
+
+    assert response['complete'] is False
+    assert response['missing_ranges'] == [(day, day)]
+    assert response['missing_action_ranges'] == []
+    assert 'Histórico parcial' in response['message']
 
 
 @pytest.mark.parametrize('operation', ['fetch_history', 'fetch_latest'])
@@ -356,6 +532,60 @@ def test_xlk_daily_bar_keeps_exchange_trading_date(monkeypatch):
     )
     assert rows[0]['date'] == date(2026, 9, 15)
     assert rows[0]['price'] == Decimal('183.74')
+
+
+@pytest.mark.parametrize('field,value', [
+    ('Dividends', float('nan')), ('Stock Splits', -2.0),
+])
+def test_yahoo_rejects_invalid_action_metadata(monkeypatch, field, value):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+    from src.api import market_data
+
+    frame = pd.DataFrame(
+        {'Close': [20.0], 'Dividends': [0.0], 'Stock Splits': [0.0]},
+        index=pd.DatetimeIndex(['2024-01-08'], tz='America/New_York'),
+    )
+    frame.loc[:, field] = value
+    monkeypatch.setattr(yf, 'Ticker', lambda symbol: SimpleNamespace(
+        history=lambda **kwargs: frame,
+        get_history_metadata=lambda: {
+            'currency': 'USD', 'exchangeTimezoneName': 'America/New_York',
+        },
+    ))
+
+    with pytest.raises(ValueError, match='Invalid provider'):
+        market_data.fetch_history('TEST', 'USD', date(2024, 1, 8), date(2024, 1, 8))
+
+
+@pytest.mark.parametrize('missing_close', [float('nan'), None])
+def test_yahoo_preserves_event_when_later_daily_close_is_missing(monkeypatch, missing_close):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+    from src.api import market_data
+
+    frame = pd.DataFrame(
+        {
+            'Close': [20.0, missing_close],
+            'Dividends': [0.5, 0.0],
+            'Stock Splits': [0.0, 0.0],
+        },
+        index=pd.DatetimeIndex(['2024-01-08', '2024-01-09'], tz='America/New_York'),
+    )
+    monkeypatch.setattr(yf, 'Ticker', lambda symbol: SimpleNamespace(
+        history=lambda **kwargs: frame,
+        get_history_metadata=lambda: {
+            'currency': 'USD', 'exchangeTimezoneName': 'America/New_York',
+        },
+    ))
+
+    rows = market_data.fetch_history('TEST', 'USD', date(2024, 1, 8), date(2024, 1, 9))
+
+    assert rows[0]['dividends'] == Decimal('0.5')
+    assert rows[1]['date'] == date(2024, 1, 9)
+    assert rows[1]['price'] is None
 
 
 def test_daily_reference_is_not_shifted_by_postgres_session_timezone():

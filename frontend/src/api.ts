@@ -35,17 +35,29 @@ export type Position = {
   asset: string; broker: string; allocation_class: string; transaction_currency: string; quantity: number;
   average_cost: number; current_price: number | null; total_value: number | null;
   current_total_gain: number | null; current_accumulated_profitability: number | null;
-  price_date: string | null; gain_date: string | null; history_behind_transactions: boolean
+  price_date: string | null; gain_date: string | null; history_behind_transactions: boolean;
+  income_by_currency: Record<string, Numeric>; corporate_action_count: number
 }
 export type Asset = { id: number; ticker: string; transaction_currency: string; quantity: number; average_cost: number;
-  current_price: number | null; total_value: number | null; price_date: string | null }
+  current_price: number | null; total_value: number | null; price_date: string | null;
+  income_by_currency: Record<string, Numeric>; corporate_action_count: number }
 export type Overview = { positions: Position[]; assets: Asset[];
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;
     total_value: number | null; missing_prices: string[]; currencies: string[];
-    totals_by_currency: Record<string, number> }; methodology: string }
+    totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric> }; methodology: string }
 export type Performance = { date: string; total_gain: number; realized_gain: number;
   unrealized_gain: number; accumulated_profitability_pct: number | null; daily_profitability_pct: number }
 export type Quote = { date: string; close: number; currency: string; dividends: number; stock_splits: number; source: string }
+export type CorporateEvent = {
+  id: number; event_type: 'STOCK_SPLIT' | 'REVERSE_SPLIT' | 'DIVIDEND' | 'JCP' | 'AMORTIZATION';
+  effective_date: string; payment_date: string | null; amount_per_unit: Numeric | null;
+  conversion_factor: Numeric | null; currency: string | null; source: string;
+  origin: 'provider' | 'manual'; notes: string; eligible_quantity: Numeric;
+  gross_amount: Numeric | null; net_amount: Numeric | null
+}
+export type Activity = ({ kind: 'TRANSACTION'; id: number; date: string; type: 'Buy' | 'Sell';
+  quantity: Numeric; price: Numeric; currency: string; broker: string; allocation_class: string }
+  | (CorporateEvent & { kind: 'CORPORATE_ACTION'; date: string }))
 export async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from src.models import Portfolio, Asset, Instrument, Transaction
 from src.domain import overview
+from src.corporate_actions import get_stored_actions
 from src.instruments import resolve_instrument
 from src.market_prices import history_for_domain
 from src.rates import get_rates
@@ -97,6 +98,7 @@ def get_overview(session, portfolio_id):
             id=asset.id, instrument_id=asset.instrument_id,
             ticker=asset.instrument.symbol, transaction_currency=currency,
             history=history_for_domain(session, asset, currency=currency),
+            corporate_events=get_stored_actions(session, asset),
         )
         for asset in assets
         for currency in sorted({

@@ -1,12 +1,13 @@
 """Resolution and persistence for shared and user-defined market prices."""
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
 from sqlalchemy import select
 
 from src.api import market_data
+from src.corporate_actions import actions_from_history_rows, store_actions_from_history
 from src.config import market_data_provider, quote_ttl
 from src.instruments import provider_mapping
 from src.models import (
@@ -190,7 +191,7 @@ def get_quote_history(session, asset, start=None, end=None):
 
 def save_user_price(
     session, asset, reference_date, price, currency=None,
-    dividends=Decimal('0'), stock_splits=Decimal('0'),
+    dividends=None, stock_splits=None,
 ):
     target = valuation_currency(session, asset)
     currency = (currency or target or '').upper()
@@ -210,7 +211,8 @@ def save_user_price(
         existing = UserDefinedPrice(
             asset_id=asset.id, reference_date=reference_date, price=price,
             currency=currency, source='manual', retrieved_at=now,
-            dividends=dividends, stock_splits=stock_splits,
+            dividends=dividends if dividends is not None else Decimal('0'),
+            stock_splits=stock_splits if stock_splits is not None else Decimal('0'),
         )
         session.add(existing)
     else:
@@ -218,8 +220,10 @@ def save_user_price(
         existing.source = 'manual'
         existing.currency = currency
         existing.retrieved_at = now
-        existing.dividends = dividends
-        existing.stock_splits = stock_splits
+        if dividends is not None:
+            existing.dividends = dividends
+        if stock_splits is not None:
+            existing.stock_splits = stock_splits
     session.flush()
     return existing
 
@@ -264,6 +268,14 @@ def _validate_provider_price(values, currency):
         raise ValueError('Invalid provider currency.')
 
 
+def _usable_provider_price(values):
+    try:
+        price = Decimal(str(values.get('price', values.get('close'))))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return price.is_finite() and 0 < price <= Decimal('1e15')
+
+
 def get_history(session, asset, start, end, fetcher=None):
     """Return local history and fetch only provider ranges not queried before."""
     target_currency = valuation_currency(session, asset)
@@ -306,20 +318,44 @@ def get_history(session, asset, start, end, fetcher=None):
         try:
             rows = fetcher(mapping.provider_symbol, mapping.quote_currency, gap_start, gap_end)
             rows = list(rows)
+            valid_rows = []
+            missing_days = set()
             for values in rows:
-                _validate_provider_price(values, mapping.quote_currency)
+                if values.get('currency') != mapping.quote_currency:
+                    raise ValueError('Invalid provider currency.')
                 day = values.get('date') or values['reference_at'].date()
                 if not gap_start <= day <= gap_end:
                     raise ValueError('Provider date outside requested range.')
+                if _usable_provider_price(values):
+                    valid_rows.append(values)
+                else:
+                    missing_days.add(day)
+            actions_from_history_rows(rows)
         except Exception:
             missing.append((gap_start, gap_end))
             continue
-        _store_market_prices(session, mapping, rows)
-        session.add(MarketPriceCoverage(
-            provider_instrument_id=mapping.id, interval='1d', source=source,
-            start_date=gap_start, end_date=gap_end,
-            retrieved_at=datetime.now(timezone.utc),
-        ))
+        # A duplicate date with one bad row cannot be certified as covered.
+        valid_rows = [row for row in valid_rows if (row.get('date') or row['reference_at'].date()) not in missing_days]
+        _store_market_prices(session, mapping, valid_rows)
+        store_actions_from_history(
+            session, asset.instrument_id, rows, gap_start, gap_end, source,
+        )
+        cursor = gap_start
+        for day in sorted(missing_days):
+            if cursor < day:
+                session.add(MarketPriceCoverage(
+                    provider_instrument_id=mapping.id, interval='1d', source=source,
+                    start_date=cursor, end_date=day - timedelta(days=1),
+                    retrieved_at=datetime.now(timezone.utc),
+                ))
+            missing.append((day, day))
+            cursor = day + timedelta(days=1)
+        if cursor <= gap_end:
+            session.add(MarketPriceCoverage(
+                provider_instrument_id=mapping.id, interval='1d', source=source,
+                start_date=cursor, end_date=gap_end,
+                retrieved_at=datetime.now(timezone.utc),
+            ))
         session.flush()
     return HistoricalPriceResult(get_quote_history(session, asset, start, end), missing)
 

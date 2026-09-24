@@ -495,3 +495,92 @@ def test_selectable_transaction_currency_allows_multiple_values_per_instrument(c
     base = f'/api/portfolios/{pid}/transactions'
     assert c.post(base, json=row).status_code == 201
     assert c.post(base, json=row | {'transaction_currency': 'BRL'}).status_code == 201
+
+
+def test_manual_corporate_event_crud_recalculates_and_feeds_activity(client):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Corporate events'}).json()['id']
+    iid = register_instrument(c, 'EVENT-TEST', 'USD')
+    base = f'/api/portfolios/{pid}'
+    transaction = {
+        'trade_date': '2024-01-02', 'settlement_date': '2024-01-03',
+        'type': 'Buy', 'asset': 'EVENT-TEST', 'instrument_id': iid,
+        'broker': 'Example', 'allocation_class': 'Stocks',
+        'quantity': '10', 'price': '20', 'transaction_currency': 'USD', 'fx_rate': '5',
+    }
+    assert c.post(base + '/transactions', json=transaction).status_code == 201
+    asset_id = c.get(base + '/overview').json()['assets'][0]['id']
+    events_url = base + f'/assets/{asset_id}/corporate-events'
+
+    split = c.post(events_url, json={
+        'event_type': 'STOCK_SPLIT', 'effective_date': '2024-01-03',
+        'conversion_factor': '2', 'notes': '2 for 1',
+    })
+    assert split.status_code == 201, split.text
+    dividend = c.post(events_url, json={
+        'event_type': 'DIVIDEND', 'effective_date': '2024-01-04',
+        'payment_date': '2024-01-10', 'amount_per_unit': '1.5',
+        'currency': 'USD', 'notes': '',
+    })
+    assert dividend.status_code == 201, dividend.text
+    assert c.post(events_url, json={
+        'event_type': 'DIVIDEND', 'effective_date': '2024-01-04',
+        'amount_per_unit': '9', 'currency': 'USD',
+    }).status_code == 409
+
+    overview = c.get(base + '/overview').json()
+    assert Decimal(str(overview['positions'][0]['quantity'])) == 20
+    assert Decimal(str(overview['positions'][0]['average_cost'])) == 10
+    assert Decimal(str(overview['positions'][0]['income_by_currency']['USD'])) == 30
+    events = c.get(events_url).json()
+    assert [row['origin'] for row in events] == ['manual', 'manual']
+    assert Decimal(str(events[1]['gross_amount'])) == 30
+    activity = c.get(base + f'/assets/{asset_id}/activity').json()
+    assert [row['kind'] for row in activity] == [
+        'TRANSACTION', 'CORPORATE_ACTION', 'CORPORATE_ACTION',
+    ]
+
+    dividend_id = dividend.json()['id']
+    edited = c.put(events_url + f'/{dividend_id}', json={
+        'event_type': 'DIVIDEND', 'effective_date': '2024-01-04',
+        'payment_date': '2024-01-10', 'amount_per_unit': '2',
+        'currency': 'USD', 'notes': 'corrected',
+    })
+    assert edited.status_code == 200, edited.text
+    assert Decimal(str(c.get(base + '/overview').json()['positions'][0]['income_by_currency']['USD'])) == 40
+
+    assert c.delete(events_url + f"/{split.json()['id']}").status_code == 204
+    final = c.get(base + '/overview').json()['positions'][0]
+    assert Decimal(str(final['quantity'])) == 10
+    assert Decimal(str(final['average_cost'])) == 20
+    assert Decimal(str(final['income_by_currency']['USD'])) == 20
+
+
+def test_asset_activity_orders_same_day_split_before_income(client):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Same day events'}).json()['id']
+    iid = register_instrument(c, 'ORDER-TEST', 'USD')
+    base = f'/api/portfolios/{pid}'
+    transaction = {
+        'trade_date': '2024-01-02', 'settlement_date': '2024-01-03',
+        'type': 'Buy', 'asset': 'ORDER-TEST', 'instrument_id': iid,
+        'broker': 'Example', 'allocation_class': 'Stocks',
+        'quantity': '10', 'price': '20', 'transaction_currency': 'USD', 'fx_rate': '5',
+    }
+    assert c.post(base + '/transactions', json=transaction).status_code == 201
+    asset_id = c.get(base + '/overview').json()['assets'][0]['id']
+    events_url = base + f'/assets/{asset_id}/corporate-events'
+    assert c.post(events_url, json={
+        'event_type': 'DIVIDEND', 'effective_date': '2024-01-03',
+        'amount_per_unit': '1', 'currency': 'USD',
+    }).status_code == 201
+    assert c.post(events_url, json={
+        'event_type': 'STOCK_SPLIT', 'effective_date': '2024-01-03',
+        'conversion_factor': '2',
+    }).status_code == 201
+
+    activity = c.get(base + f'/assets/{asset_id}/activity').json()
+    assert [row.get('event_type', row.get('type')) for row in activity] == [
+        'Buy', 'STOCK_SPLIT', 'DIVIDEND',
+    ]
+    assert Decimal(str(activity[-1]['eligible_quantity'])) == 20
