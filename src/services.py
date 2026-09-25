@@ -1,16 +1,11 @@
 from datetime import date, datetime, time
 from decimal import Decimal
-from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
-from src.models import Portfolio, Asset, Instrument, Transaction
-from src.domain import overview
-from src.corporate_actions import get_stored_actions
+from src.models import Portfolio, Asset, Instrument
 from src.instruments import resolve_instrument
-from src.market_prices import history_for_domain
-from src.rates import RateUnavailable, convert_amount, get_rates
+from src.rates import get_rates
 
 
 def get_portfolio(session, portfolio_id, lock=False):
@@ -88,59 +83,5 @@ def transaction_values(session, payload, transaction_currency=None):
 
 
 def get_overview(session, portfolio_id):
-    portfolio = get_portfolio(session, portfolio_id)
-    transactions = list(session.scalars(select(Transaction).where(Transaction.portfolio_id == portfolio_id)
-                                       .order_by(Transaction.trade_date, Transaction.id)))
-    assets = list(session.scalars(select(Asset).where(Asset.portfolio_id == portfolio_id)
-                                 .options(joinedload(Asset.instrument))))
-    calculation_assets = [
-        SimpleNamespace(
-            id=asset.id, instrument_id=asset.instrument_id,
-            ticker=asset.instrument.symbol, transaction_currency=currency,
-            native_currency=asset.instrument.currency,
-            history=history_for_domain(session, asset, currency=currency),
-            corporate_events=get_stored_actions(session, asset),
-        )
-        for asset in assets
-        for currency in sorted({
-            transaction.transaction_currency
-            for transaction in transactions
-            if transaction.instrument_id == asset.instrument_id
-        })
-    ]
-    display_factors = {}
-    display_cost_factors = {}
-    for transaction in transactions:
-        if transaction.type != 'Buy':
-            continue
-        if transaction.transaction_currency == portfolio.display_currency:
-            display_cost_factors[transaction.id] = Decimal('1')
-        elif portfolio.display_currency == 'BRL':
-            display_cost_factors[transaction.id] = transaction.fx_rate
-        elif transaction.settlement_date <= date.today():
-            try:
-                display_cost_factors[transaction.id] = convert_amount(
-                    session, transaction.fx_rate, 'BRL', portfolio.display_currency,
-                    transaction.settlement_date, fetcher=lambda *_: [],
-                )
-            except RateUnavailable:
-                pass
-    for asset in calculation_assets:
-        if asset.transaction_currency == portfolio.display_currency or not asset.history:
-            continue
-        reference_date = max(quote.date for quote in asset.history)
-        key = (asset.transaction_currency, reference_date)
-        if key in display_factors:
-            continue
-        try:
-            # Read stored dated FX only. A missing observation remains explicit;
-            # overview reads must not fetch rates or rewrite transaction history.
-            display_factors[key] = convert_amount(
-                session, Decimal('1'), asset.transaction_currency,
-                portfolio.display_currency, reference_date,
-                fetcher=lambda *_: [],
-            )
-        except RateUnavailable:
-            pass
-    return overview(transactions, calculation_assets, portfolio.display_currency,
-                    display_factors, display_cost_factors)
+    from src.position_reporting import get_overview as reporting_overview
+    return reporting_overview(session, portfolio_id)

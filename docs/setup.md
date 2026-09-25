@@ -78,16 +78,19 @@ Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.
 ## Primeiro teste manual
 
 1. Selecione a carteira migrada ou crie uma carteira separada para testes.
-2. Clique em **Nova transação** e registre uma compra fictícia de 10 unidades a 20.
-3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 na data atual.
+2. Clique em **Nova transação** e registre uma compra fictícia de 10 unidades a 20
+   com data de negociação de ontem.
+3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 para ontem e
+   para a data atual.
 4. Confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
-5. Abra **Desempenho** para ver o ganho legado de 100.
+5. Clique em **Consolidar carteira** e abra **Desempenho** para ver o resultado de
+   100 e o retorno diário ponderado no tempo.
 6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2 e confira
    quantidade 20 e preço médio 10 em **Posições**.
 7. Adicione um dividendo manual e confira seu valor bruto e a linha correspondente
    em **Atividade do ativo**.
-8. Edite a quantidade da transação para 5, confira o recálculo e recarregue a página
-   para confirmar persistência.
+8. Edite a quantidade da transação para 5, confira a posição atual, consolide
+   novamente para atualizar o histórico e recarregue a página para confirmar persistência.
 
 Não use os valores fictícios acima na carteira real. A conversão de valores atuais
 usa cotações FX datadas; se faltar FX, o total é identificado como incompleto.
@@ -354,16 +357,21 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 
 ## Limites mantidos e ajustes da migração
 
-- Preço médio, ganho realizado e ganho não realizado preservam as fórmulas Buy/Sell,
-  com quantidade e preço médio ajustados por desdobramentos explícitos.
+- Uma posição corresponde a um instrumento canônico, mesmo com operações em
+  moedas distintas ou em várias corretoras. Vendas acima da quantidade da corretora
+  são rejeitadas.
 - Taxas de compra integram o custo médio e taxas de venda reduzem o ganho
   realizado; renda corporativa é apresentada separadamente do ganho de negociação.
-- A variação diária é a variação do ganho; não é TWR ou retorno total com proventos.
+- O retorno diário usa fluxos de compra/venda e renda bruta, com resultados
+  encadeados no tempo. Eventos e negociações são processados antes do fechamento
+  diário; fins de semana podem usar o fechamento anterior e dias úteis sem
+  cotação ficam incompletos.
 - Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
   cotações históricas continuam no formato legado.
 - Cotações ausentes aparecem como ausentes, e não como preço zero.
-- Operações anteriores à primeira cotação são consideradas nessa primeira avaliação;
-  a migração corrige esse desalinhamento de datas sem mudar a fórmula de ganho.
+- O histórico derivado é consolidado sob demanda; alterações de transações,
+  eventos, preços e FX marcam `dirty_from`. A consolidação recalcula desde essa
+  data e preserva os snapshots anteriores.
 - Não há redesenho para titularidade, alocação ideal, aposentadoria ou múltiplos usuários.
 - Mensagens UTF-8 devem ser lidas com `Get-Content -Encoding UTF8` no Windows PowerShell
   antigo. A exibição incorreta nesse terminal não significa corrupção no navegador.

@@ -1,4 +1,4 @@
-export type Portfolio = { id: number; name: string; display_currency: string }
+export type Portfolio = { id: number; name: string; display_currency: string; dirty_from: string | null; history_built_through: string | null }
 export type Numeric = number | string
 export type Transaction = {
   id: number; portfolio_id: number; trade_date: string; settlement_date: string;
@@ -32,25 +32,31 @@ export type ImportPreview = {
 }
 export type Position = {
   native_currency: string | null;
+  quote_currency: string | null; status: string; gross_income: Numeric | null;
   asset_id: number | null;
-  asset: string; broker: string; allocation_class: string; transaction_currency: string; quantity: number;
-  average_cost: number; acquisition_cost: number; current_price: number | null; total_value: number | null;
-  display_average_cost: number | null; display_acquisition_cost: number | null;
-  display_currency: string; display_price: number | null; display_value: number | null;
-  broker_breakdown: { broker: string; quantity: number; average_cost: number; acquisition_cost: number }[];
-  current_total_gain: number | null; current_accumulated_profitability: number | null;
+  asset: string; broker: string; allocation_class: string; transaction_currency: string | null; quantity: Numeric;
+  average_cost: Numeric | null; acquisition_cost: Numeric | null; current_price: Numeric | null; total_value: Numeric | null;
+  display_average_cost: Numeric | null; display_acquisition_cost: Numeric | null;
+  native_average_cost: Numeric | null; native_acquisition_cost: Numeric | null;
+  display_currency: string; display_price: Numeric | null; display_value: Numeric | null;
+  broker_breakdown: { broker: string; quantity: Numeric; average_cost: Numeric | null; acquisition_cost: Numeric | null }[];
+  current_total_gain: Numeric | null; current_accumulated_profitability: Numeric | null;
   price_date: string | null; gain_date: string | null; history_behind_transactions: boolean;
   income_by_currency: Record<string, Numeric>; corporate_action_count: number
 }
-export type Asset = { id: number; ticker: string; transaction_currency: string; quantity: number; average_cost: number;
-  current_price: number | null; total_value: number | null; price_date: string | null;
+export type Asset = { id: number; ticker: string; transaction_currency: string | null; quantity: Numeric; average_cost: Numeric | null;
+  current_price: Numeric | null; total_value: Numeric | null; price_date: string | null;
   income_by_currency: Record<string, Numeric>; corporate_action_count: number }
 export type Overview = { positions: Position[]; assets: Asset[];
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;
     total_value: number | null; missing_prices: string[]; missing_fx: string[]; missing_cost_fx: string[]; display_currency: string; currencies: string[];
-    totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric> }; methodology: string }
-export type Performance = { date: string; total_gain: number; realized_gain: number;
-  unrealized_gain: number; accumulated_profitability_pct: number | null; daily_profitability_pct: number }
+    totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric>;
+    history_status: string; dirty_from: string | null; gross_income: Numeric | null }; methodology: string }
+export type Performance = { date: string; reporting_currency: string; status: string;
+  quantity: Numeric; remaining_acquisition_cost: Numeric | null; average_cost: Numeric | null;
+  market_value: Numeric | null; total_gain: Numeric | null; realized_gain: Numeric | null;
+  unrealized_gain: Numeric | null; gross_income: Numeric | null;
+  cumulative_return_pct: Numeric | null; daily_return_pct: Numeric | null }
 export type Quote = { date: string; close: number; currency: string; dividends: number; stock_splits: number; source: string }
 export type CorporateEvent = {
   id: number; event_type: 'STOCK_SPLIT' | 'REVERSE_SPLIT' | 'DIVIDEND' | 'JCP' | 'AMORTIZATION';

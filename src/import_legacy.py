@@ -130,6 +130,8 @@ def read_transactions(path):
 
 
 def import_transactions(session, path, portfolio_id, assets_path=None):
+    # Register the shared source-data invalidation hook for command-line imports.
+    from src import consolidation  # noqa: F401
     digest, records = read_transactions(path)
     get_portfolio(session, portfolio_id, lock=True)
     previous = session.scalar(select(LegacyImport).where(

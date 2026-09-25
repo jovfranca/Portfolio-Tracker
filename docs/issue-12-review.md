@@ -1,93 +1,52 @@
-# Issue #12 review
+﻿# Issue #12 implementation review
 
-Reviewed the working tree on `feat/12-positions-consolidation` against local
-`develop` and [issue #12](https://github.com/jovfranca/Portfolio-Tracker/issues/12).
-At review time HEAD had no commits ahead of develop; the implementation was in
-uncommitted changes. This is still a partial implementation of the issue.
+The committed branch `feat/12-positions-consolidation` was compared with `develop`, [issue #12](https://github.com/jovfranca/Portfolio-Tracker/issues/12), and the earlier review in this file. The five acceptance blockers from that review are implemented in the current working tree.
 
-## Verified defects fixed
+## Position and reporting model
 
-- Purchase fees were omitted from remaining cost, including converted cost;
-  sale fees were omitted from realized gains. Both now participate in current,
-  historical and corporate-event cost calculations. For a purchase of 10 at 20
-  with 10 in fees, followed by selling 4 at 30 with 4 in fees, remaining cost is
-  126, realized gain is 32, and unrealized gain at 30 is 54.
-- Current gains used only activity before the last quote. Selling after that
-  quote left realized gains stale, and liquidations without quotes lost their
-  results. Current gains now use all transactions; a closed holding needs no
-  quote to preserve realized gain and zero unrealized gain.
-- Every overview rebuilt complete historical gain series for every broker.
-  Current valuation now calculates directly from transaction/event state.
-- A future settlement with explicit transaction FX could break overview when
-  reporting in a third currency. Missing future reporting FX now leaves cost
-  conversion incomplete instead of raising a date error.
-- The holdings table made native values primary, duplicated same-currency
-  values, and exposed fiat secondary values for crypto. Available converted
-  price/cost/value are now primary with conditional native secondary values.
-- Closed positions were always visible. They are now hidden by default with a
-  toggle, while remaining available in the data and performance selector.
-- An unsaved currency draft could follow the user to another portfolio sharing
-  the same saved currency. Switching portfolios now resets the draft.
-- The new database test compared differently scaled decimal strings returned
-  before and after persistence. It now compares the complete persisted
-  transaction list before and after changing reporting currency.
+- A position is identified by `(portfolio_id, instrument_id)`. Transactions retain their original currency and frozen transaction FX. A sale in another currency reduces the same broker's holding and the same lifetime instrument position. Missing conversion yields an incomplete result; it never creates a second position or mixes currencies.
+- `src/domain.py` contains the shared pure ledger for current state and daily history. It uses broker-level weighted-average cost, includes buy fees in cost, subtracts sale fees from proceeds, preserves realized P&L after liquidation, and rejects oversells. Splits change quantity without changing cost; dividends and JCP add gross income without changing cost.
+- Current and historical P&L are in the portfolio reporting currency. A trade uses its frozen FX to BRL and dated BRL-to-reporting FX where needed. Quotes and income use dated FX. The reporting view never edits transactions, prices, events, or rates.
+- The API exposes reporting price, market value, cost, realized and unrealized P&L, gross income, and total P&L. Native fiat values are secondary only when the canonical instrument has a meaningful native currency different from the portfolio's display currency. Crypto has no artificial fiat secondary display.
 
-## Outstanding acceptance blockers
+## Daily return convention
 
-These requirements are not implemented by the reviewed branch or the fixes above.
-Do not close issue #12 based on this change.
+Splits and income events precede trades on their effective date; all take effect before the daily close. The daily cash-flow-adjusted return uses the previous close as the opening value, purchases as positive external flows, and net sale proceeds as negative external flows. Gross income is internal investment return. For end value `V`, previous value `P`, net external flow `F`, gross purchases including fees `B`, and day's gross income `I`:
 
-1. **P1 — Position identity still includes transaction currency.**
-   `overview` groups by `(instrument_id, transaction_currency)` and `/performance`
-   requires a transaction currency. A BTC purchase in BRL and sale in USD are
-   accounted in separate holdings instead of reducing one lifetime position.
-   This needs conversion of transaction cost/proceeds into a shared accounting
-   basis while retaining original currencies and explicit missing-FX status.
-2. **P1 — Performance is not time weighted.**
-   `historical_profitability` and `consolidated_profitability` divide gain by
-   cumulative purchases and compare gains between dates. Buying 10 at 10, marking
-   at 11, then buying another 10 at 11 while the quote stays 11 drops cumulative
-   performance from 10% to about 4.76%, despite no investment loss. Daily
-   cash-flow-adjusted returns and linking across liquidation/reopening are absent.
-3. **P1 — Reporting currency does not cover P&L, income or historical series.**
-   `get_overview` converts acquisition cost and current valuation only;
-   `/performance` does not use portfolio reporting currency at all. Changing BRL
-   to EUR leaves gains and return percentages unchanged. Historical transaction,
-   event and valuation FX must be applied on their relevant dates, with incomplete
-   status when unavailable, rather than converting accumulated P&L at one rate.
-4. **P1 — Total investment P&L excludes gross income.**
-   Income is retained in `income_by_currency`, but total gain remains realized
-   plus unrealized trading gain. Ten units receiving a dividend of 1 with no price
-   change still show zero total gain. Gross income must enter investment P&L and
-   daily return after appropriate dated conversion; tax/net fields must remain
-   distinct and unknown values must not be invented.
-5. **P1 — Daily position/portfolio history and incremental consolidation are absent.**
-   The performance endpoint returns rows only for available quote dates and
-   lacks quantity, remaining cost, market value, reporting currency and calculation
-   status. There is no portfolio series, `dirty_from`, consolidation endpoint/action,
-   or invalidation for edited transactions, events, historical prices and FX.
-   Current repricing is cheaper after this review, but that does not implement the
-   required historical lifecycle.
+```text
+r = (V + I - P - F) / (P + B)
+```
 
-Legacy oversell behavior also remains inconsistent between current and historical
-calculations (current holdings clamp at zero while history permits negatives).
-It is already characterized in `test_oversell_behavior_is_characterized`; a shared
-position ledger must address this when implementing canonical consolidation.
+Daily returns are chain-linked. This convention makes same-day contributions deterministic with daily-close data; intraday valuation is outside issue #12. A quote on its date is used directly. The prior close may carry over a weekend. A missing weekday close is explicitly incomplete; no market price is fabricated. Missing required FX also makes the affected result incomplete. A correction to the missing source data marks the history dirty for recomputation.
 
-Regression coverage added for fees, stale/missing quotes after liquidation,
-current valuation without history reconstruction, future settlement FX, primary
-currency rendering, crypto secondary values, closed positions, and currency drafts.
+## Derived history and consolidation
+
+Migration `0014` adds `dirty_from`, `history_built_through`, daily position snapshots, and daily portfolio snapshots. Snapshots retain quantity, cost, value, realized/unrealized P&L, gross income, total P&L, return and status. They are derived state. The source transactions, events, prices, and FX remain authoritative.
+
+The `POST /api/portfolios/{id}/consolidate` action resolves a latest quote for each open position through the existing Market Price service. Fresh cached quotes honor the existing TTL. An unavailable asset is reported while the remaining assets continue. The action updates historical snapshots from `dirty_from` forward. It carries the prior ledger state from the previous snapshot and leaves earlier snapshot rows intact. Transaction, event, historical price, and relevant FX changes move `dirty_from` back to the earliest affected date. A latest-quote refresh updates current valuation without rebuilding previous snapshots.
+
+Deleting or moving the first transaction removes snapshots before the new first transaction date. Native values are converted into the instrument's native currency when a provider quote uses a different currency. A later valid quote does not hide an earlier missing observation that still prevents a valid cumulative return.
+
+`GET /api/portfolios/{id}/performance?asset_id=...` returns the canonical position's daily reporting series. `GET /api/portfolios/{id}/history` returns the daily portfolio series. The UI accepts three-letter reporting currencies with BRL/USD/EUR suggestions, and offers an explicit consolidation action and pending status. Its positions list hides closed holdings by default and omits the broker column; broker breakdown remains in the API result.
+
+The stored Corporate Actions model provides gross amounts. It has no authoritative withholding or net-income fields, so the reporting result does not invent them. Investor-level tax calculations and intraday time weighting remain outside issue #12.
+
+## Follow-up review fixes
+
+Reviewed the working tree as well as committed changes against `develop` and the current issue #12 acceptance criteria. Regression cases reproduced these meaningful problems before the fixes:
+
+- **High: same-day sales erased percentage gains.** A purchase for 100 followed by full sale for 120 returned 0% because net flow removed the entire denominator. Position and portfolio returns now use gross purchases in the denominator. Migration `0015` persists this input and invalidates existing derived histories for rebuilding.
+- **High: weekend splits inflated historical value.** A 2:1 split could double quantity while carrying the pre-split close forward. Such prices now remain unavailable until a matching quote exists; the split boundary survives incremental snapshot replay.
+- **High: FX corrections left income and manual valuations stale.** Invalidation now includes currencies used only by shared income events, private income events, or manual prices.
+- **High: settlement FX corrections started recalculation too late.** When reporting FX is used at settlement but acquisition cost enters history on the earlier trade date, invalidation now rewinds to that trade date.
+- **Medium: reporting-currency UI omitted EUR and other currencies.** The control now accepts the same three-letter codes as the API, with BRL, USD and EUR suggestions.
+
+The daily convention remains an approximation based on closing prices and assumes gross purchases enter the day's capital base; exact intraday time weighting is not inferred from daily observations.
 
 ## Validation
 
-- Default pytest run: 173 passed, 28 database tests skipped.
-- Full pytest run against a newly created, migrated, isolated PostgreSQL test
-  database: 201 passed. Two pre-existing dependency deprecation warnings remain.
-- `alembic check`: no new upgrade operations detected.
-- `npm run build`: passed.
-- Full Playwright suite against the isolated test server: 10 passed.
-- `git diff --check`: passed.
+Regression tests cover cross-currency position identity and sales, missing FX, current BRL quotes from USD, native values from a different quote currency, historical BRL versus USD P&L and return, dividend income, additional purchases, partial/full sales and reopening, splits, oversell rejection, source-record immutability, dirty-date invalidation, deletion of the first trade, preserved earlier snapshots, fresh quote reuse, partial consolidation, missing-observation status, and UI controls.
 
-The full database/browser runs required execution outside the Windows sandbox
-because it prevented PostgreSQL/browser process creation and pytest temporary-file
-access. No production or personal portfolio database was migrated or reset.
+Final validation: standard pytest **185 passed, 40 skipped**; with `RUN_DB_TESTS=1` against the isolated, migrated PostgreSQL database **225 passed**; Playwright **10 passed**; `npm run build` passed; `alembic check` reported no new upgrade operations. Two existing FastAPI/Starlette deprecation warnings remain. Temporary-file and browser-process sandbox restrictions required running validation with normal filesystem/process access. Browser tests used the documented allowed origin and a seeded test catalog. No personal portfolio database was modified.
+
+Apply migration `0015` before running the updated application against an existing database, then consolidate portfolios to rebuild affected derived returns.

@@ -48,7 +48,7 @@ test('create, price, edit and delete a position through the real API', async ({ 
   await expect(page.locator('tbody')).toContainText('300,00')
   await page.screenshot({ path: 'test-results/positions-desktop.png', fullPage: true })
   await page.getByRole('button', { name: 'Desempenho', exact: true }).click()
-  await expect(page.getByRole('img', { name: 'Evolução histórica do ganho total' })).toBeVisible()
+  await expect(page.getByText(/Histórico pendente de consolidação/)).toBeVisible()
   await page.getByRole('button', { name: 'Transações', exact: true }).click()
   await page.getByRole('button', { name: 'Editar', exact: true }).click()
   await page.getByLabel('Quantidade', { exact: true }).fill('5')

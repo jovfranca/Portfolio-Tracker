@@ -66,11 +66,12 @@ export default function App() {
   const reload = useCallback(async (signal?: AbortSignal) => {
     if (selected === null) return
     const base = '/portfolios/' + selected
-    const [data, txs] = await Promise.all([
+    const [data, txs, updatedPortfolios] = await Promise.all([
       api<Overview>(base + '/overview', 'GET', undefined, signal),
       api<Transaction[]>(base + '/transactions', 'GET', undefined, signal),
+      api<Portfolio[]>('/portfolios', 'GET', undefined, signal),
     ])
-    setOverview(data); setTransactions(txs)
+    setOverview(data); setTransactions(txs); setPortfolios(updatedPortfolios)
   }, [selected])
 
   useEffect(() => {
@@ -108,7 +109,7 @@ export default function App() {
 
   async function saveDisplayCurrency(e: FormEvent) {
     e.preventDefault()
-    if (!selectedPortfolio) return
+    if (!selectedPortfolio || currencyDraft === selectedPortfolio.display_currency) return
     await mutate(async () => {
       const updated = await api<Portfolio>('/portfolios/' + selectedPortfolio.id, 'PUT', {
         name: selectedPortfolio.name, display_currency: currencyDraft.toUpperCase(),
@@ -135,7 +136,7 @@ export default function App() {
     setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
-  const filteredPositions = overview?.positions.filter(p => (showClosed || Number(p.quantity) !== 0) && [p.asset, ...p.broker_breakdown.map(b => b.broker), p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
+  const filteredPositions = overview?.positions.filter(p => (showClosed || Number(p.quantity) !== 0) && [p.asset, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
 
   return <div className="app">
     <aside className="sidebar">
@@ -204,9 +205,11 @@ export default function App() {
         {cataloging && <CatalogPage />}
         {!importing && !cataloging && !loading && overview && <>
           <form className="panel inline-form" onSubmit={saveDisplayCurrency}>
-            <label>Moeda de exibição<input required maxLength={3} pattern="[A-Za-z]{3}" value={currencyDraft} onChange={e => setCurrencyDraft(e.target.value.toUpperCase())} /></label>
+            <label>Moeda de exibição<input value={currencyDraft} onChange={e => setCurrencyDraft(e.target.value.toUpperCase())} list="reporting-currencies" minLength={3} maxLength={3} pattern="[A-Za-z]{3}" required /></label>
+            <datalist id="reporting-currencies"><option value="BRL" /><option value="USD" /><option value="EUR" /></datalist>
             <button className="button outline" disabled={busy || currencyDraft === selectedPortfolio?.display_currency}>Aplicar moeda</button>
           </form>
+          <div className="method-note">Histórico: {overview.summary.history_status === 'pending' ? 'consolidação pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'incompleto'}{overview.summary.dirty_from ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. <button className="button outline" disabled={busy} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Carteira consolidada.')}>{busy ? 'Consolidando…' : 'Consolidar carteira'}</button></div>
           <div className="metrics">
             <article className="metric featured"><span>Valor das posições · {overview.summary.display_currency}</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.summary.missing_fx.length ? 'FX indisponível: ' + overview.summary.missing_fx.join(', ') : overview.summary.missing_prices.length ? 'Sem cotação: ' + overview.summary.missing_prices.join(', ') : 'Total convertido na data das cotações'}</small></article>
             <article className="metric"><span>Ativos acompanhados</span><strong>{overview.summary.assets.toString().padStart(2, '0')}</strong><small>{overview.summary.positions} posições consolidadas</small></article>
@@ -214,13 +217,13 @@ export default function App() {
           </div>
           <div className="method-note"><span>i</span> {overview.methodology} {overview.summary.missing_cost_fx.length ? 'FX histórico indisponível para custo: ' + overview.summary.missing_cost_fx.join(', ') + '. ' : ''}Renda corporativa: {Object.keys(overview.summary.income_by_currency).length ? Object.entries(overview.summary.income_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : 'nenhuma'}.</div>
           {tab === 'Posições' && <section className="panel">
-            <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição por ativo e moeda de aquisição, com detalhamento por corretora.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo, corretora ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
+            <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição por instrumento.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
             <label><input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} /> Mostrar posições encerradas</label>
             {!overview.positions.length ? <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
-              <div className="table-wrap"><table><thead><tr><th>Ativo / classe / moeda</th><th>Corretoras</th><th>Quantidade</th><th>Preço médio / custo</th><th>Cotação</th><th>Valor atual</th><th>Renda corporativa</th><th>Ganho histórico</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={[p.asset_id, p.transaction_currency].join('|')}>
-                <td><strong>{p.asset}</strong><small>{p.allocation_class} · {p.transaction_currency}</small></td><td>{p.broker_breakdown.map(b => <small key={b.broker}>{b.broker}: {fmt(b.quantity, 6)} · custo {p.transaction_currency} {fmt(b.acquisition_cost)} · médio {fmt(b.average_cost, 4)}</small>)}</td><td>{fmt(p.quantity, 6)}</td><td>{p.display_currency} {fmt(p.display_average_cost, 4)}<small>Custo {p.display_currency} {fmt(p.display_acquisition_cost)}</small>{p.native_currency === p.transaction_currency && p.transaction_currency !== p.display_currency && <small>{p.transaction_currency} {fmt(p.average_cost, 4)} · custo {fmt(p.acquisition_cost)}</small>}</td><td>{p.display_currency} {fmt(p.display_price)}{p.native_currency === p.transaction_currency && p.transaction_currency !== p.display_currency && <small>{p.transaction_currency} {fmt(p.current_price)}</small>}<small>{dateLabel(p.price_date)}</small></td><td>{p.display_currency} {fmt(p.display_value)}{p.native_currency === p.transaction_currency && p.transaction_currency !== p.display_currency && <small>{p.transaction_currency} {fmt(p.total_value)}</small>}</td>
-                <td>{Object.keys(p.income_by_currency).length ? Object.entries(p.income_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : '—'}</td>
-                <td className={(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{p.transaction_currency} {fmt(p.current_total_gain)}<small>{fmt(p.current_accumulated_profitability)}%{p.history_behind_transactions ? ' · cotação anterior à última atividade' : ''}</small></td>
+              <div className="table-wrap"><table><thead><tr><th>Ativo / classe</th><th>Quantidade</th><th>Preço médio / custo</th><th>Cotação</th><th>Valor atual</th><th>Renda bruta</th><th>Resultado total</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={p.asset_id ?? p.asset}>
+                <td><strong>{p.asset}</strong><small>{p.allocation_class}</small></td><td>{fmt(p.quantity, 6)}</td><td>{p.display_currency} {fmt(p.display_average_cost, 4)}<small>Custo {p.display_currency} {fmt(p.display_acquisition_cost)}</small>{p.native_currency && p.native_currency !== p.display_currency && p.native_average_cost !== null && <small>{p.native_currency} {fmt(p.native_average_cost, 4)} · custo {fmt(p.native_acquisition_cost)}</small>}</td><td>{p.display_currency} {fmt(p.display_price)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.current_price)}</small>}<small>{dateLabel(p.price_date)}</small></td><td>{p.display_currency} {fmt(p.display_value)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.total_value)}</small>}</td>
+                <td>{p.display_currency} {fmt(p.gross_income)}</td>
+                <td className={Number(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{p.display_currency} {fmt(p.current_total_gain)}<small>{fmt(p.current_accumulated_profitability)}%{p.status !== 'complete' ? ' · cálculo incompleto' : ''}{p.history_behind_transactions ? ' · cotação anterior à última atividade' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
           {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar recalcula as posições automaticamente.</p></div></div>
@@ -387,32 +390,32 @@ function PerformancePanel({ portfolioId, overview }: { portfolioId: number; over
     setRows([]); setError('')
     if (!p || !assetId) return
     const controller = new AbortController(); setLoading(true)
-    const params = new URLSearchParams({ asset_id: String(assetId), transaction_currency: p.transaction_currency })
+    const params = new URLSearchParams({ asset_id: String(assetId) })
     api<Performance[]>('/portfolios/' + portfolioId + '/performance?' + params, 'GET', undefined, controller.signal)
       .then(setRows).catch(e => { if (!controller.signal.aborted) setError(message(e)) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [portfolioId, assetId, p])
-  return <section className="panel"><div className="section-heading"><div><h2>Evolução do ganho por posição</h2><p>Ganho realizado + ganho não realizado, conforme a fórmula original.</p></div>
-    <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset} · {pos.transaction_currency}</option>)}</select></label></div>
-    <div className="method-note">O percentual acumulado divide o ganho pelas compras acumuladas. A variação diária compara ganhos; não representa retorno diário da carteira.</div>
+  return <section className="panel"><div className="section-heading"><div><h2>Desempenho da posição · {overview.summary.display_currency}</h2><p>Resultado com renda bruta e retorno ponderado no tempo.</p></div>
+    <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset}</option>)}</select></label></div>
+    {overview.summary.history_status !== 'complete' && <div className="method-note">Histórico {overview.summary.history_status === 'pending' ? 'pendente de consolidação' : 'incompleto'}. Execute “Consolidar carteira” para atualizar.</div>}
     {error && <div role="alert" className="alert error">{error}</div>}
-    {loading ? <div className="empty">Carregando histórico…</div> : !rows.length ? <div className="empty">Adicione cotações para visualizar o histórico desta posição.</div> : <>
-      <GainChart rows={rows} />
-      <div className="table-wrap"><table><thead><tr><th>Data</th><th>Ganho realizado</th><th>Ganho não realizado</th><th>Ganho total</th><th>Ganho / compras</th><th>Variação do ganho</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(r => <tr key={r.date}><td>{dateLabel(r.date)}</td><td>{fmt(r.realized_gain)}</td><td>{fmt(r.unrealized_gain)}</td><td>{fmt(r.total_gain)}</td><td>{fmt(r.accumulated_profitability_pct)}%</td><td>{fmt(r.daily_profitability_pct)}%</td></tr>)}</tbody></table></div>
+    {loading ? <div className="empty">Carregando histórico…</div> : !rows.length ? <div className="empty">Consolide a carteira para gerar o histórico desta posição.</div> : <>
+      {rows.some(r => r.total_gain !== null) && <GainChart rows={rows.filter(r => r.total_gain !== null)} />}
+      <div className="table-wrap"><table><thead><tr><th>Data</th><th>Quantidade</th><th>Custo</th><th>Valor</th><th>Realizado</th><th>Não realizado</th><th>Renda bruta</th><th>Resultado total</th><th>Retorno acumulado</th><th>Status</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(r => <tr key={r.date}><td>{dateLabel(r.date)}</td><td>{fmt(r.quantity, 6)}</td><td>{fmt(r.remaining_acquisition_cost)}</td><td>{fmt(r.market_value)}</td><td>{fmt(r.realized_gain)}</td><td>{fmt(r.unrealized_gain)}</td><td>{fmt(r.gross_income)}</td><td>{fmt(r.total_gain)}</td><td>{fmt(r.cumulative_return_pct)}%</td><td>{r.status === 'complete' ? 'Completo' : 'Incompleto'}</td></tr>)}</tbody></table></div>
     </>}
   </section>
 }
 
 function GainChart({ rows }: { rows: Performance[] }) {
-  const values = rows.map(r => r.total_gain), low = Math.min(0, ...values), high = Math.max(0, ...values)
+  const values = rows.map(r => Number(r.total_gain)), low = Math.min(0, ...values), high = Math.max(0, ...values)
   const span = high - low || 1
   const y = (n: number) => 160 - (n - low) / span * 125
-  const points = rows.map((r, i) => (55 + i / Math.max(rows.length - 1, 1) * 690) + ',' + y(r.total_gain)).join(' ')
+  const points = rows.map((r, i) => (55 + i / Math.max(rows.length - 1, 1) * 690) + ',' + y(Number(r.total_gain))).join(' ')
   return <div className="chart"><svg viewBox="0 0 800 205" role="img" aria-label="Evolução histórica do ganho total">
     {[low, (high + low) / 2, high].map((v, i) => <g key={i}><line x1="55" x2="745" y1={y(v)} y2={y(v)} stroke="#e6ece8" /><text x="48" y={y(v) + 4} textAnchor="end">{fmt(v, 0)}</text></g>)}
     <polyline points={points} fill="none" stroke="#27755b" strokeWidth="2.5" />
-    {rows.length === 1 && <circle cx="55" cy={y(rows[0].total_gain)} r="4" fill="#27755b" />}
+    {rows.length === 1 && <circle cx="55" cy={y(Number(rows[0].total_gain))} r="4" fill="#27755b" />}
     <text x="55" y="190">{dateLabel(rows[0].date)}</text><text x="745" y="190" textAnchor="end">{dateLabel(rows[rows.length - 1].date)}</text>
   </svg></div>
 }

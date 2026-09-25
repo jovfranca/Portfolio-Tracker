@@ -69,15 +69,12 @@ def test_missing_quote_and_grouping():
 
 
 def test_oversell_behavior_is_characterized():
-    """Keep the legacy inconsistency visible until short-sale rules are decided."""
+    """Oversells are invalid in both current and historical calculations."""
     rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Sell', 15, 30, 2)]
-    assert cost_and_quantity(rows) == (0, 0)
-    result = historical_profitability(rows, [Obj(date=date(2024, 1, 3), close=40)])
-    assert result[0] == {
-        'date': date(2024, 1, 3), 'unrealized_gain': -100,
-        'realized_gain': 150, 'total_gain': 50,
-        'accumulated_profitability_pct': 25, 'daily_profitability_pct': 0,
-    }
+    with pytest.raises(ValueError, match='excede'):
+        cost_and_quantity(rows)
+    with pytest.raises(ValueError, match='excede'):
+        historical_profitability(rows, [Obj(date=date(2024, 1, 3), close=40)])
 
 
 def test_asset_cost_pooling_and_broker_breakdown():

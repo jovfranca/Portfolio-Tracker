@@ -1,6 +1,6 @@
 """Pure portfolio calculations for trades and resolved corporate events."""
 from collections import defaultdict
-from datetime import time
+from datetime import time, timedelta
 from decimal import Decimal
 
 
@@ -96,6 +96,8 @@ def _position_state(transactions, corporate_events=(), price_factors=None):
             cost_quantity += transaction_quantity
             quantity += transaction_quantity
         else:
+            if transaction_quantity > quantity:
+                raise ValueError('Venda excede a quantidade disponível nesta posição.')
             realized += (transaction_price - average) * transaction_quantity - fees
             if cost_quantity > 0:
                 cost_quantity -= transaction_quantity
@@ -139,6 +141,8 @@ def historical_profitability(transactions, history, corporate_events=()):
                 quantity += transaction_quantity
                 invested += transaction_quantity * transaction_price + fees
             else:
+                if transaction_quantity > quantity:
+                    raise ValueError('Venda excede a quantidade disponível nesta posição.')
                 realized += (transaction_price - average) * transaction_quantity - fees
                 quantity -= transaction_quantity
             cursor += 1
@@ -397,6 +401,8 @@ def corporate_event_effects(transactions, corporate_events):
                 cost_quantity += transaction_quantity
                 quantity += transaction_quantity
             else:
+                if transaction_quantity > quantity:
+                    raise ValueError('Venda excede a quantidade disponível nesta posição.')
                 cost_quantity = max(cost_quantity - transaction_quantity, ZERO)
                 quantity = max(quantity - transaction_quantity, ZERO)
             continue
@@ -421,3 +427,288 @@ def corporate_event_effects(transactions, corporate_events):
             'average_cost_after': None if mixed_currencies else average,
         })
     return effects
+
+
+class PositionLedger:
+    """One instrument's holdings and lifetime results in a reporting currency.
+
+    Trades and events are applied before that day's closing valuation. Purchases
+    enter the daily return denominator; sale proceeds leave the position. Gross
+    distributions are investment return rather than external contributions.
+    """
+
+    def __init__(self, currency, rates, state=None):
+        self.currency = currency
+        self.rates = rates
+        self.brokers = {}
+        self.realized = ZERO
+        self.income = ZERO
+        self.income_by_currency = defaultdict(lambda: ZERO)
+        self.return_factor = Decimal('1')
+        self.last_value = ZERO
+        self.last_status = 'complete'
+        self.last_split_date = None
+        if state:
+            self.brokers = {
+                broker: {'quantity': decimal(row['quantity']),
+                         'cost': decimal(row['cost']) if row['cost'] is not None else None}
+                for broker, row in state['brokers'].items()
+            }
+            self.realized = decimal(state['realized']) if state['realized'] is not None else None
+            self.income = decimal(state['income']) if state['income'] is not None else None
+            self.income_by_currency.update({key: decimal(value)
+                                            for key, value in state['income_by_currency'].items()})
+            self.return_factor = (decimal(state['return_factor'])
+                                  if state['return_factor'] is not None else None)
+            self.last_value = decimal(state['last_value']) if state['last_value'] is not None else None
+            self.last_status = state['last_status']
+            self.last_split_date = state.get('last_split_date')
+
+    @property
+    def quantity(self):
+        return sum((row['quantity'] for row in self.brokers.values()), ZERO)
+
+    @property
+    def cost(self):
+        values = [row['cost'] for row in self.brokers.values() if row['quantity'] > 0]
+        return sum(values, ZERO) if all(value is not None for value in values) else None
+
+    def factor(self, currency, day):
+        if currency == self.currency:
+            return Decimal('1')
+        value = self.rates.get((currency, day))
+        return decimal(value) if value is not None else None
+
+    def apply(self, kind, item):
+        """Return the external cash flow and gross income for one activity."""
+        if kind == 'event':
+            if item.event_type in SPLIT_TYPES:
+                factor = decimal(item.conversion_factor)
+                if factor <= 0:
+                    raise ValueError('O fator de conversão do desdobramento deve ser positivo.')
+                for row in self.brokers.values():
+                    row['quantity'] *= factor
+                self.last_split_date = item.effective_date.isoformat()
+                return ZERO, ZERO
+            if item.event_type in INCOME_TYPES and self.quantity > 0:
+                gross = self.quantity * decimal(item.amount_per_unit or ZERO)
+                self.income_by_currency[item.currency] += gross
+                factor = self.factor(item.currency, item.effective_date)
+                if factor is None:
+                    self.income = None
+                    return ZERO, None
+                amount = gross * factor
+                if self.income is not None:
+                    self.income += amount
+                return ZERO, amount
+            return ZERO, ZERO
+
+        quantity = decimal(item.quantity)
+        row = self.brokers.setdefault(item.broker, {'quantity': ZERO, 'cost': ZERO})
+        factor = self.rates.get(('transaction', item.id))
+        if factor is None:
+            factor = self.factor(item.transaction_currency, item.settlement_date)
+        gross = decimal(item.price) * quantity
+        fees = transaction_fees(item)
+        cash = (gross + fees if item.type == 'Buy' else -(gross - fees))
+        cash = cash * factor if factor is not None else None
+        if item.type == 'Buy':
+            row['quantity'] += quantity
+            if row['cost'] is not None:
+                row['cost'] = row['cost'] + cash if cash is not None else None
+        else:
+            if quantity > row['quantity']:
+                raise ValueError('Venda excede a quantidade disponível nesta corretora.')
+            attributed = row['cost'] * quantity / row['quantity'] if row['cost'] is not None else None
+            proceeds = -cash if cash is not None else None
+            if attributed is None or proceeds is None:
+                self.realized = None
+            elif self.realized is not None:
+                self.realized += proceeds - attributed
+            row['quantity'] -= quantity
+            row['cost'] = (ZERO if row['quantity'] == 0 else
+                           row['cost'] - attributed if attributed is not None else None)
+        return cash, ZERO
+
+    def snapshot(self, day, quote, flow=ZERO, daily_income=ZERO, *, purchases=ZERO, previous_value=None):
+        if quote is not None and self.last_split_date and quote.date.isoformat() < self.last_split_date:
+            quote = None
+        quantity = self.quantity
+        cost = self.cost
+        if quantity == 0:
+            market_value, price = ZERO, None
+            status = 'complete'
+        elif quote is None:
+            market_value = price = None
+            status = 'missing_price'
+        else:
+            factor = self.factor(quote.currency, day)
+            price = decimal(quote.close) * factor if factor is not None else None
+            market_value = quantity * price if price is not None else None
+            status = 'complete' if factor is not None else 'missing_fx'
+        if cost is None or self.realized is None or self.income is None or flow is None or daily_income is None:
+            status = 'missing_price_and_fx' if status == 'missing_price' else 'missing_fx'
+        unrealized = market_value - cost if market_value is not None and cost is not None else None
+        total = (self.realized + unrealized + self.income
+                 if self.realized is not None and unrealized is not None and self.income is not None else None)
+        start_value = self.last_value if previous_value is None else previous_value
+        denominator = (start_value + purchases
+                       if start_value is not None and purchases is not None else None)
+        if (market_value is not None and daily_income is not None and flow is not None
+                and start_value is not None and denominator is not None and denominator > 0):
+            daily_return = (market_value + daily_income - start_value - flow) / denominator
+            if self.return_factor is not None:
+                self.return_factor *= Decimal('1') + daily_return
+        elif status == 'complete' and quantity == 0 and start_value == ZERO:
+            daily_return = ZERO
+        else:
+            daily_return = None
+            self.return_factor = None
+        if status != 'complete':
+            daily_return = None
+            self.return_factor = None
+        self.last_value = market_value
+        self.last_status = status
+        return {
+            'date': day, 'quantity': quantity,
+            'remaining_acquisition_cost': cost,
+            'average_cost': cost / quantity if cost is not None and quantity else ZERO if quantity == 0 else None,
+            'market_value': market_value, 'current_price': price,
+            'realized_gain': self.realized, 'unrealized_gain': unrealized,
+            'gross_income': self.income, 'income_by_currency': dict(self.income_by_currency),
+            'total_gain': total,
+            'daily_return_pct': daily_return * 100 if daily_return is not None else None,
+            'cumulative_return_pct': (self.return_factor - 1) * 100
+            if self.return_factor is not None else None,
+            'reporting_currency': self.currency, 'status': status,
+            'net_flow': flow, 'daily_income': daily_income, 'purchases': purchases,
+            'broker_breakdown': [
+                {'broker': broker, 'quantity': value['quantity'],
+                 'acquisition_cost': value['cost'],
+                 'average_cost': value['cost'] / value['quantity']
+                 if value['cost'] is not None and value['quantity'] else ZERO if value['quantity'] == 0 else None}
+                for broker, value in sorted(self.brokers.items())
+            ],
+        }
+
+    def state(self):
+        return {
+            'brokers': {key: {'quantity': str(row['quantity']),
+                              'cost': str(row['cost']) if row['cost'] is not None else None}
+                        for key, row in self.brokers.items()},
+            'realized': str(self.realized) if self.realized is not None else None,
+            'income': str(self.income) if self.income is not None else None,
+            'income_by_currency': {key: str(value) for key, value in self.income_by_currency.items()},
+            'return_factor': str(self.return_factor) if self.return_factor is not None else None,
+            'last_value': str(self.last_value) if self.last_value is not None else None,
+            'last_status': self.last_status,
+            'last_split_date': self.last_split_date,
+        }
+
+
+def position_history(transactions, corporate_events, prices, reporting_currency, rates,
+                     *, start=None, end=None, initial_state=None):
+    """Daily reproducible values; weekdays without a quote remain incomplete.
+
+    Weekend closes carry Friday's published price, but a missing weekday quote
+    is never fabricated. Trades and events take effect before that day's close.
+    """
+    activity = ordered_activity(transactions, corporate_events)
+    if not activity and start is None:
+        return []
+    start = start or activity[0][0]
+    end = end or max([start] + [item.date for item in prices])
+    quotes = {item.date: item for item in prices}
+    ledger = PositionLedger(reporting_currency, rates, initial_state)
+    cursor = 0
+    while cursor < len(activity) and activity[cursor][0] < start:
+        cursor += 1
+    result = []
+    day = start
+    previous_quotes = [item for item in prices if item.date < start]
+    last_quote = max(previous_quotes, key=lambda item: item.date) if previous_quotes else None
+    while day <= end:
+        flow = daily_income = purchases = ZERO
+        while cursor < len(activity) and activity[cursor][0] == day:
+            _, _, _, _, kind, item = activity[cursor]
+            item_flow, item_income = ledger.apply(kind, item)
+            if kind == 'transaction' and item.type == 'Buy':
+                purchases = (purchases + item_flow
+                             if purchases is not None and item_flow is not None else None)
+            if kind == 'event' and item.event_type in SPLIT_TYPES:
+                last_quote = None
+            flow = flow + item_flow if flow is not None and item_flow is not None else None
+            daily_income = (daily_income + item_income
+                            if daily_income is not None and item_income is not None else None)
+            cursor += 1
+        quote = quotes.get(day)
+        if quote is not None:
+            last_quote = quote
+        elif day.weekday() >= 5:
+            quote = last_quote
+        result.append(ledger.snapshot(day, quote, flow, daily_income, purchases=purchases))
+        if (result[-1]['status'] == 'complete'
+                and result[-1]['cumulative_return_pct'] is None):
+            result[-1]['status'] = ledger.last_status = 'incomplete_history'
+        result[-1]['ledger_state'] = ledger.state()
+        day += timedelta(days=1)
+    return result
+
+
+def position_now(transactions, corporate_events, quote, reporting_currency, rates):
+    """Use the same ledger rules for the current position without daily replay."""
+    ledger = PositionLedger(reporting_currency, rates)
+    for _, _, _, _, kind, item in ordered_activity(transactions, corporate_events):
+        ledger.apply(kind, item)
+    if quote is not None and any(event.event_type in SPLIT_TYPES and
+                                 event.effective_date > quote.date for event in corporate_events):
+        quote = None
+    return ledger.snapshot(quote.date if quote else None, quote)
+
+
+def sum_known(rows, field):
+    values = [getattr(row, field) if not isinstance(row, dict) else row[field] for row in rows]
+    return sum(values, ZERO) if all(value is not None for value in values) else None
+
+
+def summary_totals(positions):
+    fields = {
+        'acquisition_cost': 'acquisition_cost',
+        'market_value': 'display_value',
+        'realized_gain': 'realized_gain',
+        'unrealized_gain': 'unrealized_gain',
+        'gross_income': 'gross_income',
+        'total_gain': 'current_total_gain',
+    }
+    result = {name: sum_known(positions, field) for name, field in fields.items()}
+    result['priced_value'] = sum((decimal(row['display_value']) for row in positions
+                                  if row['display_value'] is not None), ZERO)
+    return result
+
+
+def portfolio_day(rows, previous_value, previous_factor):
+    """Aggregate reporting-currency position snapshots without mixing unknowns."""
+    fields = ('remaining_acquisition_cost', 'market_value', 'realized_gain',
+              'unrealized_gain', 'gross_income', 'total_gain')
+    values = {field: sum_known(rows, field) for field in fields}
+    flow = sum_known(rows, 'net_flow')
+    purchases = sum_known(rows, 'purchases')
+    income = sum_known(rows, 'daily_income')
+    status = 'complete' if all(row.status == 'complete' for row in rows) else 'incomplete'
+    current_value = values['market_value']
+    denominator = (previous_value + purchases
+                   if previous_value is not None and purchases is not None else None)
+    if (status == 'complete' and current_value is not None and previous_value is not None
+            and flow is not None and income is not None and denominator is not None and denominator > 0):
+        daily_return = (current_value + income - previous_value - flow) / denominator
+        factor = previous_factor * (Decimal('1') + daily_return) if previous_factor is not None else None
+    elif status == 'complete' and current_value == previous_value == ZERO:
+        daily_return = ZERO
+        factor = previous_factor
+    else:
+        daily_return = factor = None
+    return {
+        **values, 'status': status, 'return_factor': factor,
+        'daily_return_pct': daily_return * 100 if daily_return is not None else None,
+        'cumulative_return_pct': (factor - 1) * 100 if factor is not None else None,
+    }

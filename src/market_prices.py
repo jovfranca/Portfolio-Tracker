@@ -437,3 +437,22 @@ def history_for_domain(session, asset, *, currency=None):
             by_date[quote.date] = quote
         prices = [by_date[day] for day in sorted(by_date)]
     return prices
+
+
+def history_for_reporting(session, asset):
+    """Stored valuation quotes, preserving each observation's quote currency."""
+    prices = get_quote_history(session, asset)
+    mapping = _stored_mapping(session, asset)
+    if mapping is None:
+        return prices
+    cached = session.scalar(select(LatestMarketQuote).where(
+        LatestMarketQuote.provider_instrument_id == mapping.id,
+        LatestMarketQuote.currency == mapping.quote_currency,
+    ))
+    if cached is None:
+        return prices
+    quote = _as_resolved(cached)
+    by_date = {row.date: row for row in prices}
+    if quote.date not in by_date:
+        by_date[quote.date] = quote
+    return [by_date[day] for day in sorted(by_date)]

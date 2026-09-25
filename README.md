@@ -8,10 +8,11 @@ performance views are calculated from them.
 
 - Create and rename portfolios.
 - Create, edit, and delete buy/sell transactions.
-- Rebuild positions by asset, broker, and allocation class.
+- Consolidate one lifetime position per canonical instrument, with broker breakdown.
 - Reuse shared daily Yahoo Finance history, cache latest quotes for 15 minutes,
   and keep manual portfolio prices private.
-- View the legacy gain calculation as a table and chart.
+- Consolidate daily position and portfolio history, including gross income and
+  cash-flow-adjusted, time-weighted returns in the selected reporting currency.
 - Import the original transaction and quote pickle files through a local CLI.
 - Select stocks, ETFs, and crypto from a version-controlled canonical catalog.
 - Keep transaction currency independent from the provider quote currency.
@@ -47,13 +48,12 @@ Database integration and browser-test commands are documented in
 
 ## Calculation limits
 
-The current release intentionally preserves the original formulas:
-
-- Fees, dividends, and stock splits are stored but do not affect calculations.
-- Values from different currencies are not converted before aggregation.
-- “Daily profitability” is the percentage change in gain, not a time-weighted return.
-- Values use floating-point arithmetic.
-- Short sales and overselling do not have a defined business rule yet.
+- Missing prices or historical FX leave affected reporting values incomplete.
+- Investor-level capital-gains tax and intraday time weighting are outside the
+  current calculation. Gross income is included; withholding and net income are
+  not inferred when the source event does not provide them.
+- Oversells are rejected. Transfers between brokers require an explicit supported
+  transaction history before they can be represented.
 
 Use the application as a personal local tracker, not as tax or investment advice.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for code boundaries and

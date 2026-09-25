@@ -1,5 +1,5 @@
 """Integration tests use an outer PostgreSQL transaction, rolled back after each test."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import os
 import pytest
@@ -64,6 +64,38 @@ def test_public_api_cannot_write_provider_catalog(client):
     assert response.status_code == 410
 
 
+@pytest.mark.parametrize('source', ['manual_income', 'provider_income', 'manual_price'])
+def test_fx_correction_invalidates_currencies_used_only_by_events_or_prices(client, source):
+    from src.models import Asset, CorporateAction, ExchangeRate, Portfolio, UserCorporateEvent, UserDefinedPrice
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'FX dependencies'}).json()['id']
+    iid = register_instrument(c, 'FXDEPEND', 'BRL')
+    day = date(2024, 1, 2)
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        asset = Asset(portfolio_id=pid, instrument_id=iid, ticker='FXDEPEND')
+        session.add(asset)
+        session.flush()
+        if source == 'manual_income':
+            session.add(UserCorporateEvent(asset_id=asset.id, event_type='DIVIDEND',
+                                          effective_date=day, currency='EUR', amount_per_unit=1))
+        elif source == 'provider_income':
+            session.add(CorporateAction(instrument_id=iid, event_type='DIVIDEND',
+                                       effective_date=day, currency='EUR', amount_per_unit=1,
+                                       source='yfinance', event_key='fx-dependency'))
+        else:
+            session.add(UserDefinedPrice(asset_id=asset.id, reference_date=day, currency='EUR', price=1))
+        rate = ExchangeRate(currency='EUR', rate_type='FX', rate_side='MARKET',
+                            reference_date=day, rate=6, source='yfinance')
+        session.add(rate)
+        session.flush()
+        portfolio = session.get(Portfolio, pid)
+        portfolio.dirty_from = None
+        session.flush()
+        rate.rate = 7
+        session.flush()
+        assert portfolio.dirty_from == day
+
+
 def test_portfolio_display_currency_changes_without_editing_transactions(client):
     c, _ = client
     pid = c.post('/api/portfolios', json={'name': 'Currencies'}).json()['id']
@@ -83,6 +115,338 @@ def test_portfolio_display_currency_changes_without_editing_transactions(client)
     assert overview['summary']['total_value'] == 24
     assert overview['positions'][0]['acquisition_cost'] == 20
     assert c.get(base + '/transactions').json() == saved
+
+
+def test_reporting_fx_correction_rewinds_to_trade_before_settlement(client):
+    from src.models import ExchangeRate, Portfolio
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Settlement FX', 'display_currency': 'EUR'}).json()['id']
+    iid = register_instrument(c, 'SETTLEFX', 'BRL')
+    assert c.post(f'/api/portfolios/{pid}/transactions', json={
+        'trade_date': '2024-01-02', 'settlement_date': '2024-01-04',
+        'type': 'Buy', 'asset': 'SETTLEFX', 'instrument_id': iid, 'broker': 'A',
+        'quantity': 1, 'price': 10, 'transaction_currency': 'BRL',
+    }).status_code == 201
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        portfolio = session.get(Portfolio, pid)
+        portfolio.dirty_from = None
+        session.flush()
+        session.add(ExchangeRate(currency='EUR', rate_type='FX', rate_side='MARKET',
+                                 reference_date=date(2024, 1, 4), rate=6, source='yfinance'))
+        session.flush()
+        assert portfolio.dirty_from == date(2024, 1, 2)
+
+
+def test_consolidation_recalculates_only_dirty_suffix_and_preserves_sources(client):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Incremental history'}).json()['id']
+    iid = register_instrument(c, 'HISTORY', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    first_day = date.today() - timedelta(days=2)
+    row = dict(trade_date=first_day.isoformat(), settlement_date=first_day.isoformat(), type='Buy',
+               asset='HISTORY', instrument_id=iid, broker='A', allocation_class='Stocks',
+               quantity=10, price=10, transaction_currency='BRL')
+    saved = c.post(base + '/transactions', json=row).json()
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    for offset in (0, 1, 2):
+        assert c.put(base + f'/assets/{aid}/quote', json={
+            'date': (first_day + timedelta(days=offset)).isoformat(),
+            'close': 10 if offset == 0 else 11,
+        }).status_code == 200
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == first_day.isoformat()
+    first = c.post(base + '/consolidate').json()
+    assert first['history_status'] == 'complete'
+    before = c.get(base + '/performance', params={'asset_id': aid}).json()
+    assert before[0]['quantity'] == 10
+    assert before[1]['cumulative_return_pct'] == 10
+    assert before[0]['reporting_currency'] == 'BRL'
+    assert before[0]['status'] == 'complete'
+    portfolio_history = c.get(base + '/history').json()
+    assert len(portfolio_history) == len(before)
+    assert Decimal(str(portfolio_history[-1]['market_value'])) == 110
+    sources = c.get(base + '/transactions').json()
+    changed = c.put(base + f'/transactions/{saved["id"]}', json=row | {'quantity': 5}).json()
+    assert Decimal(changed['quantity']) == 5
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == first_day.isoformat()
+    second = c.post(base + '/consolidate').json()
+    assert second['recalculated_from'] == first_day.isoformat()
+    after = c.get(base + '/performance', params={'asset_id': aid}).json()
+    assert after[0]['quantity'] == 5
+    assert c.get(base + '/transactions').json()[0]['price'] == sources[0]['price']
+
+
+def test_consolidation_continues_after_missing_quote(client, monkeypatch):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Partial consolidation'}).json()['id']
+    base = f'/api/portfolios/{pid}'
+    for symbol in ('GOOD12', 'BAD12'):
+        iid = register_instrument(c, symbol, 'BRL')
+        assert c.post(base + '/transactions', json={
+            'trade_date': (date.today() - timedelta(days=1)).isoformat(),
+            'settlement_date': (date.today() - timedelta(days=1)).isoformat(), 'type': 'Buy',
+            'asset': symbol, 'instrument_id': iid, 'broker': 'A', 'quantity': 1,
+            'price': 10, 'transaction_currency': 'BRL',
+        }).status_code == 201
+    good_asset = next(asset for asset in c.get(base + '/overview').json()['assets'] if asset['ticker'] == 'GOOD12')
+    for day in (date.today() - timedelta(days=1), date.today()):
+        assert c.put(base + f'/assets/{good_asset["id"]}/quote', json={
+            'date': day.isoformat(), 'close': 12,
+        }).status_code == 200
+    monkeypatch.setattr('src.market_prices.market_data.fetch_latest',
+                        lambda symbol, *_: (_ for _ in ()).throw(OSError(symbol)))
+    result = c.post(base + '/consolidate').json()
+    assert result['complete'] is False
+    assert 'BAD12' in result['incomplete_assets']
+    assert 'GOOD12' not in result['incomplete_assets']
+    assert len(c.get(base + '/overview').json()['positions']) == 2
+    good_position = next(row for row in c.get(base + '/overview').json()['positions'] if row['asset'] == 'GOOD12')
+    assert Decimal(str(good_position['display_value'])) == 12
+
+
+def test_mixed_currency_btc_sale_is_one_lifetime_position(client):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'One BTC'}).json()['id']
+    iid = register_instrument(c, 'BTC12', 'USD', asset_type='CRYPTO', provider_symbol='BTC12-USD')
+    base = f'/api/portfolios/{pid}'
+    first = (date.today() - timedelta(days=2)).isoformat()
+    second = (date.today() - timedelta(days=1)).isoformat()
+    common = dict(asset='BTC12', instrument_id=iid, broker='A', allocation_class='Crypto')
+    assert c.post(base + '/transactions', json=common | {
+        'trade_date': first, 'settlement_date': first, 'type': 'Buy',
+        'quantity': 2, 'price': 100, 'transaction_currency': 'BRL',
+    }).status_code == 201
+    assert c.post(base + '/transactions', json=common | {
+        'trade_date': second, 'settlement_date': second, 'type': 'Sell',
+        'quantity': 1, 'price': 30, 'transaction_currency': 'USD', 'fx_rate': 5,
+    }).status_code == 201
+    overview = c.get(base + '/overview').json()
+    assert len(overview['positions']) == 1
+    position = overview['positions'][0]
+    assert Decimal(str(position['quantity'])) == 1
+    assert Decimal(str(position['realized_gain'])) == 50
+    assert position['transaction_currency'] is None
+    assert position['status'] == 'missing_price'
+    assert c.get(base + '/performance', params={'asset_id': position['asset_id']}).status_code == 200
+    assert c.put(base, json={'name': 'One BTC', 'display_currency': 'EUR'}).status_code == 200
+    incomplete = c.get(base + '/overview').json()['positions']
+    assert len(incomplete) == 1
+    assert incomplete[0]['realized_gain'] is None
+    assert incomplete[0]['status'] == 'missing_price_and_fx'
+
+
+def test_reporting_fx_and_dividend_change_history_without_source_mutation(client):
+    from src.models import ExchangeRate
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'FX return'}).json()['id']
+    iid = register_instrument(c, 'FX-INCOME', 'USD')
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=2)
+    second = first + timedelta(days=1)
+    transaction = dict(trade_date=first.isoformat(), settlement_date=first.isoformat(),
+                       type='Buy', asset='FX-INCOME', instrument_id=iid, broker='A',
+                       quantity=1, price=10, transaction_currency='USD', fx_rate=5)
+    assert c.post(base + '/transactions', json=transaction).status_code == 201
+    asset_id = c.get(base + '/overview').json()['assets'][0]['id']
+    for day in (first, second, date.today()):
+        assert c.put(base + f'/assets/{asset_id}/quote', json={
+            'date': day.isoformat(), 'close': 10,
+        }).status_code == 200
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        for day, rate in ((first, 5), (second, 6), (date.today(), 6)):
+            session.add(ExchangeRate(currency='USD', rate_type='FX', rate_side='MARKET',
+                                     reference_date=day, rate=rate, source='test',
+                                     retrieved_at=datetime.now(timezone.utc)))
+        session.commit()
+    event_path = base + f'/assets/{asset_id}/corporate-events'
+    assert c.post(event_path, json={'event_type': 'DIVIDEND',
+                                    'effective_date': second.isoformat(),
+                                    'amount_per_unit': 1, 'currency': 'USD'}).status_code == 201
+    original = c.get(base + '/transactions').json()
+    original_events = c.get(event_path).json()
+    brl_overview = c.get(base + '/overview').json()
+    brl_current = brl_overview['positions'][0]
+    assert Decimal(str(brl_current['display_price'])) == 60
+    assert Decimal(str(brl_current['display_value'])) == 60
+    assert Decimal(str(brl_current['native_average_cost'])) == 10
+    assert Decimal(str(brl_current['native_acquisition_cost'])) == 10
+    assert Decimal(str(brl_current['gross_income'])) == 6
+    assert Decimal(str(brl_current['current_total_gain'])) == 16
+    assert Decimal(str(brl_overview['summary']['total_gain'])) == 16
+    assert Decimal(str(brl_overview['summary']['gross_income'])) == 6
+    assert c.post(base + '/consolidate').status_code == 200
+    brl = c.get(base + '/performance', params={'asset_id': asset_id}).json()
+    assert Decimal(str(brl[-1]['cumulative_return_pct'])) == 32
+    assert Decimal(str(brl[-1]['total_gain'])) == 16
+    assert c.put(base, json={'name': 'FX return', 'display_currency': 'USD'}).status_code == 200
+    assert c.post(base + '/consolidate').status_code == 200
+    usd = c.get(base + '/performance', params={'asset_id': asset_id}).json()
+    assert Decimal(str(usd[-1]['cumulative_return_pct'])) == 10
+    assert Decimal(str(usd[-1]['total_gain'])) == 1
+    assert c.get(base + '/transactions').json() == original
+    assert c.get(event_path).json() == original_events
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        corrected = session.scalar(select(ExchangeRate).where(
+            ExchangeRate.currency == 'USD', ExchangeRate.reference_date == second,
+        ))
+        corrected.rate = 7
+        session.commit()
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == second.isoformat()
+
+
+def test_native_valuation_uses_native_currency_when_quote_differs(client):
+    from src.models import ExchangeRate, LatestMarketQuote, ProviderInstrument
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Native quote'}).json()['id']
+    iid = register_instrument(c, 'NATIVE12', 'USD')
+    base = f'/api/portfolios/{pid}'
+    day = date.today() - timedelta(days=1)
+    assert c.post(base + '/transactions', json={
+        'trade_date': day.isoformat(), 'settlement_date': day.isoformat(),
+        'type': 'Buy', 'asset': 'NATIVE12', 'instrument_id': iid,
+        'broker': 'A', 'quantity': 2, 'price': 10, 'transaction_currency': 'USD',
+        'fx_rate': 5,
+    }).status_code == 201
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        mapping = session.scalar(select(ProviderInstrument).where(
+            ProviderInstrument.instrument_id == iid))
+        mapping.quote_currency = 'BRL'
+        session.flush()
+        session.add(LatestMarketQuote(
+            provider_instrument_id=mapping.id, price=12, currency='BRL',
+            source='yfinance', reference_date=day,
+            retrieved_at=datetime.now(timezone.utc),
+        ))
+        session.add(ExchangeRate(currency='USD', rate_type='FX', rate_side='MARKET',
+                                 reference_date=day, rate=5, source='test',
+                                 retrieved_at=datetime.now(timezone.utc)))
+        session.commit()
+    position = c.get(base + '/overview').json()['positions'][0]
+    assert position['quote_currency'] == 'BRL'
+    assert position['native_currency'] == 'USD'
+    assert Decimal(str(position['display_price'])) == 12
+    assert Decimal(str(position['current_price'])) == Decimal('2.4')
+    assert Decimal(str(position['total_value'])) == Decimal('4.8')
+
+
+def test_reconsolidation_preserves_snapshots_before_dirty_date(client):
+    from src.models import PositionSnapshot
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Dirty suffix'}).json()['id']
+    iid = register_instrument(c, 'SUFFIX', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=2)
+    second = first + timedelta(days=1)
+    common = dict(asset='SUFFIX', instrument_id=iid, broker='A', type='Buy',
+                  transaction_currency='BRL', quantity=1, price=10)
+    assert c.post(base + '/transactions', json=common | {
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+    }).status_code == 201
+    later = c.post(base + '/transactions', json=common | {
+        'trade_date': second.isoformat(), 'settlement_date': second.isoformat(),
+    }).json()
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    for day in (first, second, date.today()):
+        assert c.put(base + f'/assets/{aid}/quote', json={'date': day.isoformat(), 'close': 10}).status_code == 200
+    assert c.post(base + '/consolidate').status_code == 200
+    original_id = connection.scalar(select(PositionSnapshot.id).where(
+        PositionSnapshot.portfolio_id == pid, PositionSnapshot.date == first))
+    assert c.put(base + f'/transactions/{later["id"]}', json=common | {
+        'trade_date': second.isoformat(), 'settlement_date': second.isoformat(), 'price': 12,
+    }).status_code == 200
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == second.isoformat()
+    result = c.post(base + '/consolidate').json()
+    assert result['recalculated_from'] == second.isoformat()
+    assert connection.scalar(select(PositionSnapshot.id).where(
+        PositionSnapshot.portfolio_id == pid, PositionSnapshot.date == first)) == original_id
+    assert c.put(base + f'/assets/{aid}/quote', json={
+        'date': second.isoformat(), 'close': 11,
+    }).status_code == 200
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == second.isoformat()
+
+
+def test_deleting_first_trade_removes_stale_early_history(client):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Moved history start'}).json()['id']
+    iid = register_instrument(c, 'START12', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=2)
+    second = first + timedelta(days=1)
+    common = dict(asset='START12', instrument_id=iid, broker='A', type='Buy',
+                  transaction_currency='BRL', quantity=1, price=10)
+    early = c.post(base + '/transactions', json=common | {
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+    }).json()
+    assert c.post(base + '/transactions', json=common | {
+        'trade_date': second.isoformat(), 'settlement_date': second.isoformat(),
+    }).status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    for day in (first, second, date.today()):
+        assert c.put(base + f'/assets/{aid}/quote', json={
+            'date': day.isoformat(), 'close': 10,
+        }).status_code == 200
+    assert c.post(base + '/consolidate').status_code == 200
+    assert c.get(base + '/performance', params={'asset_id': aid}).json()[0]['date'] == first.isoformat()
+    assert c.delete(base + f'/transactions/{early["id"]}').status_code == 204
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == first.isoformat()
+    assert c.post(base + '/consolidate').status_code == 200
+    position = c.get(base + '/performance', params={'asset_id': aid}).json()
+    portfolio = c.get(base + '/history').json()
+    assert position[0]['date'] == second.isoformat()
+    assert portfolio[0]['date'] == second.isoformat()
+    assert position[0]['quantity'] == 1
+    assert portfolio[0]['market_value'] == 10
+
+
+def test_consolidation_reuses_fresh_shared_quote_without_provider_call(client, monkeypatch):
+    from src.models import LatestMarketQuote, ProviderInstrument
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Fresh quote'}).json()['id']
+    iid = register_instrument(c, 'FRESH12', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    yesterday = date.today() - timedelta(days=1)
+    assert c.post(base + '/transactions', json={
+        'trade_date': yesterday.isoformat(), 'settlement_date': yesterday.isoformat(),
+        'type': 'Buy', 'asset': 'FRESH12', 'instrument_id': iid,
+        'broker': 'A', 'quantity': 1, 'price': 10, 'transaction_currency': 'BRL',
+    }).status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    assert c.put(base + f'/assets/{aid}/quote', json={
+        'date': yesterday.isoformat(), 'close': 10,
+    }).status_code == 200
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        mapping = session.scalar(select(ProviderInstrument).where(
+            ProviderInstrument.instrument_id == iid))
+        mapping_id = mapping.id
+        session.add(LatestMarketQuote(
+            provider_instrument_id=mapping_id, price=12, currency='BRL',
+            source='yfinance', reference_date=date.today(),
+            retrieved_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
+    monkeypatch.setattr('src.market_prices.market_data.fetch_latest',
+                        lambda *args: pytest.fail('Fresh cached quote fetched again'))
+    result = c.post(base + '/consolidate')
+    assert result.status_code == 200, result.text
+    assert result.json()['complete']
+    assert Decimal(str(c.get(base + '/overview').json()['positions'][0]['display_value'])) == 12
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        cached = session.scalar(select(LatestMarketQuote).where(
+            LatestMarketQuote.currency == 'BRL',
+            LatestMarketQuote.provider_instrument_id == mapping_id,
+        ))
+        cached.retrieved_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        session.commit()
+    calls = []
+    def fresh_quote(*args):
+        calls.append(args)
+        return {'price': Decimal('14'), 'currency': 'BRL',
+                'market_at': datetime.now(timezone.utc),
+                'retrieved_at': datetime.now(timezone.utc)}
+    monkeypatch.setattr('src.market_prices.market_data.fetch_latest', fresh_quote)
+    refreshed = c.post(base + '/consolidate').json()
+    assert refreshed['snapshot_days'] == 0
+    assert len(calls) == 1
+    assert Decimal(str(c.get(base + '/overview').json()['positions'][0]['display_value'])) == 14
 
 
 def test_crud_prices_isolation_and_rollback(client, monkeypatch):
@@ -475,10 +839,12 @@ def test_crypto_accounting_currency_is_separate_from_provider_quotes(client, mon
     monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *a: pytest.fail('Fresh USD quote fetched again'))
     monkeypatch.setattr('src.api.market_data.fetch_history', lambda *a: history_calls.append(a) or [])
     overview = c.get(f'/api/portfolios/{pid}/overview').json()
-    assert {position['transaction_currency'] for position in overview['positions']} == {'BRL', 'EUR', 'USD'}
-    position = next(position for position in overview['positions'] if position['transaction_currency'] == 'USD')
+    assert len(overview['positions']) == 1
+    position = overview['positions'][0]
+    assert position['transaction_currency'] is None
     assert position['current_price'] == 61000
-    assert Decimal(str(position['average_cost'])) == 320000
+    assert Decimal(str(position['quantity'])) == Decimal('0.03')
+    assert Decimal(str(position['acquisition_cost'])) == 38400
     asset_id = position['asset_id']
     quote_url = f'/api/portfolios/{pid}/assets/{asset_id}/quote'
     quote = c.get(quote_url)
@@ -488,10 +854,7 @@ def test_crypto_accounting_currency_is_separate_from_provider_quotes(client, mon
     assert history_calls and history_calls[0][:2] == ('BTC-USD', 'USD')
     assert c.put(quote_url, json={'date': date.today().isoformat(), 'close': '330000', 'currency': 'BRL'}).status_code == 200
     assert c.get(quote_url).json()['currency'] == 'BRL'
-    assert Decimal(str(next(
-        position for position in c.get(f'/api/portfolios/{pid}/overview').json()['positions']
-        if position['transaction_currency'] == 'USD'
-    )['current_price'])) == 61000
+    assert Decimal(str(c.get(f'/api/portfolios/{pid}/overview').json()['positions'][0]['current_price'])) == 330000
     assert c.get(base).json()[0]['price'] == '320000.000000000000'
 
 
@@ -551,7 +914,7 @@ def test_manual_corporate_event_crud_recalculates_and_feeds_activity(client):
 
     overview = c.get(base + '/overview').json()
     assert Decimal(str(overview['positions'][0]['quantity'])) == 20
-    assert Decimal(str(overview['positions'][0]['average_cost'])) == 10
+    assert Decimal(str(overview['positions'][0]['average_cost'])) == 50
     assert Decimal(str(overview['positions'][0]['income_by_currency']['USD'])) == 30
     events = c.get(events_url).json()
     assert [row['origin'] for row in events] == ['manual', 'manual']
@@ -573,7 +936,7 @@ def test_manual_corporate_event_crud_recalculates_and_feeds_activity(client):
     assert c.delete(events_url + f"/{split.json()['id']}").status_code == 204
     final = c.get(base + '/overview').json()['positions'][0]
     assert Decimal(str(final['quantity'])) == 10
-    assert Decimal(str(final['average_cost'])) == 20
+    assert Decimal(str(final['average_cost'])) == 100
     assert Decimal(str(final['income_by_currency']['USD'])) == 20
 
 
