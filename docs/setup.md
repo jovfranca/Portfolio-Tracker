@@ -89,8 +89,9 @@ Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.
 8. Edite a quantidade da transação para 5, confira o recálculo e recarregue a página
    para confirmar persistência.
 
-Não use os valores fictícios acima na carteira real. Os resultados não têm conversão
-de moedas. O histórico antigo de cotações termina na data do cache original;
+Não use os valores fictícios acima na carteira real. A conversão de valores atuais
+usa cotações FX datadas; se faltar FX, o total é identificado como incompleto.
+O histórico antigo de cotações termina na data do cache original;
 use atualização Yahoo ou cotações manuais para datas mais recentes.
 
 ## Instalação em outra máquina
@@ -203,7 +204,8 @@ Em texto, use ponto decimal e nenhum símbolo monetário/separador de milhar:
 exibidas com vírgula. Para muitos dígitos, use células de texto para evitar a
 perda de precisão do próprio Excel. O parser também aceita notação científica
 (`1e2`) e sublinhados (`1_000.50`). Todos os decimais aceitam até 10¹⁵, até 28
-dígitos e até 12 casas decimais. Taxas são registradas sem alterar os cálculos atuais.
+dígitos e até 12 casas decimais. Taxas de compra integram o custo de aquisição;
+taxas de venda reduzem o ganho realizado.
 
 Datas em texto como `02/01/2024` são inválidas. O validador também aceita ISO com
 horário à meia-noite e timestamps Unix (segundos ou milissegundos) que representem
@@ -354,8 +356,8 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 
 - Preço médio, ganho realizado e ganho não realizado preservam as fórmulas Buy/Sell,
   com quantidade e preço médio ajustados por desdobramentos explícitos.
-- Taxas continuam fora dos cálculos; renda corporativa é calculada e apresentada
-  separadamente do ganho de negociação.
+- Taxas de compra integram o custo médio e taxas de venda reduzem o ganho
+  realizado; renda corporativa é apresentada separadamente do ganho de negociação.
 - A variação diária é a variação do ganho; não é TWR ou retorno total com proventos.
 - Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
   cotações históricas continuam no formato legado.

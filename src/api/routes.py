@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
-from src.domain import corporate_event_effects, historical_profitability
+from src.domain import consolidated_profitability, corporate_event_effects
 from src.models import Portfolio, Transaction, TransactionImport, UserCorporateEvent
 from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
@@ -43,7 +43,7 @@ def health(session: DB):
 @router.get('/portfolios')
 def portfolios(session: DB):
     return [
-        {'id': portfolio.id, 'name': portfolio.name}
+        {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency}
         for portfolio in session.scalars(select(Portfolio).order_by(Portfolio.id))
     ]
 
@@ -53,15 +53,17 @@ def create_portfolio(payload: PortfolioInput, session: DB):
     portfolio = Portfolio(**payload.model_dump())
     session.add(portfolio)
     session.commit()
-    return {'id': portfolio.id, 'name': portfolio.name}
+    return {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency}
 
 
 @router.put('/portfolios/{portfolio_id}')
 def rename_portfolio(portfolio_id: int, payload: PortfolioInput, session: DB):
     portfolio = get_portfolio(session, portfolio_id, lock=True)
     portfolio.name = payload.name
+    if 'display_currency' in payload.model_fields_set:
+        portfolio.display_currency = payload.display_currency
     session.commit()
-    return {'id': portfolio.id, 'name': portfolio.name}
+    return {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency}
 
 
 @router.get('/instruments/search')
@@ -511,19 +513,22 @@ def performance(
     portfolio_id: int,
     session: DB,
     asset_id: int,
-    broker: str,
-    allocation_class: str,
     transaction_currency: str,
+    broker: str | None = None,
+    allocation_class: str | None = None,
 ):
     asset = get_asset(session, portfolio_id, asset_id)
-    transactions = list(session.scalars(select(Transaction).where(
+    filters = [
         Transaction.portfolio_id == portfolio_id,
         Transaction.instrument_id == asset.instrument_id,
-        Transaction.broker == broker,
-        Transaction.allocation_class == allocation_class,
         Transaction.transaction_currency == transaction_currency,
-    )))
-    return historical_profitability(
+    ]
+    if broker is not None:
+        filters.append(Transaction.broker == broker)
+    if allocation_class is not None:
+        filters.append(Transaction.allocation_class == allocation_class)
+    transactions = list(session.scalars(select(Transaction).where(*filters)))
+    return consolidated_profitability(
         transactions, get_stored_history(session, asset, currency=transaction_currency),
         get_stored_actions(session, asset),
     )

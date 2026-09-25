@@ -64,6 +64,27 @@ def test_public_api_cannot_write_provider_catalog(client):
     assert response.status_code == 410
 
 
+def test_portfolio_display_currency_changes_without_editing_transactions(client):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Currencies'}).json()['id']
+    assert c.get('/api/portfolios').json()[-1]['display_currency'] == 'BRL'
+    instrument_id = register_instrument(c, 'FXTEST', 'USD')
+    base = f'/api/portfolios/{pid}'
+    row = dict(trade_date='2024-01-02', settlement_date='2024-01-03', type='Buy',
+               asset='FXTEST', instrument_id=instrument_id, broker='A', allocation_class='Stocks',
+               quantity=2, price=10, transaction_currency='USD', fx_rate=5)
+    assert c.post(base + '/transactions', json=row).status_code == 201
+    saved = c.get(base + '/transactions').json()
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    assert c.put(base + f'/assets/{aid}/quote', json={'date': '2024-01-04', 'close': 12}).status_code == 200
+    assert c.put(base, json={'name': 'Currencies', 'display_currency': 'USD'}).status_code == 200
+    assert c.put(base, json={'name': 'Renamed'}).json()['display_currency'] == 'USD'
+    overview = c.get(base + '/overview').json()
+    assert overview['summary']['total_value'] == 24
+    assert overview['positions'][0]['acquisition_cost'] == 20
+    assert c.get(base + '/transactions').json() == saved
+
+
 def test_crud_prices_isolation_and_rollback(client, monkeypatch):
     c, _ = client
     assert c.get('/api/health').status_code == 200
@@ -79,12 +100,12 @@ def test_crud_prices_isolation_and_rollback(client, monkeypatch):
     assert response.json()['instrument_id'] == instrument_id
     tid = response.json()['id']
     result = c.get(base + '/overview').json()
-    assert result['positions'][0]['average_cost'] == 20
+    assert result['positions'][0]['average_cost'] == 20.3
     aid = result['assets'][0]['id']
     assert c.put(base + f'/assets/{aid}/quote', json={'date': '2024-01-03', 'close': 30}).status_code == 200
     result = c.get(base + '/overview').json()
     assert result['summary']['total_value'] == 300
-    assert result['positions'][0]['current_total_gain'] == 100
+    assert result['positions'][0]['current_total_gain'] == 97
     assert c.get(f'/api/portfolios/{other}/assets/{aid}/history').status_code == 404
     assert c.delete(f'/api/portfolios/{other}/transactions/{tid}').status_code == 404
     assert c.put(base + f'/transactions/{tid}', json=payload | {'quantity': 5}).status_code == 200

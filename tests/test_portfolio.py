@@ -1,9 +1,10 @@
 from datetime import date, datetime
+from decimal import Decimal
 from types import SimpleNamespace as Obj
 import pickle
 import io
 import pytest
-from src.domain import cost_and_quantity, historical_profitability, overview
+from src.domain import cost_and_quantity, consolidated_profitability, historical_profitability, overview
 from src.import_legacy import TransactionReader, read_transactions, read_assets
 
 
@@ -60,7 +61,9 @@ def test_missing_quote_and_grouping():
     rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Buy', 3, 30, 2)]
     rows[1].broker = 'B'
     result = overview(rows, [])
-    assert len(result['positions']) == 2
+    assert len(result['positions']) == 1
+    assert result['positions'][0]['quantity'] == 13
+    assert {row['broker']: row['quantity'] for row in result['positions'][0]['broker_breakdown']} == {'A': 10, 'B': 3}
     assert result['summary']['total_value'] is None
     assert result['summary']['missing_prices'] == ['TEST']
 
@@ -77,16 +80,108 @@ def test_oversell_behavior_is_characterized():
     }
 
 
-def test_asset_cost_pooling_is_characterized():
-    """Asset totals currently pool brokers while positions calculate separately."""
+def test_asset_cost_pooling_and_broker_breakdown():
     rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Buy', 10, 40, 2), tx(3, 'Sell', 10, 50, 3)]
     rows[1].broker = 'B'
     asset = Obj(id=1, ticker='TEST', history=[Obj(date=date(2024, 1, 3), close=50)])
     result = overview(rows, [asset])
-    assert [(p['broker'], p['quantity'], p['average_cost']) for p in result['positions']] == [
-        ('A', 0, 0), ('B', 10, 40),
+    assert len(result['positions']) == 1
+    assert result['positions'][0]['quantity'] == 10
+    assert result['positions'][0]['average_cost'] == 40
+    assert result['positions'][0]['acquisition_cost'] == 400
+    assert [(p['broker'], p['quantity'], p['acquisition_cost']) for p in result['positions'][0]['broker_breakdown']] == [
+        ('A', 0, 0), ('B', 10, 400),
     ]
-    assert result['assets'][0]['average_cost'] == 30
+    assert result['assets'][0]['average_cost'] == 40
+    assert result['positions'][0]['realized_gain'] == 300
+
+
+def test_consolidated_performance_uses_broker_cost_bases():
+    rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Buy', 10, 40, 2), tx(3, 'Sell', 10, 50, 3)]
+    rows[1].broker = 'B'
+    quote = [Obj(date=date(2024, 1, 3), close=50)]
+    series = consolidated_profitability(rows, quote)
+    assert series[0]['realized_gain'] == 300
+    assert series[0]['unrealized_gain'] == 100
+    assert series[0]['total_gain'] == 400
+
+
+def test_consolidated_position_partial_sale_and_split():
+    rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Buy', 10, 40, 2), tx(3, 'Sell', 5, 50, 3)]
+    rows[1].broker = 'B'
+    event = Obj(id=1, event_type='STOCK_SPLIT', effective_date=date(2024, 1, 4), conversion_factor=2)
+    asset = Obj(id=1, ticker='TEST', history=[Obj(date=date(2024, 1, 4), close=25)], corporate_events=[event])
+    position = overview(rows, [asset])['positions'][0]
+    assert (position['quantity'], position['average_cost'], position['acquisition_cost']) == (30, Decimal('16.66666666666666666666666667'), 500)
+    assert position['total_value'] == 750
+    assert [(p['broker'], p['quantity'], p['average_cost']) for p in position['broker_breakdown']] == [
+        ('A', 10, 10), ('B', 20, 20),
+    ]
+
+
+def test_display_conversion_requires_all_fx_quotes():
+    usd = tx(1, 'Buy', 2, 10, 1)
+    usd.transaction_currency = 'USD'
+    asset = Obj(id=1, ticker='TEST', transaction_currency='USD', history=[Obj(date=date(2024, 1, 2), close=12)])
+    missing = overview([usd], [asset], display_currency='BRL')
+    assert missing['positions'][0]['total_value'] == 24
+    assert missing['positions'][0]['display_value'] is None
+    assert missing['summary']['total_value'] is None
+    assert missing['summary']['missing_fx'] == ['TEST (USD)']
+    converted = overview([usd], [asset], display_currency='BRL',
+                         display_factors={('USD', date(2024, 1, 2)): 5},
+                         display_cost_factors={1: 4})
+    assert converted['positions'][0]['display_value'] == 120
+    assert converted['positions'][0]['display_acquisition_cost'] == 80
+    assert converted['positions'][0]['display_average_cost'] == 40
+    assert converted['summary']['total_value'] == 120
+
+
+def test_fees_reduce_realized_gain_and_remain_in_unsold_cost():
+    rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Sell', 4, 30, 2)]
+    rows[0].brokerage_fee, rows[0].other_fees = 8, 2
+    rows[1].brokerage_fee, rows[1].other_fees = 3, 1
+    assert cost_and_quantity(rows) == (21, 6)
+    asset = Obj(id=1, ticker='TEST', history=[Obj(date=date(2024, 1, 2), close=30)])
+    position = overview(rows, [asset])['positions'][0]
+    assert position['acquisition_cost'] == 126
+    assert position['realized_gain'] == 32
+    assert position['unrealized_gain'] == 54
+    assert position['current_total_gain'] == 86
+    history = consolidated_profitability(rows, asset.history)[0]
+    assert history['total_gain'] == 86
+
+
+@pytest.mark.parametrize('with_quote', [False, True])
+def test_liquidation_keeps_realized_gain_without_a_quote_after_sale(with_quote):
+    rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Sell', 10, 30, 3)]
+    history = [Obj(date=date(2024, 1, 1), close=25)] if with_quote else []
+    position = overview(rows, [Obj(id=1, ticker='TEST', history=history)])['positions'][0]
+    assert position['quantity'] == position['acquisition_cost'] == position['total_value'] == 0
+    assert position['realized_gain'] == position['current_total_gain'] == 100
+    assert position['unrealized_gain'] == 0
+
+
+def test_current_gain_uses_latest_holdings_without_rebuilding_history(monkeypatch):
+    import src.domain as domain
+    rows = [tx(1, 'Buy', 10, 20, 1), tx(2, 'Sell', 4, 30, 3), tx(3, 'Buy', 2, 25, 4)]
+    asset = Obj(id=1, ticker='TEST', history=[Obj(date=date(2024, 1, 2), close=30)])
+    def no_history(*args, **kwargs):
+        pytest.fail('Current valuation must not rebuild the historical series')
+    monkeypatch.setattr(domain, 'consolidated_profitability', no_history)
+    position = overview(rows, [asset])['positions'][0]
+    assert position['realized_gain'] == 40
+    assert position['unrealized_gain'] == 70
+    assert position['current_total_gain'] == 110
+    assert position['history_behind_transactions']
+
+
+def test_converted_acquisition_cost_includes_purchase_fees():
+    row = tx(1, 'Buy', 2, 10, 1)
+    row.transaction_currency = 'USD'
+    row.brokerage_fee = 2
+    result = overview([row], [], display_cost_factors={1: 5})
+    assert result['positions'][0]['display_acquisition_cost'] == 110
 
 
 def test_overview_does_not_combine_different_currencies():
@@ -101,7 +196,8 @@ def test_overview_does_not_combine_different_currencies():
     ]
     result = overview([brl, usd], assets)
     assert result['summary']['total_value'] is None
-    assert result['summary']['priced_value'] is None
+    assert result['summary']['priced_value'] == 20
+    assert result['summary']['missing_fx'] == ['USD-ASSET (USD)']
     assert result['summary']['totals_by_currency'] == {'BRL': 20, 'USD': 20}
 
 

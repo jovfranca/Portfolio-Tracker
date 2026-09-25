@@ -319,7 +319,7 @@ def test_overview_does_not_value_post_split_shares_with_pre_split_price():
         corporate_events=[split],
     )
 
-    result = overview([transaction], [asset])
+    result = overview([transaction], [asset], display_currency='USD')
 
     assert result['positions'][0]['quantity'] == 20
     assert result['positions'][0]['total_value'] is None
@@ -332,7 +332,7 @@ def test_overview_does_not_value_post_split_shares_with_pre_split_price():
     assert result['assets'][0]['current_price'] is None
 
     asset.history.append(Obj(date=date(2024, 1, 3), close=Decimal('10')))
-    current = overview([transaction], [asset])
+    current = overview([transaction], [asset], display_currency='USD')
     assert current['positions'][0]['total_value'] == Decimal('200')
     assert current['summary']['total_value'] == Decimal('200')
 

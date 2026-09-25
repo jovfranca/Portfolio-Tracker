@@ -47,6 +47,10 @@ export default function App() {
   const [portfolioName, setPortfolioName] = useState('')
   const [newPortfolio, setNewPortfolio] = useState(false)
   const [query, setQuery] = useState('')
+  const [showClosed, setShowClosed] = useState(false)
+  const [currencyDraft, setCurrencyDraft] = useState('BRL')
+  const selectedPortfolio = portfolios.find(p => p.id === selected)
+  useEffect(() => { setCurrencyDraft(selectedPortfolio?.display_currency ?? 'BRL') }, [selected, selectedPortfolio?.display_currency])
 
   const loadPortfolios = useCallback(async () => {
     setLoading(true); setError('')
@@ -102,6 +106,18 @@ export default function App() {
     } catch (e) { setError(message(e)) } finally { setBusy(false) }
   }
 
+  async function saveDisplayCurrency(e: FormEvent) {
+    e.preventDefault()
+    if (!selectedPortfolio) return
+    await mutate(async () => {
+      const updated = await api<Portfolio>('/portfolios/' + selectedPortfolio.id, 'PUT', {
+        name: selectedPortfolio.name, display_currency: currencyDraft.toUpperCase(),
+      })
+      setPortfolios(current => current.map(p => p.id === updated.id ? updated : p))
+      return updated
+    }, 'Moeda de exibição atualizada.')
+  }
+
   async function saveTransaction(e: FormEvent) {
     e.preventDefault()
     if (!draft.instrument_id) {
@@ -119,7 +135,7 @@ export default function App() {
     setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
-  const filteredPositions = overview?.positions.filter(p => [p.asset, p.broker, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
+  const filteredPositions = overview?.positions.filter(p => (showClosed || Number(p.quantity) !== 0) && [p.asset, ...p.broker_breakdown.map(b => b.broker), p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
 
   return <div className="app">
     <aside className="sidebar">
@@ -187,19 +203,24 @@ export default function App() {
         {importing && <TransactionImportPage key={selected} portfolioId={selected} portfolioName={portfolios.find(p => p.id === selected)?.name ?? ''} busy={busy || loading} mutate={mutate} />}
         {cataloging && <CatalogPage />}
         {!importing && !cataloging && !loading && overview && <>
+          <form className="panel inline-form" onSubmit={saveDisplayCurrency}>
+            <label>Moeda de exibição<input required maxLength={3} pattern="[A-Za-z]{3}" value={currencyDraft} onChange={e => setCurrencyDraft(e.target.value.toUpperCase())} /></label>
+            <button className="button outline" disabled={busy || currencyDraft === selectedPortfolio?.display_currency}>Aplicar moeda</button>
+          </form>
           <div className="metrics">
-            <article className="metric featured"><span>Valor das posições</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.summary.currencies.length > 1 ? 'Totais separados: ' + Object.entries(overview.summary.totals_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : overview.summary.missing_prices.length ? 'Parcial com cotação: ' + fmt(overview.summary.priced_value) : 'Na moeda do ativo'}</small></article>
-            <article className="metric"><span>Ativos acompanhados</span><strong>{overview.summary.assets.toString().padStart(2, '0')}</strong><small>{overview.summary.positions} posições por corretora e classe</small></article>
+            <article className="metric featured"><span>Valor das posições · {overview.summary.display_currency}</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.summary.missing_fx.length ? 'FX indisponível: ' + overview.summary.missing_fx.join(', ') : overview.summary.missing_prices.length ? 'Sem cotação: ' + overview.summary.missing_prices.join(', ') : 'Total convertido na data das cotações'}</small></article>
+            <article className="metric"><span>Ativos acompanhados</span><strong>{overview.summary.assets.toString().padStart(2, '0')}</strong><small>{overview.summary.positions} posições consolidadas</small></article>
             <article className="metric"><span>Operações registradas</span><strong>{overview.summary.transactions.toString().padStart(2, '0')}</strong><small>Compras e vendas persistidas</small></article>
           </div>
-          <div className="method-note"><span>i</span> Moedas diferentes são exibidas separadamente e nunca somadas. Renda corporativa: {Object.keys(overview.summary.income_by_currency).length ? Object.entries(overview.summary.income_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : 'nenhuma'}; exibida separadamente do ganho de negociação.</div>
+          <div className="method-note"><span>i</span> {overview.methodology} {overview.summary.missing_cost_fx.length ? 'FX histórico indisponível para custo: ' + overview.summary.missing_cost_fx.join(', ') + '. ' : ''}Renda corporativa: {Object.keys(overview.summary.income_by_currency).length ? Object.entries(overview.summary.income_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : 'nenhuma'}.</div>
           {tab === 'Posições' && <section className="panel">
-            <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição para cada ativo, corretora e classe.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo, corretora ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
+            <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição por ativo e moeda de aquisição, com detalhamento por corretora.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo, corretora ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
+            <label><input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} /> Mostrar posições encerradas</label>
             {!overview.positions.length ? <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
-              <div className="table-wrap"><table><thead><tr><th>Ativo / classe / moeda</th><th>Corretora</th><th>Quantidade</th><th>Preço médio</th><th>Cotação</th><th>Valor atual</th><th>Renda corporativa</th><th>Ganho histórico</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={[p.asset_id, p.transaction_currency, p.broker, p.allocation_class].join('|')}>
-                <td><strong>{p.asset}</strong><small>{p.allocation_class} · {p.transaction_currency}</small></td><td>{p.broker}</td><td>{fmt(p.quantity, 6)}</td><td>{fmt(p.average_cost, 4)}</td><td>{fmt(p.current_price)}<small>{dateLabel(p.price_date)}</small></td><td>{fmt(p.total_value)}</td>
+              <div className="table-wrap"><table><thead><tr><th>Ativo / classe / moeda</th><th>Corretoras</th><th>Quantidade</th><th>Preço médio / custo</th><th>Cotação</th><th>Valor atual</th><th>Renda corporativa</th><th>Ganho histórico</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={[p.asset_id, p.transaction_currency].join('|')}>
+                <td><strong>{p.asset}</strong><small>{p.allocation_class} · {p.transaction_currency}</small></td><td>{p.broker_breakdown.map(b => <small key={b.broker}>{b.broker}: {fmt(b.quantity, 6)} · custo {p.transaction_currency} {fmt(b.acquisition_cost)} · médio {fmt(b.average_cost, 4)}</small>)}</td><td>{fmt(p.quantity, 6)}</td><td>{p.display_currency} {fmt(p.display_average_cost, 4)}<small>Custo {p.display_currency} {fmt(p.display_acquisition_cost)}</small>{p.native_currency === p.transaction_currency && p.transaction_currency !== p.display_currency && <small>{p.transaction_currency} {fmt(p.average_cost, 4)} · custo {fmt(p.acquisition_cost)}</small>}</td><td>{p.display_currency} {fmt(p.display_price)}{p.native_currency === p.transaction_currency && p.transaction_currency !== p.display_currency && <small>{p.transaction_currency} {fmt(p.current_price)}</small>}<small>{dateLabel(p.price_date)}</small></td><td>{p.display_currency} {fmt(p.display_value)}{p.native_currency === p.transaction_currency && p.transaction_currency !== p.display_currency && <small>{p.transaction_currency} {fmt(p.total_value)}</small>}</td>
                 <td>{Object.keys(p.income_by_currency).length ? Object.entries(p.income_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : '—'}</td>
-                <td className={(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{fmt(p.current_total_gain)}<small>{fmt(p.current_accumulated_profitability)}%{p.history_behind_transactions ? ' · histórico incompleto' : ''}</small></td>
+                <td className={(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{p.transaction_currency} {fmt(p.current_total_gain)}<small>{fmt(p.current_accumulated_profitability)}%{p.history_behind_transactions ? ' · cotação anterior à última atividade' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
           {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar recalcula as posições automaticamente.</p></div></div>
@@ -366,14 +387,14 @@ function PerformancePanel({ portfolioId, overview }: { portfolioId: number; over
     setRows([]); setError('')
     if (!p || !assetId) return
     const controller = new AbortController(); setLoading(true)
-    const params = new URLSearchParams({ asset_id: String(assetId), broker: p.broker, allocation_class: p.allocation_class, transaction_currency: p.transaction_currency })
+    const params = new URLSearchParams({ asset_id: String(assetId), transaction_currency: p.transaction_currency })
     api<Performance[]>('/portfolios/' + portfolioId + '/performance?' + params, 'GET', undefined, controller.signal)
       .then(setRows).catch(e => { if (!controller.signal.aborted) setError(message(e)) })
       .finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [portfolioId, assetId, p])
   return <section className="panel"><div className="section-heading"><div><h2>Evolução do ganho por posição</h2><p>Ganho realizado + ganho não realizado, conforme a fórmula original.</p></div>
-    <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset} · {pos.broker} · {pos.allocation_class} · {pos.transaction_currency}</option>)}</select></label></div>
+    <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset} · {pos.transaction_currency}</option>)}</select></label></div>
     <div className="method-note">O percentual acumulado divide o ganho pelas compras acumuladas. A variação diária compara ganhos; não representa retorno diário da carteira.</div>
     {error && <div role="alert" className="alert error">{error}</div>}
     {loading ? <div className="empty">Carregando histórico…</div> : !rows.length ? <div className="empty">Adicione cotações para visualizar o histórico desta posição.</div> : <>
