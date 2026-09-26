@@ -7,8 +7,8 @@ from sqlalchemy.orm import joinedload
 
 from src.corporate_actions import get_stored_actions
 from src.domain import ZERO, decimal, position_history, position_now, summary_totals, transaction_date
-from src.market_prices import history_for_reporting
-from src.models import Asset, Portfolio, PositionSnapshot, Transaction
+from src.market_prices import history_for_reporting, quote_refresh_required
+from src.models import Asset, Portfolio, PortfolioSnapshot, PositionSnapshot, Transaction
 from src.rates import RateUnavailable, convert_amount
 
 
@@ -91,6 +91,7 @@ def get_overview(session, portfolio_id):
                 native_state = position_now(rows, events, latest, native_currency, native_rates)
         native_cost = native_state['remaining_acquisition_cost'] if native_state else None
         native_average = native_state['average_cost'] if native_state else None
+        native_income = native_state['gross_income'] if native_state else None
         quote_currency = latest.currency if latest else None
         native_value = (native_state['market_value'] if native_state else
                         current['quantity'] * decimal(latest.close)
@@ -125,10 +126,13 @@ def get_overview(session, portfolio_id):
             'display_price': current['current_price'], 'display_value': market,
             'realized_gain': current['realized_gain'], 'unrealized_gain': current['unrealized_gain'],
             'gross_income': current['gross_income'], 'current_total_gain': current['total_gain'],
+            'native_gross_income': native_income,
             'current_accumulated_profitability': None,
+            'return_date': None,
             'income_by_currency': current['income_by_currency'],
             'corporate_action_count': len(events), 'price_date': latest.date if latest else None,
             'gain_date': latest.date if latest else None,
+            'quote_refresh_required': quote_refresh_required(latest) if current['quantity'] else False,
             'history_behind_transactions': bool(latest and latest.date < max(
                 [transaction_date(row) for row in rows] + [event.effective_date for event in events]
             )), 'status': current['status'],
@@ -138,9 +142,11 @@ def get_overview(session, portfolio_id):
                 PositionSnapshot.portfolio_id == portfolio_id,
                 PositionSnapshot.instrument_id == asset.instrument_id,
                 PositionSnapshot.date == portfolio.history_built_through,
+                PositionSnapshot.reporting_currency == portfolio.display_currency,
             ))
             if snapshot is not None:
                 state['current_accumulated_profitability'] = snapshot.cumulative_return_pct
+                state['return_date'] = snapshot.date
                 if latest is not None and latest.date == date.today() and snapshot.date == date.today() - timedelta(days=1):
                     today_rows = [row for row in rows if row.trade_date == date.today()]
                     today_events = [event for event in events if event.effective_date == date.today()]
@@ -150,6 +156,7 @@ def get_overview(session, portfolio_id):
                         initial_state=snapshot.ledger_state,
                     )[0]
                     state['current_accumulated_profitability'] = current_day['cumulative_return_pct']
+                    state['return_date'] = date.today()
         positions.append(state)
         asset_rows.append({
             'id': asset.id, 'ticker': asset.instrument.symbol,
@@ -162,6 +169,14 @@ def get_overview(session, portfolio_id):
             'display_value': market,
         })
     totals = summary_totals(positions)
+    latest_snapshot_status = None
+    if portfolio.history_built_through is not None:
+        latest_snapshot = session.scalar(select(PortfolioSnapshot).where(
+            PortfolioSnapshot.portfolio_id == portfolio_id,
+            PortfolioSnapshot.date == portfolio.history_built_through,
+            PortfolioSnapshot.reporting_currency == portfolio.display_currency,
+        ))
+        latest_snapshot_status = latest_snapshot.status if latest_snapshot else None
     return {
         'positions': positions, 'assets': asset_rows,
         'summary': {
@@ -180,9 +195,14 @@ def get_overview(session, portfolio_id):
             'income_by_currency': ({portfolio.display_currency: totals['gross_income']}
                                    if totals['gross_income'] is not None else {}),
             'gross_income': totals['gross_income'],
-            'history_status': 'pending' if portfolio.dirty_from or portfolio.history_built_through is None else 'complete',
+            'history_status': ('complete' if not transactions else
+                               'pending' if portfolio.dirty_from or portfolio.history_built_through is None
+                               else 'complete' if latest_snapshot_status == 'complete' else 'incomplete'),
             'dirty_from': portfolio.dirty_from,
         },
         'methodology': ('Valores e ganho na moeda de exibição, com FX da data de cada operação, '
-                        'evento e cotação; taxas incluídas; retorno histórico ponderado no tempo.'),
+                        'evento e avaliação; taxas incluídas. Retorno diário encadeado, com compras '
+                        'no capital do dia. Dias sem negociação usam a última cotação disponível; '
+                        'sua data é indicada no histórico. Ganho monetário e retorno percentual '
+                        'podem ter sinais diferentes após aportes e variações cambiais.'),
     }

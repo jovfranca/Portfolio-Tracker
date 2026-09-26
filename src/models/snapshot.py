@@ -16,6 +16,7 @@ class PositionSnapshot(Base):
     portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
     instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))
     date: Mapped[date] = mapped_column(Date)
+    quote_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     reporting_currency: Mapped[str] = mapped_column(String(3))
     quantity: Mapped[Decimal] = mapped_column(Numeric(38, 12))
     remaining_acquisition_cost: Mapped[Decimal | None] = mapped_column(Numeric(38, 12))

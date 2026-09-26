@@ -52,11 +52,16 @@ def search_instruments(query):
 
 
 def fetch_history(ticker, currency, start, end):
-    """Fetch unadjusted daily closes for an inclusive, bounded range."""
+    """Return closes and distributions in the share units of their event date.
+
+    Yahoo Close (even auto_adjust=False) and dividends are split-adjusted.
+    Query through today so splits after the requested interval can be undone.
+    The ledger, not the provider's adjusted series, applies corporate actions.
+    """
     import yfinance as yf
     instrument = yf.Ticker(ticker)
     frame = instrument.history(
-        start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
+        start=start.isoformat(), end=(max(end, date.today()) + timedelta(days=1)).isoformat(),
         interval='1d', auto_adjust=False, timeout=15, raise_errors=True,
     )
     metadata = instrument.get_history_metadata()
@@ -64,6 +69,13 @@ def fetch_history(ticker, currency, start, end):
     exchange_timezone = _exchange_timezone(metadata)
     retrieved_at = datetime.now(timezone.utc)
     rows = []
+    future_splits = []
+    for timestamp, row in frame.iterrows():
+        factor = Decimal(str(row.get('Stock Splits', 0)))
+        if not factor.is_finite() or factor < 0:
+            raise ValueError('Invalid provider split factor.')
+        if factor > 0:
+            future_splits.append((_trading_date(timestamp, exchange_timezone), factor))
     for timestamp, row in frame.iterrows():
         trading_date = _trading_date(timestamp, exchange_timezone)
         if not start <= trading_date <= end:
@@ -77,6 +89,12 @@ def fetch_history(ticker, currency, start, end):
         # Yahoo sometimes returns actions and valid neighbouring closes with a
         # NaN close for one day. Leave that date retryable without losing them.
         price = Decimal(str(close)) if math.isfinite(close) and close > 0 else None
+        share_factor = Decimal('1')
+        for split_day, factor in future_splits:
+            if split_day > trading_date:
+                share_factor *= factor
+        if price is not None:
+            price *= share_factor
         dividends = float(row.get('Dividends', 0))
         splits = float(row.get('Stock Splits', 0))
         if not math.isfinite(dividends) or dividends < 0:
@@ -85,7 +103,7 @@ def fetch_history(ticker, currency, start, end):
             raise ValueError('Invalid provider split factor.')
         rows.append({
             'date': trading_date, 'price': price,
-            'dividends': Decimal(str(dividends)),
+            'dividends': Decimal(str(dividends)) * share_factor,
             'stock_splits': Decimal(str(splits)),
             'currency': currency, 'source': 'yfinance', 'retrieved_at': retrieved_at,
         })

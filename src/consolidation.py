@@ -4,18 +4,19 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import delete, event, inspect, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from src.corporate_actions import get_stored_actions
+from src.corporate_actions import get_actions, get_stored_actions
 from src.domain import ZERO, portfolio_day, position_history, position_now
-from src.market_prices import get_latest, history_for_reporting
+from src.market_prices import get_history, get_latest, get_quote_history, history_for_reporting
 from src.models import (
     Asset, CorporateAction, ExchangeRate, MarketPrice, Portfolio,
     PortfolioSnapshot, PositionSnapshot, ProviderInstrument, Transaction,
     UserCorporateEvent, UserDefinedPrice,
 )
 from src.position_reporting import reporting_factors, sources
-from src.rates import RateUnavailable, convert_amount
+from src.rates import RateUnavailable, backfill_rates, convert_amount
 
 
 POSITION_FIELDS = (
@@ -111,6 +112,7 @@ def _position_values(snapshot):
     return {
         'date': snapshot.date, 'reporting_currency': snapshot.reporting_currency,
         'status': snapshot.status,
+        'quote_date': snapshot.quote_date,
         **{field: getattr(snapshot, field) for field in POSITION_FIELDS},
     }
 
@@ -179,9 +181,78 @@ def consolidate(session, portfolio_id):
         start = through + timedelta(days=1)
     incomplete = []
     history_incomplete = []
+    problems = defaultdict(list)
+    latest_by_instrument = {}
     by_instrument = defaultdict(list)
     for row in transactions:
         by_instrument[row.instrument_id].append(row)
+    # Fetch all inputs first: provider inserts can move dirty_from backwards.
+    # The replay boundary must be decided only after those inserts have flushed.
+    fx_dates = defaultdict(set)
+    fx_assets = defaultdict(set)
+    for asset in assets:
+        rows = by_instrument.get(asset.instrument_id, [])
+        if not rows:
+            continue
+        asset_first = min(row.trade_date for row in rows)
+        if asset_first <= through:
+            # Establish a prior observation when the first trade has no close.
+            history_result = get_history(session, asset, asset_first - timedelta(days=30), through)
+            action_result = get_actions(session, asset, asset_first, through)
+            if not history_result.complete or not action_result.complete:
+                problems[asset.instrument.symbol].append(
+                    'histórico de cotações ou eventos não retornado pelo provedor')
+        if position_now(rows, get_stored_actions(session, asset), None,
+                        portfolio.display_currency, {})['quantity'] > 0:
+            try:
+                latest_by_instrument[asset.instrument_id] = get_latest(session, asset)
+            except (ValueError, RuntimeError, OSError):
+                latest_by_instrument[asset.instrument_id] = None
+        events = get_stored_actions(session, asset)
+        prices = history_for_reporting(session, asset)
+        for price in prices:
+            if price.date <= date.today():
+                fx_dates[price.currency].add(price.date)
+                fx_dates[portfolio.display_currency].add(price.date)
+                fx_assets[price.currency].add(asset.instrument.symbol)
+                fx_assets[portfolio.display_currency].add(asset.instrument.symbol)
+        # A carried price still needs valuation-day FX on every calendar day.
+        valuation_currencies = {price.currency for price in prices} | {portfolio.display_currency}
+        for currency in valuation_currencies:
+            fx_dates[currency].update(asset_first + timedelta(days=offset)
+                                      for offset in range((through - asset_first).days + 1))
+            fx_assets[currency].add(asset.instrument.symbol)
+        for event in events:
+            if event.currency and event.effective_date <= date.today():
+                fx_dates[event.currency].add(event.effective_date)
+                fx_dates[portfolio.display_currency].add(event.effective_date)
+                fx_assets[event.currency].add(asset.instrument.symbol)
+                fx_assets[portfolio.display_currency].add(asset.instrument.symbol)
+        if portfolio.display_currency != 'BRL':
+            fx_dates[portfolio.display_currency].update(
+                row.settlement_date for row in rows if row.settlement_date <= date.today())
+            fx_assets[portfolio.display_currency].add(asset.instrument.symbol)
+    for currency, days in fx_dates.items():
+        if currency in {'BRL', None}:
+            continue
+        missing = []
+        for day in sorted(days):
+            try:
+                convert_amount(session, Decimal('1'), currency, 'BRL', day,
+                               fetcher=lambda *_: [])
+            except RateUnavailable:
+                missing.append(day)
+        if missing:
+            try:
+                backfill_rates(session, [currency], ['FX'], min(missing), max(missing))
+            except SQLAlchemyError:
+                raise
+            except Exception:
+                for symbol in fx_assets[currency]:
+                    problems[symbol].append(f'consulta de câmbio {currency} indisponível')
+    session.flush()
+    if portfolio.dirty_from is not None:
+        start = min(start, max(first_day, portfolio.dirty_from))
     for asset in assets:
         rows = by_instrument.get(asset.instrument_id, [])
         if not rows:
@@ -194,11 +265,14 @@ def consolidate(session, portfolio_id):
             try:
                 # The shared quote service handles TTL and provider errors. One
                 # failed asset never prevents the remaining portfolio from updating.
-                latest = get_latest(session, asset)
-                if latest.price is None or latest.stale:
+                latest = latest_by_instrument.get(asset.instrument_id)
+                if latest is None or latest.price is None or latest.stale:
                     incomplete.append(asset.instrument.symbol)
+                    problems[asset.instrument.symbol].append(
+                        'cotação atual indisponível ou desatualizada')
             except (ValueError, RuntimeError, OSError):
                 incomplete.append(asset.instrument.symbol)
+                problems[asset.instrument.symbol].append('falha ao consultar a cotação atual')
         prices = history_for_reporting(session, asset)
         if prices and prices[-1].currency != portfolio.display_currency:
             try:
@@ -207,6 +281,7 @@ def consolidate(session, portfolio_id):
             except RateUnavailable:
                 if asset.instrument.symbol not in incomplete:
                     incomplete.append(asset.instrument.symbol)
+                problems[asset.instrument.symbol].append('câmbio da cotação atual indisponível')
         if start > through:
             continue
         previous = session.scalar(select(PositionSnapshot).where(
@@ -218,23 +293,23 @@ def consolidate(session, portfolio_id):
         asset_start = start if previous else min(row.trade_date for row in rows)
         activity_rows = [row for row in rows if row.trade_date >= asset_start]
         activity_events = [event for event in events if event.effective_date >= asset_start]
-        active_prices = [price for price in prices if price.date <= through]
+        # Intraday/latest quotes are not final daily closes.
+        active_prices = [price for price in get_quote_history(session, asset) if price.date <= through]
         factors = reporting_factors(session, portfolio.display_currency,
                                     activity_rows, activity_events, active_prices)
-        # Weekend carry-forward uses the prior close with the relevant day's FX.
+        # Every carried observation uses valuation-day FX, not quote-day FX.
         currencies = {price.currency for price in active_prices}
         day = asset_start
         while day <= through:
-            if day.weekday() >= 5:
-                for currency in currencies:
-                    key = (currency, day)
-                    if key not in factors:
-                        try:
-                            factors[key] = convert_amount(session, Decimal('1'), currency,
-                                                          portfolio.display_currency, day,
-                                                          fetcher=lambda *_: [])
-                        except RateUnavailable:
-                            pass
+            for currency in currencies:
+                key = (currency, day)
+                if key not in factors:
+                    try:
+                        factors[key] = convert_amount(session, Decimal('1'), currency,
+                                                      portfolio.display_currency, day,
+                                                      fetcher=lambda *_: [])
+                    except RateUnavailable:
+                        pass
             day += timedelta(days=1)
         series = position_history(
             activity_rows, activity_events, active_prices, portfolio.display_currency,
@@ -251,6 +326,7 @@ def consolidate(session, portfolio_id):
                 portfolio_id=portfolio_id, instrument_id=asset.instrument_id,
                 date=item['date'], reporting_currency=portfolio.display_currency,
                 status=item['status'], ledger_state=item['ledger_state'],
+                quote_date=item['quote_date'],
                 **{field: item[field] for field in POSITION_FIELDS},
             ))
         if any(item['status'] != 'complete' for item in series):
@@ -286,7 +362,33 @@ def consolidate(session, portfolio_id):
             factor = values['return_factor']
             day += timedelta(days=1)
         portfolio.history_built_through = through
-    portfolio.dirty_from = None if not history_incomplete else dirty or start
+    # A suffix replay or a quote-only refresh must retain earlier gaps in the
+    # result, even when no snapshot was rebuilt in this request.
+    symbols = {asset.instrument_id: asset.instrument.symbol for asset in assets}
+    incomplete_rows = session.scalars(select(PositionSnapshot).where(
+        PositionSnapshot.portfolio_id == portfolio_id,
+        PositionSnapshot.reporting_currency == portfolio.display_currency,
+        PositionSnapshot.status != 'complete',
+    ).order_by(PositionSnapshot.date))
+    status_reasons = {
+        'missing_price': 'fechamento ausente',
+        'missing_fx': 'câmbio ausente',
+        'missing_price_and_fx': 'fechamento e câmbio ausentes',
+        'incomplete_history': 'retorno interrompido por lacuna anterior',
+    }
+    first_gaps = {}
+    for snapshot in incomplete_rows:
+        symbol = symbols.get(snapshot.instrument_id)
+        if symbol and symbol not in first_gaps:
+            first_gaps[symbol] = snapshot
+    history_incomplete = sorted(first_gaps)
+    for symbol, snapshot in first_gaps.items():
+        problems[symbol].append(
+            f"{status_reasons.get(snapshot.status, 'dado histórico incompleto')} em {snapshot.date.strftime('%d/%m/%Y')}")
+    incomplete = sorted(set(incomplete) | set(history_incomplete))
+    # Dirty means source changes have not been replayed. Missing observations
+    # are a separate state and should not make every click restart at trade one.
+    portfolio.dirty_from = None
     session.flush()
     return {
         'complete': not incomplete,
@@ -294,6 +396,9 @@ def consolidate(session, portfolio_id):
         'recalculated_from': start if start <= through else None,
         'incomplete_assets': sorted(set(incomplete)),
         'snapshot_days': (through - start).days + 1 if start <= through else 0,
-        'message': ('Consolidação parcial: ' + ', '.join(sorted(set(incomplete)))
+        'reasons': {symbol: list(dict.fromkeys(details)) for symbol, details in problems.items()},
+        'message': ('Consolidação parcial: ' + '; '.join(
+            symbol + ' (' + ', '.join(dict.fromkeys(problems[symbol])) + ')'
+            for symbol in incomplete) + '.'
                     if incomplete else 'Carteira consolidada.'),
     }

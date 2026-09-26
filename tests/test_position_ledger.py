@@ -54,6 +54,13 @@ def test_additional_purchase_does_not_erase_earlier_return():
     assert history[-1]['remaining_acquisition_cost'] == 210
 
 
+def test_positive_lifetime_gain_can_have_negative_time_weighted_return():
+    rows = [tx(1, 'Buy', 1, 1, 100), tx(2, 'Buy', 3, 100, 50)]
+    series = position_history(rows, [], [quote(1, 100), quote(2, 50), quote(3, 60)], 'BRL', {})
+    assert series[-1]['total_gain'] == 960
+    assert series[-1]['cumulative_return_pct'] == -40
+
+
 def test_sale_liquidation_reopening_and_fees_chain_return():
     rows = [tx(1, 'Buy', 1, 10, 10, fee=2), tx(2, 'Sell', 2, 5, 12, fee=1),
             tx(3, 'Sell', 3, 5, 12, fee=1), tx(4, 'Buy', 4, 2, 12)]
@@ -116,11 +123,34 @@ def test_missing_quote_and_fx_expose_explicit_incomplete_status():
 
 def test_later_quote_does_not_hide_an_incomplete_return_history():
     rows = [tx(1, 'Buy', 1, 1, 10)]
-    series = position_history(rows, [], [quote(1, 10), quote(3, 12)], 'BRL', {})
-    assert series[1]['status'] == 'missing_price'
+    series = position_history(rows, [], [quote(3, 12)], 'BRL', {})
+    assert series[0]['status'] == 'missing_price'
     assert series[2]['market_value'] == 12
     assert series[2]['cumulative_return_pct'] is None
     assert series[2]['status'] == 'incomplete_history'
+
+
+def test_illiquid_days_carry_prior_observation_with_daily_fx_and_audit_date():
+    rows = [tx(1, 'Buy', 1, 1, 10, 'USD')]
+    fx = rates(*[('USD', day, 5 if day < 8 else 6) for day in range(1, 11)])
+    series = position_history(rows, [], [quote(1, 10, 'USD')], 'BRL', fx,
+                              end=date(2024, 1, 10))
+    assert series[-1]['market_value'] == 60
+    assert series[-1]['cumulative_return_pct'] == 20
+    assert series[-1]['quote_date'] == date(2024, 1, 1)
+    resumed = position_history([], [], [quote(1, 10, 'USD')], 'BRL', fx,
+                               start=date(2024, 1, 10), end=date(2024, 1, 10),
+                               initial_state=series[-2]['ledger_state'])
+    assert resumed[0] == series[-1]
+
+
+def test_confirmed_market_closure_carries_close_without_breaking_return_chain():
+    rows = [tx(1, 'Buy', 1, 1, 10)]
+    prices = [quote(1, 10), quote(3, 12)]
+    series = position_history(rows, [], prices, 'BRL', {})
+    assert series[1]['market_value'] == 10
+    assert series[1]['status'] == 'complete'
+    assert series[2]['cumulative_return_pct'] == 20
 
 
 def test_portfolio_totals_never_add_an_unknown_reporting_value():

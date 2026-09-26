@@ -364,8 +364,11 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
   realizado; renda corporativa é apresentada separadamente do ganho de negociação.
 - O retorno diário usa fluxos de compra/venda e renda bruta, com resultados
   encadeados no tempo. Eventos e negociações são processados antes do fechamento
-  diário; fins de semana podem usar o fechamento anterior e dias úteis sem
-  cotação ficam incompletos.
+  diário. Dias sem observação, inclusive feriados e baixa liquidez, usam a última
+  cotação anterior, com FX da data avaliada. A data dessa cotação aparece no
+  histórico. Sem observação inicial, FX ou cotação compatível após um split,
+  o resultado continua incompleto. A consolidação consulta também os 30 dias
+  anteriores à primeira operação para procurar uma observação inicial.
 - Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
   cotações históricas continuam no formato legado.
 - Cotações ausentes aparecem como ausentes, e não como preço zero.
@@ -375,6 +378,25 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 - Não há redesenho para titularidade, alocação ideal, aposentadoria ou múltiplos usuários.
 - Mensagens UTF-8 devem ser lidas com `Get-Content -Encoding UTF8` no Windows PowerShell
   antigo. A exibição incorreta nesse terminal não significa corrupção no navegador.
+
+## Atualização da consolidação — migração 0016
+
+Aplique `python -m alembic upgrade head` e consolide as carteiras. A migração
+invalida os caches históricos compartilhados de preços/eventos Yahoo e suas
+coberturas, pois os valores antigos podem estar ajustados por splits. A próxima
+consolidação baixa novamente esses dados e reconstrói o histórico derivado.
+Transações, preços/eventos manuais, FX e arquivos importados são preservados.
+Preços privados de origem `legacy`/`yfinance` permanecem armazenados para auditoria,
+mas deixam de substituir preços verificados: sua base de ajuste é desconhecida.
+Ativos sem provedor precisam de preços manuais confiáveis.
+
+A troca de moeda na interface consolida automaticamente o histórico e mostra
+eventuais falhas parciais. A API de alteração da carteira mantém a invalidação
+explícita; clientes próprios devem chamar o endpoint de consolidação.
+
+O gráfico de desempenho mostra ganho monetário, com unidade identificada;
+retorno percentual aparece na tabela. O retorno pode ter sinal diferente do
+ganho após aportes, e não é forçado a concordar com ele.
 
 ## Backup
 

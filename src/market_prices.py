@@ -152,6 +152,10 @@ def _stored_history(session, asset, start=None, end=None, *, currency=None):
             row.dividends, row.stock_splits,
         )
     for row in session.scalars(manual_query.order_by(UserDefinedPrice.reference_date)):
+        # Imported automatic caches have unknown dividend/split adjustment.
+        # Retain them for audit, but never override verified observations.
+        if row.source in {'legacy', 'yfinance'}:
+            continue
         by_date[row.reference_date] = ResolvedPrice(
             row.reference_date, row.price, row.currency, row.source, 'user-defined',
             None, _utc(row.retrieved_at), row.dividends, row.stock_splits,
@@ -307,6 +311,7 @@ def get_history(session, asset, start, end, fetcher=None):
         for day in session.scalars(select(UserDefinedPrice.reference_date).where(
             UserDefinedPrice.asset_id == asset.id,
             UserDefinedPrice.currency == target_currency,
+            UserDefinedPrice.source.notin_(['legacy', 'yfinance']),
             UserDefinedPrice.reference_date >= start,
             UserDefinedPrice.reference_date <= end,
         )):
@@ -453,6 +458,16 @@ def history_for_reporting(session, asset):
         return prices
     quote = _as_resolved(cached)
     by_date = {row.date: row for row in prices}
-    if quote.date not in by_date:
+    if quote.date not in by_date or by_date[quote.date].origin != 'user-defined':
         by_date[quote.date] = quote
     return [by_date[day] for day in sorted(by_date)]
+
+
+def quote_refresh_required(quote, now=None):
+    """Cache freshness is distinct from the date the market last traded."""
+    if quote is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    if quote.origin == 'user-defined':
+        return quote.date < now.date()
+    return quote.retrieved_at is None or now - _utc(quote.retrieved_at) > quote_ttl()

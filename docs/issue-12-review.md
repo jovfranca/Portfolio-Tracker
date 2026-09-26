@@ -1,52 +1,39 @@
-﻿# Issue #12 implementation review
+# Issue #12 escalation review
 
-The committed branch `feat/12-positions-consolidation` was compared with `develop`, [issue #12](https://github.com/jovfranca/Portfolio-Tracker/issues/12), and the earlier review in this file. The five acceptance blockers from that review are implemented in the current working tree.
+Reviewed the current branch against `develop`, including the pre-existing uncommitted changes, [issue #12](https://github.com/jovfranca/Portfolio-Tracker/issues/12), the domain, market/FX/action services, persistence, API, React screens and tests. This review supersedes the earlier acceptance report.
 
-## Position and reporting model
+## Critical assessment
 
-- A position is identified by `(portfolio_id, instrument_id)`. Transactions retain their original currency and frozen transaction FX. A sale in another currency reduces the same broker's holding and the same lifetime instrument position. Missing conversion yields an incomplete result; it never creates a second position or mixes currencies.
-- `src/domain.py` contains the shared pure ledger for current state and daily history. It uses broker-level weighted-average cost, includes buy fees in cost, subtracts sale fees from proceeds, preserves realized P&L after liquidation, and rejects oversells. Splits change quantity without changing cost; dividends and JCP add gross income without changing cost.
-- Current and historical P&L are in the portfolio reporting currency. A trade uses its frozen FX to BRL and dated BRL-to-reporting FX where needed. Quotes and income use dated FX. The reporting view never edits transactions, prices, events, or rates.
-- The API exposes reporting price, market value, cost, realized and unrealized P&L, gross income, and total P&L. Native fiat values are secondary only when the canonical instrument has a meaningful native currency different from the portfolio's display currency. Crypto has no artificial fiat secondary display.
+1. **Intent of the previous implementation.** One lifetime position per canonical instrument, broker-level weighted-average cost, reporting-currency P&L and daily cash-flow-aware returns, with incrementally materialized history.
+2. **Correct behavior retained.** The shared pure ledger, frozen transaction FX, dated reporting conversions, buy/sell fees, realized results after liquidation, gross income, instrument identity, dirty-date replay, closed-position toggle and manual overrides. Regression tests substantiate these choices.
+3. **Symptom fixes replaced.** Weekend-only carry and the uncommitted four-day "confirmed closure" heuristic confused an absent observation with a known exchange calendar. They excluded illiquid days and trailing gaps. A uniform last-observation valuation policy now replaces both.
+4. **Inconsistent sources of truth.** Yahoo Close was described as unadjusted although it is split-adjusted. Applying actual historical quantities to those prices produced false pre-split losses and discontinuities. Imported automatic caches could also override verified shared observations. Latest quotes were eligible to stand in for final historical closes. These are input-contract problems, not defects to fix by clamping returns.
+5. **Architecture.** Keep financial arithmetic in `src/domain.py`, provider normalization in `src/api/market_data.py`, observation selection in the Market Price service, and materialization in consolidation. No new parallel return engine or calendar abstraction is needed. Existing compatibility calculations outside this flow were not rewritten for style.
+6. **Regressions and pre-existing defects.** The restrictive missing-weekday rule and the closure heuristic caused unavailable returns in issue #12's daily replay. The provider adjustment and imported-cache assumptions predate this escalation; the new daily ledger exposed their incompatibility. Currency invalidation was correct, but the UI omitted the subsequent recalculation.
+7. **Decision.** Retain the accounting model and incremental materialization; replace the price-basis and carry-forward contracts, then connect currency editing to consolidation. A whole-subsystem rewrite would discard tested behavior without addressing the actual upstream defect.
 
-## Daily return convention
+## Implemented behavior and sources of truth
 
-Splits and income events precede trades on their effective date; all take effect before the daily close. The daily cash-flow-adjusted return uses the previous close as the opening value, purchases as positive external flows, and net sale proceeds as negative external flows. Gross income is internal investment return. For end value `V`, previous value `P`, net external flow `F`, gross purchases including fees `B`, and day's gross income `I`:
+- **Prices and dividends:** the Yahoo adapter requests the history through today, including splits after a requested subinterval, and restores prices and distributions to the share units of their historical dates. Split-day observations use post-split units. This applies to both forward and reverse splits; only the requested interval is returned. The ledger applies each corporate action once.
+- **Legacy prices:** private `legacy`/`yfinance` caches remain stored but are excluded from valuation and coverage because their adjustment basis is unknown. An explicitly saved manual price still overrides a verified provider observation.
+- **Daily valuation:** use the last available observation on every calendar day, including holidays, illiquidity and trailing gaps. Preserve `quote_date` in snapshots and expose it in the API/UI. Apply valuation-day FX, even on carried-price weekdays. There is no invented close, zero-price fill, or use of a future observation. Consolidation also requests the 30 days before the first trade to find an opening observation.
+- **Genuine gaps:** no opening observation, missing required FX, or an unavailable compatible post-split price remains incomplete. Later available values do not silently repair the broken cumulative-return chain. Carrying an old quote is an explicit valuation convention, not a claim that the instrument traded that day.
+- **Latest valuation:** prefer the latest provider quote for current reporting, retain manual precedence, and keep latest quotes out of final daily snapshots. Cache refresh status is distinct from the market observation date and is visible in Positions.
+- **State:** transactions/events/prices/FX remain authoritative; snapshots remain derived. Changes rewind `dirty_from`, while completed replay clears dirty state even if observations remain incomplete. Earlier gaps continue to affect the history status after a suffix replay or quote-only refresh.
+- **Currency:** the UI saves the reporting currency and automatically consolidates before showing success. Partial consolidation messages are retained. On a failed mutation it reloads persisted state so the selected currency and values cannot silently diverge. API clients still explicitly call consolidation after changing currency.
+- **Returns:** the existing daily convention remains `(V + I - P - F) / (P + B)`, chain-linked, where purchases including fees enter the day's capital base. This is an approximation from daily closes, not exact intraday TWR. A regression demonstrates positive monetary P&L with negative time-weighted return after a large contribution; the application must preserve that legitimate result.
+- **UI:** the chart identifies monetary gain and currency, breaks lines at missing values, preserves actual date spacing, and displays isolated observations. The table separates percentage return from monetary gain and shows the quote date used. Positions identify the date of the displayed return. Selected-position warnings depend on that position's history rather than unrelated portfolio gaps.
 
-```text
-r = (V + I - P - F) / (P + B)
-```
+## Evidence for the reported assets
 
-Daily returns are chain-linked. This convention makes same-day contributions deterministic with daily-close data; intraday valuation is outside issue #12. A quote on its date is used directly. The prior close may carry over a weekend. A missing weekday close is explicitly incomplete; no market price is fabricated. Missing required FX also makes the affected result incomplete. A correction to the missing source data marks the history dirty for recomputation.
+The screenshot with the discontinuity selects **XLB**, while the narrative mentions **XLV**. State Street confirms a 2:1 XLB split effective December 5, 2025 in its [official announcement](https://investors.statestreet.com/investor-news-events/press-releases/news-details/2025/State-Street-Investment-Management-Announces-Share-Splits-for-Five-Select-Sector-SPDR-ETFs/default.aspx). The [yfinance adjustment implementation](https://github.com/ranaroussi/yfinance/blob/main/yfinance/utils.py) and [split repair documentation](https://github.com/ranaroussi/yfinance/blob/main/doc/source/advanced/price_repair.rst) support distinguishing split-adjusted Close from dividend-adjusted prices.
 
-## Derived history and consolidation
+The split-basis failure is reproduced with synthetic data through the real adapter, persistence, consolidation and API. It is consistent with the XLB symptom. No private portfolio records were read or changed, so this is not a claim that every XLV/XLB value in the personal database has been reconciled. FX perspective and cash-flow timing can legitimately change the sign of percentage returns.
 
-Migration `0014` adds `dirty_from`, `history_built_through`, daily position snapshots, and daily portfolio snapshots. Snapshots retain quantity, cost, value, realized/unrealized P&L, gross income, total P&L, return and status. They are derived state. The source transactions, events, prices, and FX remain authoritative.
+## Migration and validation
 
-The `POST /api/portfolios/{id}/consolidate` action resolves a latest quote for each open position through the existing Market Price service. Fresh cached quotes honor the existing TTL. An unavailable asset is reported while the remaining assets continue. The action updates historical snapshots from `dirty_from` forward. It carries the prior ledger state from the previous snapshot and leaves earlier snapshot rows intact. Transaction, event, historical price, and relevant FX changes move `dirty_from` back to the earliest affected date. A latest-quote refresh updates current valuation without rebuilding previous snapshots.
+Apply **0016** before starting the updated application, then consolidate portfolios. It adds quote provenance, invalidates Yahoo historical price/action caches and coverage, and marks derived histories for a full rebuild. Transactions, FX, private manual prices/events and imported records are preserved. Re-fetching requires provider availability; unsupported instruments need trustworthy manual observations. The migration preservation test runs in a rolled-back isolated schema.
 
-Deleting or moving the first transaction removes snapshots before the new first transaction date. Native values are converted into the instrument's native currency when a provider quote uses a different currency. A later valid quote does not hide an earlier missing observation that still prevents a valid cumulative return.
+Validation uses synthetic data and the separate migrated `portfolio_tracker_e2e_dev` database. Standard pytest: **192 passed, 43 skipped**. Full PostgreSQL suite: **235 passed**. `alembic check`: no new upgrade operations. Frontend build passed. Playwright: **11 passed**, including automatic currency consolidation, partial statuses, carried quote labels, disconnected chart segments and mobile overflow checks. Desktop and mobile screenshots were inspected; the final presentation pass corrected text encoding and increased mobile chart readability.
 
-`GET /api/portfolios/{id}/performance?asset_id=...` returns the canonical position's daily reporting series. `GET /api/portfolios/{id}/history` returns the daily portfolio series. The UI accepts three-letter reporting currencies with BRL/USD/EUR suggestions, and offers an explicit consolidation action and pending status. Its positions list hides closed holdings by default and omits the broker column; broker breakdown remains in the API result.
-
-The stored Corporate Actions model provides gross amounts. It has no authoritative withholding or net-income fields, so the reporting result does not invent them. Investor-level tax calculations and intraday time weighting remain outside issue #12.
-
-## Follow-up review fixes
-
-Reviewed the working tree as well as committed changes against `develop` and the current issue #12 acceptance criteria. Regression cases reproduced these meaningful problems before the fixes:
-
-- **High: same-day sales erased percentage gains.** A purchase for 100 followed by full sale for 120 returned 0% because net flow removed the entire denominator. Position and portfolio returns now use gross purchases in the denominator. Migration `0015` persists this input and invalidates existing derived histories for rebuilding.
-- **High: weekend splits inflated historical value.** A 2:1 split could double quantity while carrying the pre-split close forward. Such prices now remain unavailable until a matching quote exists; the split boundary survives incremental snapshot replay.
-- **High: FX corrections left income and manual valuations stale.** Invalidation now includes currencies used only by shared income events, private income events, or manual prices.
-- **High: settlement FX corrections started recalculation too late.** When reporting FX is used at settlement but acquisition cost enters history on the earlier trade date, invalidation now rewinds to that trade date.
-- **Medium: reporting-currency UI omitted EUR and other currencies.** The control now accepts the same three-letter codes as the API, with BRL, USD and EUR suggestions.
-
-The daily convention remains an approximation based on closing prices and assumes gross purchases enter the day's capital base; exact intraday time weighting is not inferred from daily observations.
-
-## Validation
-
-Regression tests cover cross-currency position identity and sales, missing FX, current BRL quotes from USD, native values from a different quote currency, historical BRL versus USD P&L and return, dividend income, additional purchases, partial/full sales and reopening, splits, oversell rejection, source-record immutability, dirty-date invalidation, deletion of the first trade, preserved earlier snapshots, fresh quote reuse, partial consolidation, missing-observation status, and UI controls.
-
-Final validation: standard pytest **185 passed, 40 skipped**; with `RUN_DB_TESTS=1` against the isolated, migrated PostgreSQL database **225 passed**; Playwright **10 passed**; `npm run build` passed; `alembic check` reported no new upgrade operations. Two existing FastAPI/Starlette deprecation warnings remain. Temporary-file and browser-process sandbox restrictions required running validation with normal filesystem/process access. Browser tests used the documented allowed origin and a seeded test catalog. No personal portfolio database was modified.
-
-Apply migration `0015` before running the updated application against an existing database, then consolidate portfolios to rebuild affected derived returns.
+Windows temporary-directory permissions required normal filesystem access for the full suite. Existing FastAPI/Starlette and yfinance deprecation warnings remain. No personal portfolio database was migrated, reset or modified.

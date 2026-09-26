@@ -571,6 +571,7 @@ class PositionLedger:
         self.last_status = status
         return {
             'date': day, 'quantity': quantity,
+            'quote_date': quote.date if quote is not None and quantity else None,
             'remaining_acquisition_cost': cost,
             'average_cost': cost / quantity if cost is not None and quantity else ZERO if quantity == 0 else None,
             'market_value': market_value, 'current_price': price,
@@ -608,10 +609,10 @@ class PositionLedger:
 
 def position_history(transactions, corporate_events, prices, reporting_currency, rates,
                      *, start=None, end=None, initial_state=None):
-    """Daily reproducible values; weekdays without a quote remain incomplete.
+    """Daily last-observation valuation, with dated FX and quote provenance.
 
-    Weekend closes carry Friday's published price, but a missing weekday quote
-    is never fabricated. Trades and events take effect before that day's close.
+    Carry covers holidays and illiquidity without inventing an observed close.
+    No future quote or pre-split quote may fill a missing valuation.
     """
     activity = ordered_activity(transactions, corporate_events)
     if not activity and start is None:
@@ -644,7 +645,7 @@ def position_history(transactions, corporate_events, prices, reporting_currency,
         quote = quotes.get(day)
         if quote is not None:
             last_quote = quote
-        elif day.weekday() >= 5:
+        else:
             quote = last_quote
         result.append(ledger.snapshot(day, quote, flow, daily_income, purchases=purchases))
         if (result[-1]['status'] == 'complete'

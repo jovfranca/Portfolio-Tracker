@@ -40,8 +40,9 @@ export type Position = {
   native_average_cost: Numeric | null; native_acquisition_cost: Numeric | null;
   display_currency: string; display_price: Numeric | null; display_value: Numeric | null;
   broker_breakdown: { broker: string; quantity: Numeric; average_cost: Numeric | null; acquisition_cost: Numeric | null }[];
-  current_total_gain: Numeric | null; current_accumulated_profitability: Numeric | null;
-  price_date: string | null; gain_date: string | null; history_behind_transactions: boolean;
+  current_total_gain: Numeric | null; current_accumulated_profitability: Numeric | null; return_date?: string | null;
+  native_gross_income: Numeric | null;
+  price_date: string | null; gain_date: string | null; history_behind_transactions: boolean; quote_refresh_required?: boolean;
   income_by_currency: Record<string, Numeric>; corporate_action_count: number
 }
 export type Asset = { id: number; ticker: string; transaction_currency: string | null; quantity: Numeric; average_cost: Numeric | null;
@@ -52,7 +53,7 @@ export type Overview = { positions: Position[]; assets: Asset[];
     total_value: number | null; missing_prices: string[]; missing_fx: string[]; missing_cost_fx: string[]; display_currency: string; currencies: string[];
     totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric>;
     history_status: string; dirty_from: string | null; gross_income: Numeric | null }; methodology: string }
-export type Performance = { date: string; reporting_currency: string; status: string;
+export type Performance = { date: string; quote_date?: string | null; reporting_currency: string; status: string;
   quantity: Numeric; remaining_acquisition_cost: Numeric | null; average_cost: Numeric | null;
   market_value: Numeric | null; total_gain: Numeric | null; realized_gain: Numeric | null;
   unrealized_gain: Numeric | null; gross_income: Numeric | null;

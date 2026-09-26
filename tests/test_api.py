@@ -194,10 +194,19 @@ def test_consolidation_continues_after_missing_quote(client, monkeypatch):
         }).status_code == 200
     monkeypatch.setattr('src.market_prices.market_data.fetch_latest',
                         lambda symbol, *_: (_ for _ in ()).throw(OSError(symbol)))
+    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *_: [])
     result = c.post(base + '/consolidate').json()
     assert result['complete'] is False
     assert 'BAD12' in result['incomplete_assets']
     assert 'GOOD12' not in result['incomplete_assets']
+    assert any('fechamento ausente' in reason for reason in result['reasons']['BAD12'])
+    summary = c.get(base + '/overview').json()['summary']
+    assert summary['dirty_from'] is None
+    assert summary['history_status'] == 'incomplete'
+    repeated = c.post(base + '/consolidate').json()
+    assert repeated['complete'] is False
+    assert repeated['history_status'] == 'incomplete'
+    assert repeated['snapshot_days'] == 0
     assert len(c.get(base + '/overview').json()['positions']) == 2
     good_position = next(row for row in c.get(base + '/overview').json()['positions'] if row['asset'] == 'GOOD12')
     assert Decimal(str(good_position['display_value'])) == 12
@@ -270,6 +279,7 @@ def test_reporting_fx_and_dividend_change_history_without_source_mutation(client
     assert Decimal(str(brl_current['native_average_cost'])) == 10
     assert Decimal(str(brl_current['native_acquisition_cost'])) == 10
     assert Decimal(str(brl_current['gross_income'])) == 6
+    assert Decimal(str(brl_current['native_gross_income'])) == 1
     assert Decimal(str(brl_current['current_total_gain'])) == 16
     assert Decimal(str(brl_overview['summary']['total_gain'])) == 16
     assert Decimal(str(brl_overview['summary']['gross_income'])) == 6
@@ -447,6 +457,94 @@ def test_consolidation_reuses_fresh_shared_quote_without_provider_call(client, m
     assert refreshed['snapshot_days'] == 0
     assert len(calls) == 1
     assert Decimal(str(c.get(base + '/overview').json()['positions'][0]['display_value'])) == 14
+
+
+def test_consolidation_fetches_daily_history_and_exposes_yesterday_value(client, monkeypatch):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Daily backfill'}).json()['id']
+    iid = register_instrument(c, 'BACKFILL12', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=8)
+    first -= timedelta(days=first.weekday())
+    assert c.post(base + '/transactions', json={
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+        'type': 'Buy', 'asset': 'BACKFILL12', 'instrument_id': iid,
+        'broker': 'A', 'quantity': 1, 'price': 10, 'transaction_currency': 'BRL',
+    }).status_code == 201
+    calls = []
+    def fetch_history(symbol, currency, start, end):
+        calls.append((start, end))
+        return [dict(date=start + timedelta(days=offset), price=Decimal('12'),
+                     currency='BRL', source='yfinance')
+                for offset in range((end - start).days + 1)
+                if (start + timedelta(days=offset)).weekday() < 5
+                and start + timedelta(days=offset) != first + timedelta(days=1)]
+    monkeypatch.setattr('src.api.market_data.fetch_history', fetch_history)
+    monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *_: {
+        'price': Decimal('13'), 'currency': 'BRL',
+        'market_at': datetime.now(timezone.utc), 'retrieved_at': datetime.now(timezone.utc),
+    })
+    result = c.post(base + '/consolidate')
+    assert result.status_code == 200, result.text
+    assert calls
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    series = c.get(base + '/performance', params={'asset_id': aid}).json()
+    yesterday = date.today() - timedelta(days=1)
+    assert series[-1]['date'] == yesterday.isoformat()
+    closure = next(row for row in series if row['date'] == (first + timedelta(days=1)).isoformat())
+    assert Decimal(str(closure['market_value'])) == 12
+    assert closure['status'] == 'complete'
+    if yesterday.weekday() < 5:
+        assert Decimal(str(series[-1]['market_value'])) == 12
+    assert c.get(base + '/overview').json()['summary']['dirty_from'] is None
+
+
+def test_split_dividend_and_illiquidity_flow_from_yahoo_to_reporting(client, monkeypatch):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+    from src.models import UserDefinedPrice
+
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Share units', 'display_currency': 'USD'}).json()['id']
+    iid = register_instrument(c, 'UNITS12', 'USD')
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=12)
+    days = [first, first + timedelta(days=1), first + timedelta(days=2), date.today() - timedelta(days=1)]
+    frame = pd.DataFrame({'Close': [50., 49., 49., 55.], 'Dividends': [0., 1., 0., 0.],
+                          'Stock Splits': [0., 0., 2., 0.]},
+                         index=pd.DatetimeIndex(days, tz='America/New_York'))
+    monkeypatch.setattr(yf, 'Ticker', lambda _: SimpleNamespace(
+        history=lambda **kwargs: frame,
+        get_history_metadata=lambda: {'currency': 'USD', 'exchangeTimezoneName': 'America/New_York'}))
+    monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *_: {
+        'price': Decimal('55'), 'currency': 'USD',
+        'market_at': datetime.now(timezone.utc), 'retrieved_at': datetime.now(timezone.utc)})
+    assert c.post(base + '/transactions', json={
+        'asset': 'UNITS12', 'instrument_id': iid, 'broker': 'A', 'type': 'Buy',
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+        'quantity': 1, 'price': 100, 'transaction_currency': 'USD', 'fx_rate': 5,
+    }).status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        session.add(UserDefinedPrice(asset_id=aid, reference_date=first,
+                                      price=50, currency='USD', source='legacy'))
+        session.commit()
+    source = c.get(base + '/transactions').json()
+    result = c.post(base + '/consolidate').json()
+    assert result['complete'] is True
+    series = c.get(base + '/performance', params={'asset_id': aid}).json()
+    assert [Decimal(str(row['cumulative_return_pct'])) for row in series[:3]] == [0, 0, 0]
+    assert all(row['status'] == 'complete' for row in series)
+    assert series[-2]['quote_date'] == days[2].isoformat()
+    assert series[-1]['quantity'] == 2
+    assert series[-1]['gross_income'] == 2
+    assert series[-1]['total_gain'] == 12
+    position = c.get(base + '/overview').json()['positions'][0]
+    assert position['current_total_gain'] == 12
+    assert Decimal(str(position['current_accumulated_profitability'])) > 0
+    assert c.get(base + '/transactions').json() == source
+    assert c.post(base + '/consolidate').json()['snapshot_days'] == 0
 
 
 def test_crud_prices_isolation_and_rollback(client, monkeypatch):

@@ -16,6 +16,36 @@ pytestmark = [pytest.mark.integration, pytest.mark.skipif(
 )]
 
 
+def test_share_unit_migration_invalidates_only_provider_caches():
+    migration = importlib.import_module('migrations.versions.0016_historical_share_units')
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            schema = 'review_' + uuid.uuid4().hex
+            connection.execute(text(f'CREATE SCHEMA {schema}'))
+            connection.execute(text(f'SET LOCAL search_path TO {schema}'))
+            for table in ('market_prices', 'market_price_coverage', 'corporate_actions',
+                          'corporate_action_coverage', 'user_defined_prices', 'user_corporate_events'):
+                connection.execute(text(f'CREATE TABLE {table} (source text)'))
+                connection.execute(text(f"INSERT INTO {table} VALUES ('yfinance'), ('manual'), ('legacy')"))
+            connection.execute(text('CREATE TABLE position_snapshots (id integer)'))
+            connection.execute(text('CREATE TABLE portfolios (id integer, dirty_from date, history_built_through date)'))
+            connection.execute(text("INSERT INTO portfolios VALUES (1, '2024-02-01', '2024-03-01')"))
+            connection.execute(text('CREATE TABLE transactions (portfolio_id integer, trade_date date)'))
+            connection.execute(text("INSERT INTO transactions VALUES (1, '2024-01-01')"))
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+            assert connection.scalar(text('SELECT dirty_from::text FROM portfolios')) == '2024-01-01'
+            assert connection.scalar(text('SELECT history_built_through FROM portfolios')) is None
+            for table in ('market_prices', 'market_price_coverage', 'corporate_actions', 'corporate_action_coverage'):
+                assert connection.scalar(text(f'SELECT count(*) FROM {table}')) == 2
+            for table in ('user_defined_prices', 'user_corporate_events'):
+                assert connection.scalar(text(f'SELECT count(*) FROM {table}')) == 3
+            assert connection.scalar(text('SELECT count(*) FROM transactions')) == 1
+        finally:
+            transaction.rollback()
+
+
 @pytest.mark.parametrize('round_trip', [False, True])
 def test_migration_preserves_private_history_and_zero_prices(round_trip):
     migration = importlib.import_module('migrations.versions.0006_market_price_store')

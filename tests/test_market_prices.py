@@ -15,6 +15,55 @@ from src.models import (
 )
 
 
+@pytest.mark.parametrize('split_factor', [2, 0.5])
+def test_yahoo_split_adjusted_inputs_are_restored_to_historical_units(monkeypatch, split_factor):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+    from src.api import market_data
+
+    # Even a request ending before the split must recover the old share units.
+    frame = pd.DataFrame({'Close': [50., 49., 49.], 'Dividends': [0., 1., 0.],
+                          'Stock Splits': [0., 0., split_factor]},
+                         index=pd.DatetimeIndex(['2024-01-08', '2024-01-09', '2024-01-10'],
+                                                tz='America/New_York'))
+    calls = []
+    monkeypatch.setattr(yf, 'Ticker', lambda _: SimpleNamespace(
+        history=lambda **kwargs: calls.append(kwargs) or frame,
+        get_history_metadata=lambda: {'currency': 'USD', 'exchangeTimezoneName': 'America/New_York'}))
+    rows = market_data.fetch_history('SPLIT', 'USD', date(2024, 1, 8), date(2024, 1, 9))
+    assert [r['price'] for r in rows] == [Decimal('50') * Decimal(str(split_factor)),
+                                        Decimal('49') * Decimal(str(split_factor))]
+    assert rows[1]['dividends'] == Decimal(str(split_factor))
+    assert calls[0]['end'] > '2024-01-10'
+
+
+def test_imported_adjusted_cache_cannot_override_verified_close(market_session):
+    asset = assets(market_session)[0]
+    day = date(2024, 1, 8)
+    market_session.add(UserDefinedPrice(asset_id=asset.id, reference_date=day,
+                                      price=50, currency='USD', source='legacy'))
+    market_session.flush()
+    result = get_history(market_session, asset, day, day,
+                         fetcher=lambda *_: [history_row(day, '100')])
+    assert result.prices[0].close == 100
+    save_user_price(market_session, asset, day, Decimal('101'), 'USD')
+    assert get_stored_history(market_session, asset)[0].close == 101
+
+
+def test_current_reporting_prefers_latest_quote_but_history_keeps_daily_close(market_session):
+    from src.market_prices import history_for_reporting, get_quote_history
+    asset = assets(market_session)[0]
+    day = date.today() - timedelta(days=1)
+    get_history(market_session, asset, day, day, fetcher=lambda *_: [history_row(day, '100')])
+    market_session.add(LatestMarketQuote(provider_instrument_id=mapping(market_session).id,
+        price=101, currency='USD', source='yfinance', reference_date=day,
+        market_at=datetime.now(timezone.utc), retrieved_at=datetime.now(timezone.utc)))
+    market_session.flush()
+    assert history_for_reporting(market_session, asset)[-1].close == 101
+    assert get_quote_history(market_session, asset)[-1].close == 100
+
+
 @pytest.fixture
 def market_session():
     engine = create_engine('sqlite://')
