@@ -9,7 +9,7 @@ export type Transaction = {
   transaction_currency_locked: boolean
 }
 export type InstrumentSearchResult = {
-  instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'OTHER';
+  instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'FIXED_INCOME' | 'OTHER';
   exchange: string | null; currency: string | null; status: 'ACTIVE' | 'INACTIVE' | 'DELISTED';
   quote_currency?: string | null;
   quote_currencies?: string[];
@@ -50,6 +50,9 @@ export type Asset = { id: number; ticker: string; transaction_currency: string |
   current_price: Numeric | null; total_value: Numeric | null; price_date: string | null;
   income_by_currency: Record<string, Numeric>; corporate_action_count: number }
 export type Overview = { positions: Position[]; assets: Asset[];
+  fixed_income?: { lot_count: number; valuation_status: 'none' | 'pending';
+    lots: { id: number; asset_id: number; instrument_id: number; currency: string;
+      current_value: null; valuation_status: 'pending' }[] };
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;
     total_value: number | null; missing_prices: string[]; missing_fx: string[]; missing_cost_fx: string[]; missing_actions?: string[]; display_currency: string; currencies: string[];
     totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric>;

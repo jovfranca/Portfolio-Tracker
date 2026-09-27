@@ -136,12 +136,14 @@ def position_series(session, portfolio_id, instrument_id):
 
 def portfolio_series(session, portfolio_id):
     from src.services import get_portfolio
+    from src.fixed_income import list_lots
     portfolio = get_portfolio(session, portfolio_id)
+    first_pending_day = min((lot.start_date for lot in list_lots(session, portfolio_id)), default=None)
     rows = session.scalars(select(PortfolioSnapshot).where(
         PortfolioSnapshot.portfolio_id == portfolio_id,
         PortfolioSnapshot.reporting_currency == portfolio.display_currency,
     ).order_by(PortfolioSnapshot.date))
-    return [{
+    return [_pending_fixed_income_values({
         'date': row.date, 'reporting_currency': row.reporting_currency,
         'status': row.status,
         # Summing share counts or averaging unit costs across instruments would
@@ -150,12 +152,26 @@ def portfolio_series(session, portfolio_id):
         **{field: getattr(row, field) for field in PORTFOLIO_FIELDS},
         'daily_return_pct': row.daily_return_pct,
         'cumulative_return_pct': row.cumulative_return_pct,
-    } for row in rows]
+    }, first_pending_day) for row in rows]
+
+
+def _pending_fixed_income_values(values, first_pending_day):
+    """Do not present equity-only portfolio totals after a lot begins."""
+    if first_pending_day is not None and values['date'] >= first_pending_day:
+        values.update({field: None for field in (*PORTFOLIO_FIELDS,
+                                                'daily_return_pct', 'cumulative_return_pct')})
+        values['status'] = 'incomplete'
+        if 'return_factor' in values:
+            values['return_factor'] = None
+    return values
 
 
 def consolidate(session, portfolio_id):
     from src.services import get_portfolio
+    from src.fixed_income import list_lots
     portfolio = get_portfolio(session, portfolio_id, lock=True)
+    pending_lots = list_lots(session, portfolio_id)
+    first_pending_day = min((lot.start_date for lot in pending_lots), default=None)
     _, transactions, assets = sources(session, portfolio_id)
     if not transactions:
         session.execute(delete(PositionSnapshot).where(PositionSnapshot.portfolio_id == portfolio_id))
@@ -163,8 +179,12 @@ def consolidate(session, portfolio_id):
         portfolio.dirty_from = None
         portfolio.history_built_through = None
         session.flush()
-        return {'complete': True, 'history_status': 'complete', 'recalculated_from': None,
-                'incomplete_assets': [], 'snapshot_days': 0}
+        return {'complete': not pending_lots,
+                'history_status': 'incomplete' if pending_lots else 'complete',
+                'recalculated_from': None, 'incomplete_assets': [lot.asset.instrument.symbol for lot in pending_lots],
+                'snapshot_days': 0,
+                'reasons': {lot.asset.instrument.symbol: ['Fixed-income valuation pending'] for lot in pending_lots},
+                'message': ('Avaliação de renda fixa pendente.' if pending_lots else 'Carteira consolidada.')}
 
     first_day = min(row.trade_date for row in transactions)
     # Removing or moving the earliest trade advances the history boundary.
@@ -398,6 +418,8 @@ def consolidate(session, portfolio_id):
                 PositionSnapshot.date == day,
             )))
             values = portfolio_day(daily_rows, previous_value, factor)
+            values = _pending_fixed_income_values({'date': day, **values}, first_pending_day)
+            values.pop('date')
             session.add(PortfolioSnapshot(
                 portfolio_id=portfolio_id, date=day,
                 reporting_currency=portfolio.display_currency,
@@ -437,9 +459,13 @@ def consolidate(session, portfolio_id):
     # are a separate state and should not make every click restart at trade one.
     portfolio.dirty_from = None
     session.flush()
+    pending_symbols = {lot.asset.instrument.symbol for lot in pending_lots}
+    for symbol in pending_symbols:
+        problems[symbol].append('Fixed-income valuation pending')
+    incomplete = sorted(set(incomplete) | pending_symbols)
     return {
         'complete': not incomplete,
-        'history_status': 'complete' if not history_incomplete else 'incomplete',
+        'history_status': 'complete' if not history_incomplete and not pending_lots else 'incomplete',
         'recalculated_from': start if start <= through else None,
         'incomplete_assets': sorted(set(incomplete)),
         'snapshot_days': (through - start).days + 1 if start <= through else 0,

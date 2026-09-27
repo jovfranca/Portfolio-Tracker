@@ -19,7 +19,9 @@ from src.rates import RateUnavailable, backfill_rates, get_rates
 from src.schemas import (
     CorporateEventInput, CorporateEventOutput, CustomInstrumentInput, PortfolioInput, QuoteInput, RateBackfillInput,
     TransactionImportConfirm, TransactionSelectionInput, TransactionOutput,
+    FixedIncomeLotInput, FixedIncomeMovementInput,
 )
+from src.fixed_income import add_movement, create_lot, get_lot, list_lots, lot_data, movement_data
 from src.services import (
     ensure_asset, get_asset, get_overview, get_portfolio, require_instrument,
     transaction_currency_for, transaction_values,
@@ -118,6 +120,38 @@ def select_instrument():
 @router.get('/portfolios/{portfolio_id}/overview')
 def portfolio_overview(portfolio_id: int, session: DB):
     return get_overview(session, portfolio_id)
+
+
+@router.post('/portfolios/{portfolio_id}/fixed-income/lots', status_code=201)
+def create_fixed_income_lot(portfolio_id: int, payload: FixedIncomeLotInput, session: DB):
+    lot = create_lot(session, portfolio_id, payload)
+    result = lot_data(lot)
+    session.commit()
+    return result
+
+
+@router.get('/portfolios/{portfolio_id}/fixed-income/lots')
+def fixed_income_lots(portfolio_id: int, session: DB):
+    return [lot_data(lot) for lot in list_lots(session, portfolio_id)]
+
+
+@router.get('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}')
+def fixed_income_lot(portfolio_id: int, lot_id: int, session: DB):
+    return lot_data(get_lot(session, portfolio_id, lot_id))
+
+
+@router.post('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements', status_code=201)
+def create_fixed_income_movement(portfolio_id: int, lot_id: int,
+                                 payload: FixedIncomeMovementInput, session: DB):
+    movement = add_movement(session, portfolio_id, lot_id, payload)
+    result = movement_data(movement)
+    session.commit()
+    return result
+
+
+@router.get('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements')
+def fixed_income_movements(portfolio_id: int, lot_id: int, session: DB):
+    return [movement_data(row) for row in get_lot(session, portfolio_id, lot_id).movements]
 
 
 @router.post('/portfolios/{portfolio_id}/consolidate')

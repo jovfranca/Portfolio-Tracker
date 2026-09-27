@@ -147,7 +147,7 @@ def create_instrument(
             symbol=symbol, name=name.strip(), asset_type=asset_type.upper(),
             exchange=exchange,
             currency=(currency or quote_currency) if asset_type in ('STOCK', 'ETF')
-            else currency if asset_type == 'OTHER' else None,
+            else currency if asset_type in ('OTHER', 'FIXED_INCOME') else None,
             status=status.upper(), isin=isin, origin=origin.upper(),
         )
         session.add(instrument)
