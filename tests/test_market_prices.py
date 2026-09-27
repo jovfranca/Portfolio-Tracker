@@ -71,6 +71,64 @@ def test_current_actions_adapter_never_returns_an_intraday_close(monkeypatch):
     assert rows[0]['dividends'] == 1
 
 
+def test_closed_day_without_candle_certifies_action_coverage(monkeypatch, market_session):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+
+    friday = date(2024, 1, 12)
+    saturday = friday + timedelta(days=1)
+    frame = pd.DataFrame(
+        {'Close': [20.], 'Dividends': [1.], 'Stock Splits': [2.]},
+        index=pd.DatetimeIndex([friday], tz='America/New_York'),
+    )
+    calls = []
+
+    def history(**kwargs):
+        calls.append(kwargs)
+        if date.fromisoformat(kwargs['start']) > friday:
+            raise RuntimeError('No price data found for requested period')
+        return frame
+
+    monkeypatch.setattr(yf, 'Ticker', lambda _: SimpleNamespace(
+        history=history,
+        get_history_metadata=lambda: {
+            'currency': 'USD', 'exchangeTimezoneName': 'America/New_York',
+        },
+    ))
+    result = get_actions(market_session, assets(market_session)[0], saturday, saturday)
+    assert result.complete
+    assert result.actions == []
+    assert calls[0]['start'] <= friday.isoformat()
+
+
+def test_current_action_check_uses_prior_candle_on_closed_day(monkeypatch):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+    from src.api import market_data
+
+    today = date.today()
+    prior = today - timedelta(days=1)
+    frame = pd.DataFrame(
+        {'Close': [20.], 'Dividends': [0.], 'Stock Splits': [0.]},
+        index=pd.DatetimeIndex([prior], tz='America/New_York'),
+    )
+
+    def history(**kwargs):
+        if date.fromisoformat(kwargs['start']) > prior:
+            raise RuntimeError('No price data found for requested period')
+        return frame
+
+    monkeypatch.setattr(yf, 'Ticker', lambda _: SimpleNamespace(
+        history=history,
+        get_history_metadata=lambda: {
+            'currency': 'USD', 'exchangeTimezoneName': 'America/New_York',
+        },
+    ))
+    assert market_data.fetch_history('TEST', 'USD', today, today, actions_only=True) == []
+
+
 def test_current_reporting_prefers_latest_quote_but_history_keeps_daily_close(market_session):
     from src.market_prices import history_for_reporting, get_quote_history
     asset = assets(market_session)[0]

@@ -1,0 +1,3 @@
+code,name,kind,frequency,value_type,unit,reference_currency,jurisdiction,status,provider,series_id,is_primary
+CDI,Taxa de juros - CDI,INTEREST_RATE,DAILY,RATE,PERCENT_PER_DAY,BRL,BR,ACTIVE,bcb_sgs,12,true
+IPCA,Índice Nacional de Preços ao Consumidor Amplo,INFLATION,MONTHLY,CHANGE,PERCENT_PER_MONTH,BRL,BR,ACTIVE,bcb_sgs,433,true

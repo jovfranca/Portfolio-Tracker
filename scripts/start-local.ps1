@@ -19,6 +19,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Falha ao preparar banco. Verifique DATABASE_UR
 if ($LASTEXITCODE -ne 0) { throw 'Falha na migracao do banco.' }
 & $pythonExe -m src.instrument_catalog
 if ($LASTEXITCODE -ne 0) { throw 'Falha ao carregar o catalogo de instrumentos.' }
+& $pythonExe -m src.benchmark_catalog
+if ($LASTEXITCODE -ne 0) { throw 'Falha ao carregar o catalogo de benchmarks.' }
 if (!$SkipBuild) {
     Push-Location frontend
     try {

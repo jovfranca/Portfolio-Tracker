@@ -10,6 +10,7 @@ from .imports import LegacyImport, TransactionImport
 from .exchange_rate import ExchangeRate
 from .corporate_action import CorporateAction, CorporateActionCoverage, UserCorporateEvent
 from .snapshot import PositionSnapshot, PortfolioSnapshot
+from .benchmark import Benchmark, BenchmarkProviderMapping, BenchmarkObservation, BenchmarkCoverage
 
 __all__ = [
     'Portfolio', 'Transaction', 'Asset', 'Broker', 'LegacyImport', 'ExchangeRate',
@@ -17,4 +18,5 @@ __all__ = [
     'MarketPrice', 'MarketPriceCoverage', 'LatestMarketQuote', 'UserDefinedPrice',
     'CorporateAction', 'CorporateActionCoverage', 'UserCorporateEvent',
     'PositionSnapshot', 'PortfolioSnapshot',
+    'Benchmark', 'BenchmarkProviderMapping', 'BenchmarkObservation', 'BenchmarkCoverage',
 ]

@@ -52,6 +52,7 @@ def main(argv=None):
     reset_database(url)
     subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', 'head'], check=True)
     subprocess.run([sys.executable, '-m', 'src.instrument_catalog'], check=True)
+    subprocess.run([sys.executable, '-m', 'src.benchmark_catalog'], check=True)
     print('Local database reset, migrated, and seeded.')
 
 

@@ -10,6 +10,42 @@ from zoneinfo import ZoneInfo
 from src.config import rate_provider
 
 
+def fetch_benchmark_history(mapping, start, end):
+    """Fetch BCB SGS observations using the catalog's external series ID."""
+    if mapping.provider != 'bcb_sgs' or not mapping.series_id.isdecimal():
+        raise ValueError('Unsupported benchmark provider mapping.')
+    rows = []
+    cursor = start
+    while cursor <= end:
+        # SGS limits daily-series responses; bounded windows support full backfills.
+        window_end = min(end, cursor + timedelta(days=3650))
+        params = urlencode({
+            'formato': 'json', 'dataInicial': cursor.strftime('%d/%m/%Y'),
+            'dataFinal': window_end.strftime('%d/%m/%Y'),
+        })
+        request = Request(
+            f'https://api.bcb.gov.br/dados/serie/bcdata.sgs.{mapping.series_id}/dados?{params}',
+            headers={'User-Agent': 'Portfolio-Tracker/1.0'},
+        )
+        with urlopen(request, timeout=15) as response:
+            payload = json.load(response)
+        if not isinstance(payload, list):
+            raise ValueError('Invalid BCB benchmark response.')
+        retrieved_at = datetime.now(timezone.utc)
+        for item in payload:
+            try:
+                reference_date = datetime.strptime(item['data'], '%d/%m/%Y').date()
+                value = Decimal(str(item['valor']))
+            except (KeyError, TypeError, ValueError, InvalidOperation) as error:
+                raise ValueError('Invalid BCB benchmark observation.') from error
+            if not value.is_finite() or not cursor <= reference_date <= window_end:
+                raise ValueError('Invalid BCB benchmark observation.')
+            rows.append({'reference_date': reference_date, 'value': value,
+                         'source': 'bcb_sgs', 'retrieved_at': retrieved_at})
+        cursor = window_end + timedelta(days=1)
+    return rows
+
+
 def search_instruments(query):
     """Search Yahoo on demand; callers decide whether a result is selected."""
     params = urlencode({'q': query, 'quotesCount': 20, 'newsCount': 0})
@@ -61,8 +97,12 @@ def fetch_history(ticker, currency, start, end, *, actions_only=False):
     """
     import yfinance as yf
     instrument = yf.Ticker(ticker)
+    # A range containing only a market closure makes Yahoo raise "no prices"
+    # with raise_errors=True. Include a prior candle, then return only the
+    # requested dates. Keep real provider failures visible to the caller.
     frame = instrument.history(
-        start=start.isoformat(), end=(max(end, date.today()) + timedelta(days=1)).isoformat(),
+        start=(start - timedelta(days=30)).isoformat(),
+        end=(max(end, date.today()) + timedelta(days=1)).isoformat(),
         interval='1d', auto_adjust=False, timeout=15, raise_errors=True,
     )
     metadata = instrument.get_history_metadata()
