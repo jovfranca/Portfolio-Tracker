@@ -16,6 +16,34 @@ pytestmark = [pytest.mark.integration, pytest.mark.skipif(
 )]
 
 
+def test_action_coverage_migration_preserves_sources_and_invalidates_derived_views():
+    migration = importlib.import_module('migrations.versions.0017_action_coverage_finality')
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            schema = 'review_' + uuid.uuid4().hex
+            connection.execute(text(f'CREATE SCHEMA {schema}'))
+            connection.execute(text(f'SET LOCAL search_path TO {schema}'))
+            connection.execute(text('CREATE TABLE corporate_action_coverage (id integer, source text)'))
+            connection.execute(text("INSERT INTO corporate_action_coverage VALUES (1, 'yfinance')"))
+            connection.execute(text('CREATE TABLE portfolios (id integer, dirty_from date, history_built_through date)'))
+            connection.execute(text("INSERT INTO portfolios VALUES (1, NULL, '2024-03-01')"))
+            connection.execute(text('CREATE TABLE transactions (portfolio_id integer, trade_date date)'))
+            connection.execute(text("INSERT INTO transactions VALUES (1, '2024-01-01')"))
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+            assert connection.execute(text('SELECT id, source, is_final FROM corporate_action_coverage')).one() == (
+                1, 'yfinance', True)
+            assert connection.scalar(text('SELECT dirty_from::text FROM portfolios')) == '2024-01-01'
+            assert connection.scalar(text('SELECT history_built_through::text FROM portfolios')) == '2024-03-01'
+            assert connection.scalar(text('SELECT count(*) FROM transactions')) == 1
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.downgrade()
+            assert connection.execute(text('SELECT * FROM corporate_action_coverage')).one() == (1, 'yfinance')
+        finally:
+            transaction.rollback()
+
+
 def test_share_unit_migration_invalidates_only_provider_caches():
     migration = importlib.import_module('migrations.versions.0016_historical_share_units')
     with engine.connect() as connection:

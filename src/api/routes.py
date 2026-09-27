@@ -471,6 +471,12 @@ def asset_activity(portfolio_id: int, asset_id: int, session: DB):
 def latest_quote(portfolio_id: int, asset_id: int, session: DB):
     asset = get_asset(session, portfolio_id, asset_id)
     result = get_latest(session, asset)
+    first = session.scalar(select(Transaction.trade_date).where(
+        Transaction.portfolio_id == portfolio_id,
+        Transaction.instrument_id == asset.instrument_id,
+    ).order_by(Transaction.trade_date).limit(1))
+    if first is not None:
+        get_actions(session, asset, first, date.today())
     session.commit()
     if not result.available:
         raise HTTPException(404, 'Não há cotação disponível para este ativo.')
@@ -499,7 +505,7 @@ def refresh_quotes(portfolio_id: int, asset_id: int, session: DB):
     start = min(transaction.trade_date for transaction in transactions)
     history_end = date.today() - timedelta(days=1)
     result = get_history(session, asset, start, history_end) if start <= history_end else None
-    action_result = get_actions(session, asset, start, history_end) if start <= history_end else None
+    action_result = get_actions(session, asset, start, date.today())
     latest = get_latest(session, asset)
     session.commit()
     if not latest.available or latest.stale:

@@ -11,7 +11,7 @@ from src.corporate_actions import get_actions, get_stored_actions
 from src.domain import ZERO, portfolio_day, position_history, position_now
 from src.market_prices import get_history, get_latest, get_quote_history, history_for_reporting
 from src.models import (
-    Asset, CorporateAction, ExchangeRate, MarketPrice, Portfolio,
+    Asset, CorporateAction, CorporateActionCoverage, ExchangeRate, MarketPrice, MarketPriceCoverage, Portfolio,
     PortfolioSnapshot, PositionSnapshot, ProviderInstrument, Transaction,
     UserCorporateEvent, UserDefinedPrice,
 )
@@ -58,13 +58,19 @@ def invalidate_changed_inputs(session, flush_context, instances):
             if asset is not None:
                 add(asset.portfolio_id, old_day(obj, 'effective_date' if isinstance(obj, UserCorporateEvent)
                                                      else 'reference_date'))
-        elif isinstance(obj, (CorporateAction, MarketPrice)):
-            if isinstance(obj, CorporateAction):
-                instrument_id, day = obj.instrument_id, old_day(obj, 'effective_date')
+        elif isinstance(obj, (CorporateAction, CorporateActionCoverage, MarketPrice, MarketPriceCoverage)):
+            if isinstance(obj, CorporateActionCoverage) and obj.is_final is False:
+                # A TTL refresh of today's coverage changes no finalized daily
+                # snapshot. Any newly discovered event invalidates itself.
+                continue
+            if isinstance(obj, (CorporateAction, CorporateActionCoverage)):
+                instrument_id = obj.instrument_id
+                day = old_day(obj, 'effective_date' if isinstance(obj, CorporateAction) else 'start_date')
             else:
                 mapping = session.get(ProviderInstrument, obj.provider_instrument_id)
                 instrument_id = mapping.instrument_id if mapping else None
-                day = obj.reference_at.date() if obj.reference_at else None
+                day = (old_day(obj, 'start_date') if isinstance(obj, MarketPriceCoverage)
+                       else obj.reference_at.date() if obj.reference_at else None)
             if instrument_id is not None:
                 for portfolio_id in session.scalars(select(Asset.portfolio_id).where(
                     Asset.instrument_id == instrument_id).distinct()):
@@ -171,7 +177,8 @@ def consolidate(session, portfolio_id):
         PortfolioSnapshot.portfolio_id == portfolio_id,
         PortfolioSnapshot.date < first_day,
     ))
-    through = date.today() - timedelta(days=1)
+    valuation_date = date.today()
+    through = valuation_date - timedelta(days=1)
     dirty = portfolio.dirty_from
     start = max(first_day, dirty or (portfolio.history_built_through + timedelta(days=1)
                                      if portfolio.history_built_through else first_day))
@@ -183,6 +190,8 @@ def consolidate(session, portfolio_id):
     history_incomplete = []
     problems = defaultdict(list)
     latest_by_instrument = {}
+    action_gaps_by_instrument = {}
+    price_gaps_by_instrument = {}
     by_instrument = defaultdict(list)
     for row in transactions:
         by_instrument[row.instrument_id].append(row)
@@ -198,12 +207,22 @@ def consolidate(session, portfolio_id):
         if asset_first <= through:
             # Establish a prior observation when the first trade has no close.
             history_result = get_history(session, asset, asset_first - timedelta(days=30), through)
-            action_result = get_actions(session, asset, asset_first, through)
-            if not history_result.complete or not action_result.complete:
+            # An opening-lookback failure is irrelevant once the holding period
+            # itself is covered; genuine failed holding-period queries are not.
+            price_gaps_by_instrument[asset.instrument_id] = [
+                (max(asset_first, first), last) for first, last in history_result.missing_ranges
+                if last >= asset_first]
+            if price_gaps_by_instrument[asset.instrument_id]:
+                incomplete.append(asset.instrument.symbol)
                 problems[asset.instrument.symbol].append(
-                    'histórico de cotações ou eventos não retornado pelo provedor')
+                    'histórico de cotações não retornado pelo provedor')
+        action_result = get_actions(session, asset, asset_first, valuation_date)
+        action_gaps_by_instrument[asset.instrument_id] = action_result.missing_ranges
+        if not action_result.complete:
+            incomplete.append(asset.instrument.symbol)
+            problems[asset.instrument.symbol].append('cobertura de eventos corporativos incompleta')
         if position_now(rows, get_stored_actions(session, asset), None,
-                        portfolio.display_currency, {})['quantity'] > 0:
+                        portfolio.display_currency, {}, valuation_date=valuation_date)['quantity'] > 0:
             try:
                 latest_by_instrument[asset.instrument_id] = get_latest(session, asset)
             except (ValueError, RuntimeError, OSError):
@@ -220,7 +239,7 @@ def consolidate(session, portfolio_id):
         valuation_currencies = {price.currency for price in prices} | {portfolio.display_currency}
         for currency in valuation_currencies:
             fx_dates[currency].update(asset_first + timedelta(days=offset)
-                                      for offset in range((through - asset_first).days + 1))
+                                      for offset in range((valuation_date - asset_first).days + 1))
             fx_assets[currency].add(asset.instrument.symbol)
         for event in events:
             if event.currency and event.effective_date <= date.today():
@@ -261,7 +280,8 @@ def consolidate(session, portfolio_id):
                 PositionSnapshot.instrument_id == asset.instrument_id))
             continue
         events = get_stored_actions(session, asset)
-        if position_now(rows, events, None, portfolio.display_currency, {})['quantity'] > 0:
+        if position_now(rows, events, None, portfolio.display_currency, {},
+                        valuation_date=valuation_date)['quantity'] > 0:
             try:
                 # The shared quote service handles TTL and provider errors. One
                 # failed asset never prevents the remaining portfolio from updating.
@@ -277,11 +297,34 @@ def consolidate(session, portfolio_id):
         if prices and prices[-1].currency != portfolio.display_currency:
             try:
                 convert_amount(session, Decimal('1'), prices[-1].currency,
-                               portfolio.display_currency, prices[-1].date)
+                               portfolio.display_currency, valuation_date)
             except RateUnavailable:
                 if asset.instrument.symbol not in incomplete:
                     incomplete.append(asset.instrument.symbol)
                 problems[asset.instrument.symbol].append('câmbio da cotação atual indisponível')
+        # Today's trades/events are outside finalized snapshots. Validate their
+        # current ledger too, including settlement FX and corporate income FX.
+        current_prices = [price for price in prices if price.date <= valuation_date]
+        current_quote = current_prices[-1] if current_prices else None
+        current_rates = reporting_factors(
+            session, portfolio.display_currency, rows, events,
+            [current_quote] if current_quote else [], valuation_date=valuation_date,
+        )
+        current = position_now(
+            rows, events, current_quote, portfolio.display_currency, current_rates,
+            valuation_date=valuation_date,
+            actions_complete=not action_gaps_by_instrument.get(asset.instrument_id),
+        )
+        if current['status'] != 'complete':
+            incomplete.append(asset.instrument.symbol)
+            current_reason = {
+                'missing_fx': 'câmbio ausente',
+                'missing_price': 'cotação ausente',
+                'missing_price_and_fx': 'cotação e câmbio ausentes',
+                'missing_actions': 'cobertura de eventos corporativos incompleta',
+            }.get(current['status'], 'dados incompletos')
+            problems[asset.instrument.symbol].append(
+                'posição atual incompleta: ' + current_reason)
         if start > through:
             continue
         previous = session.scalar(select(PositionSnapshot).where(
@@ -315,6 +358,8 @@ def consolidate(session, portfolio_id):
             activity_rows, activity_events, active_prices, portfolio.display_currency,
             factors, start=asset_start, end=through,
             initial_state=previous.ledger_state if previous else None,
+            missing_action_ranges=action_gaps_by_instrument.get(asset.instrument_id, ()),
+            missing_price_ranges=price_gaps_by_instrument.get(asset.instrument_id, ()),
         )
         session.execute(delete(PositionSnapshot).where(
             PositionSnapshot.portfolio_id == portfolio_id,
@@ -375,6 +420,8 @@ def consolidate(session, portfolio_id):
         'missing_fx': 'câmbio ausente',
         'missing_price_and_fx': 'fechamento e câmbio ausentes',
         'incomplete_history': 'retorno interrompido por lacuna anterior',
+        'missing_actions': 'cobertura de eventos corporativos incompleta',
+        'missing_price_history': 'consulta de fechamentos incompleta',
     }
     first_gaps = {}
     for snapshot in incomplete_rows:

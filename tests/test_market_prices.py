@@ -51,6 +51,26 @@ def test_imported_adjusted_cache_cannot_override_verified_close(market_session):
     assert get_stored_history(market_session, asset)[0].close == 101
 
 
+def test_current_actions_adapter_never_returns_an_intraday_close(monkeypatch):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+    from src.api import market_data
+    from zoneinfo import ZoneInfo
+    day = datetime.now(ZoneInfo('America/Sao_Paulo')).date()
+    frame = pd.DataFrame({'Close': [50.], 'Dividends': [1.], 'Stock Splits': [2.]},
+                         index=pd.DatetimeIndex([day], tz='America/Sao_Paulo'))
+    monkeypatch.setattr(yf, 'Ticker', lambda _: SimpleNamespace(
+        history=lambda **kwargs: frame,
+        get_history_metadata=lambda: {'currency': 'BRL', 'exchangeTimezoneName': 'America/Sao_Paulo'}))
+    with pytest.raises(ValueError, match='final'):
+        market_data.fetch_history('SPLIT', 'BRL', day, day)
+    rows = market_data.fetch_history('SPLIT', 'BRL', day, day, actions_only=True)
+    assert rows[0]['price'] is None
+    assert rows[0]['stock_splits'] == 2
+    assert rows[0]['dividends'] == 1
+
+
 def test_current_reporting_prefers_latest_quote_but_history_keeps_daily_close(market_session):
     from src.market_prices import history_for_reporting, get_quote_history
     asset = assets(market_session)[0]

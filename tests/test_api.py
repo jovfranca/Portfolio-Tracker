@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from src.main import app
+from src.api.market_data import fetch_history as fetch_provider_history
 from src.config import ROOT
 from src.database import engine, get_session
 from src.models import Transaction
@@ -17,7 +18,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.skipif(
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # Synthetic instruments have no provider events unless a test supplies them.
+    # A successful empty response certifies coverage only when actually fetched.
+    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *args, **kwargs: [])
     with engine.connect() as connection:
         outer = connection.begin()
         def override():
@@ -53,6 +57,255 @@ def register_instrument(client, symbol, currency, **extra):
         return instrument.id
     finally:
         sessions.close()
+
+
+def certify_no_additional_actions(client, portfolio_id, asset_id, first):
+    """Explicit source coverage for valuation tests that do not consolidate."""
+    from src.corporate_actions import get_actions
+    from src.services import get_asset
+    sessions = app.dependency_overrides[get_session]()
+    try:
+        session = next(sessions)
+        asset = get_asset(session, portfolio_id, asset_id)
+        assert get_actions(session, asset, first, date.today(), fetcher=lambda *_: []).complete
+        session.commit()
+    finally:
+        sessions.close()
+
+
+def test_closed_round_trips_include_today_return_without_a_quote(client):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Closed round trips'}).json()['id']
+    iid = register_instrument(c, 'ROUNDTRIP12', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    yesterday = date.today() - timedelta(days=1)
+    for day, sale_price in ((yesterday, 12), (date.today(), 11)):
+        for kind, price in (('Buy', 10), ('Sell', sale_price)):
+            response = c.post(base + '/transactions', json={
+                'trade_date': day.isoformat(), 'settlement_date': day.isoformat(),
+                'type': kind, 'asset': 'ROUNDTRIP12', 'instrument_id': iid,
+                'broker': 'A', 'quantity': 1, 'price': price, 'transaction_currency': 'BRL',
+            })
+            assert response.status_code == 201, response.text
+    assert c.post(base + '/consolidate').json()['complete']
+    position = c.get(base + '/overview').json()['positions'][0]
+    assert position['quantity'] == position['display_value'] == 0
+    assert position['realized_gain'] == 3
+    assert position['current_accumulated_profitability'] == 32
+    assert position['return_date'] == date.today().isoformat()
+
+
+def test_consolidation_reports_missing_current_cost_fx(client):
+    from src.models import ExchangeRate
+    c, connection = client
+    pid = c.post('/api/portfolios', json={
+        'name': 'Unsettled reporting FX', 'display_currency': 'EUR',
+    }).json()['id']
+    iid = register_instrument(c, 'SETTLEFX12', 'USD')
+    base = f'/api/portfolios/{pid}'
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        for currency, rate in (('USD', 5), ('EUR', 6)):
+            session.add(ExchangeRate(currency=currency, rate_type='FX', rate_side='MARKET',
+                                     reference_date=date.today(), rate=rate, source='manual'))
+        session.commit()
+    assert c.post(base + '/transactions', json={
+        'trade_date': date.today().isoformat(),
+        'settlement_date': (date.today() + timedelta(days=2)).isoformat(),
+        'type': 'Buy', 'asset': 'SETTLEFX12', 'instrument_id': iid,
+        'broker': 'A', 'quantity': 1, 'price': 10,
+        'transaction_currency': 'USD', 'fx_rate': 5,
+    }).status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    assert c.put(base + f'/assets/{aid}/quote', json={
+        'date': date.today().isoformat(), 'close': 10,
+    }).status_code == 200
+    result = c.post(base + '/consolidate').json()
+    assert c.get(base + '/overview').json()['positions'][0]['status'] == 'missing_fx'
+    assert result['complete'] is False
+    assert 'SETTLEFX12' in result['incomplete_assets']
+    assert result['reasons']['SETTLEFX12']
+
+
+def test_today_split_is_applied_before_current_quote_and_return(client, monkeypatch):
+    import pandas as pd
+    import yfinance as yf
+    from types import SimpleNamespace
+    from src.models import MarketPrice, PositionSnapshot
+    monkeypatch.setattr('src.api.market_data.fetch_history', fetch_provider_history)
+
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Split effective today'}).json()['id']
+    iid = register_instrument(c, 'TODAYSPLIT12', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    yesterday = date.today() - timedelta(days=1)
+    assert c.post(base + '/transactions', json={
+        'trade_date': yesterday.isoformat(), 'settlement_date': yesterday.isoformat(),
+        'type': 'Buy', 'asset': 'TODAYSPLIT12', 'instrument_id': iid, 'broker': 'A',
+        'quantity': 10, 'price': 100, 'transaction_currency': 'BRL',
+    }).status_code == 201
+    # Yahoo reports split-adjusted closes, including the split effective today.
+    frame = pd.DataFrame({'Close': [50., 50.], 'Dividends': [0., 0.],
+                          'Stock Splits': [0., 2.]},
+                         index=pd.DatetimeIndex([yesterday, date.today()], tz='America/Sao_Paulo'))
+    monkeypatch.setattr(yf, 'Ticker', lambda _: SimpleNamespace(
+        history=lambda **kwargs: frame,
+        get_history_metadata=lambda: {'currency': 'BRL', 'exchangeTimezoneName': 'America/Sao_Paulo'}))
+    monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *_: {
+        'price': Decimal('50'), 'currency': 'BRL',
+        'market_at': datetime.combine(date.today(), datetime.min.time(), timezone.utc),
+        'retrieved_at': datetime.now(timezone.utc)})
+    result = c.post(base + '/consolidate')
+    assert result.status_code == 200, result.text
+    assert result.json()['complete'], result.json()
+    position = c.get(base + '/overview').json()['positions'][0]
+    assert position['quantity'] == 20
+    assert position['display_value'] == 1000
+    assert position['current_total_gain'] == 0
+    assert position['current_accumulated_profitability'] == 0
+    assert position['status'] == 'complete'
+    assert position['price_date'] == date.today().isoformat()
+    history = c.get(base + '/performance', params={'asset_id': position['asset_id']}).json()
+    assert history[-1]['quantity'] == 10
+    assert history[-1]['market_value'] == 1000
+    assert history[-1]['cumulative_return_pct'] == 0
+    with Session(connection) as session:
+        assert session.scalar(select(func.count()).select_from(MarketPrice).where(
+            MarketPrice.reference_at >= datetime.combine(date.today(), datetime.min.time(), timezone.utc))) == 0
+        assert session.scalar(select(func.count()).select_from(PositionSnapshot).where(
+            PositionSnapshot.portfolio_id == pid, PositionSnapshot.date == date.today())) == 0
+    # Refreshing/reconsolidating must neither double-apply the split nor rebuild yesterday.
+    assert c.post(base + '/consolidate').json()['snapshot_days'] == 0
+    assert c.get(base + '/overview').json()['positions'][0]['quantity'] == 20
+
+
+def test_carried_current_quote_uses_valuation_day_fx(client, monkeypatch):
+    from src.models import ExchangeRate
+
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Carried USD quote'}).json()['id']
+    iid = register_instrument(c, 'CARRIEDFX12', 'USD')
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=2)
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        for day, rate in ((first, 5), (first + timedelta(days=1), 6), (date.today(), 6)):
+            session.add(ExchangeRate(currency='USD', rate_type='FX', rate_side='MARKET',
+                                     reference_date=day, rate=rate, source='manual'))
+        session.commit()
+    assert c.post(base + '/transactions', json={
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+        'type': 'Buy', 'asset': 'CARRIEDFX12', 'instrument_id': iid, 'broker': 'A',
+        'quantity': 1, 'price': 10, 'transaction_currency': 'USD', 'fx_rate': 5,
+    }).status_code == 201
+    monkeypatch.setattr('src.api.market_data.fetch_history', lambda symbol, currency, start, end, **kwargs: [
+        {'date': first, 'price': Decimal('10'), 'currency': 'USD', 'source': 'yfinance'}
+    ] if start <= first <= end else [])
+    monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *_: {
+        'price': Decimal('10'), 'currency': 'USD',
+        'market_at': datetime.combine(first, datetime.min.time(), timezone.utc),
+        'retrieved_at': datetime.now(timezone.utc)})
+    assert c.post(base + '/consolidate').json()['complete']
+    position = c.get(base + '/overview').json()['positions'][0]
+    history = c.get(base + '/performance', params={'asset_id': position['asset_id']}).json()
+    assert position['display_value'] == history[-1]['market_value'] == 60
+    assert position['current_total_gain'] == history[-1]['total_gain'] == 10
+    assert position['current_accumulated_profitability'] == 20
+    assert position['price_date'] == first.isoformat()
+    assert position['valuation_date'] == date.today().isoformat()
+    assert position['return_date'] == date.today().isoformat()
+    assert position['status'] == 'complete'
+
+
+@pytest.mark.parametrize('known_actions', [False, True])
+def test_provider_outage_with_manual_prices_cannot_certify_history(client, monkeypatch, known_actions):
+    c, _ = client
+    pid = c.post('/api/portfolios', json={'name': 'Unverified actions'}).json()['id']
+    iid = register_instrument(c, 'ACTIONOUTAGE12', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=2)
+    assert c.post(base + '/transactions', json={
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+        'type': 'Buy', 'asset': 'ACTIONOUTAGE12', 'instrument_id': iid, 'broker': 'A',
+        'quantity': 1, 'price': 10, 'transaction_currency': 'BRL',
+    }).status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    for day in (first, date.today()):
+        assert c.put(base + f'/assets/{aid}/quote', json={
+            'date': day.isoformat(), 'close': 10,
+        }).status_code == 200
+    if known_actions:
+        certify_no_additional_actions(c, pid, aid, first)
+    def unavailable(*args, **kwargs):
+        raise OSError('synthetic provider outage')
+    monkeypatch.setattr('src.api.market_data.fetch_history', unavailable)
+    for _ in range(2):
+        response = c.post(base + '/consolidate')
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result['complete'] is False
+        assert result['history_status'] == 'incomplete'
+        assert result['incomplete_assets'] == ['ACTIONOUTAGE12']
+        assert result['message'] != 'Carteira consolidada.'
+        overview = c.get(base + '/overview').json()
+        assert overview['summary']['history_status'] == 'incomplete'
+        assert (overview['positions'][0]['status'] == 'complete') == known_actions
+        assert overview['positions'][0]['current_accumulated_profitability'] is None
+        history = c.get(base + '/performance', params={'asset_id': aid}).json()
+        affected = history[1:] if known_actions else history
+        assert all(row['status'] != 'complete' for row in affected)
+        assert all(row['cumulative_return_pct'] is None for row in affected)
+    # Recovery with no events must still invalidate the formerly unknown series.
+    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *_, **kwargs: [])
+    recovered = c.post(base + '/consolidate').json()
+    assert recovered['complete']
+    assert recovered['recalculated_from'] == first.isoformat()
+    overview = c.get(base + '/overview').json()
+    assert overview['summary']['history_status'] == 'complete'
+    assert overview['positions'][0]['current_accumulated_profitability'] == 0
+
+
+def test_expired_current_actions_do_not_certify_a_refreshed_quote(client, monkeypatch):
+    from src.models import CorporateActionCoverage
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Current coverage failure'}).json()['id']
+    iid = register_instrument(c, 'CURRENTGAP12', 'BRL')
+    base = f'/api/portfolios/{pid}'
+    yesterday = date.today() - timedelta(days=1)
+    assert c.post(base + '/transactions', json={
+        'trade_date': yesterday.isoformat(), 'settlement_date': yesterday.isoformat(),
+        'type': 'Buy', 'asset': 'CURRENTGAP12', 'instrument_id': iid, 'broker': 'A',
+        'quantity': 10, 'price': 100, 'transaction_currency': 'BRL',
+    }).status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    for day in (yesterday, date.today()):
+        assert c.put(base + f'/assets/{aid}/quote', json={'date': day.isoformat(), 'close': 100}).status_code == 200
+    assert c.post(base + '/consolidate').json()['complete']
+    previous = c.get(base + '/history').json()
+    with Session(connection, join_transaction_mode='create_savepoint') as session:
+        coverage = session.scalar(select(CorporateActionCoverage).where(
+            CorporateActionCoverage.instrument_id == iid, CorporateActionCoverage.is_final.is_(False)))
+        coverage.retrieved_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        session.commit()
+    def unavailable(*args, **kwargs):
+        raise OSError('current actions unavailable')
+    monkeypatch.setattr('src.api.market_data.fetch_history', unavailable)
+    assert c.get(base + f'/assets/{aid}/quote').status_code == 200
+    result = c.post(base + '/consolidate').json()
+    assert not result['complete']
+    assert result['history_status'] == 'complete'
+    assert result['snapshot_days'] == 0
+    assert c.get(base + '/history').json() == previous
+    position = c.get(base + '/overview').json()['positions'][0]
+    assert position['status'] == 'missing_actions'
+    assert position['display_value'] is None
+    assert position['current_accumulated_profitability'] is None
+    assert position['action_coverage_through'] == yesterday.isoformat()
+    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *args, **kwargs: [])
+    assert c.get(base + f'/assets/{aid}/quote').status_code == 200
+    restored = c.get(base + '/overview').json()
+    assert restored['summary']['dirty_from'] is None
+    assert restored['positions'][0]['status'] == 'complete'
+    assert restored['positions'][0]['current_accumulated_profitability'] == 0
+    assert c.get(base + '/history').json() == previous
 
 
 def test_public_api_cannot_write_provider_catalog(client):
@@ -111,6 +364,7 @@ def test_portfolio_display_currency_changes_without_editing_transactions(client)
     assert c.put(base + f'/assets/{aid}/quote', json={'date': '2024-01-04', 'close': 12}).status_code == 200
     assert c.put(base, json={'name': 'Currencies', 'display_currency': 'USD'}).status_code == 200
     assert c.put(base, json={'name': 'Renamed'}).json()['display_currency'] == 'USD'
+    certify_no_additional_actions(c, pid, aid, date(2024, 1, 2))
     overview = c.get(base + '/overview').json()
     assert overview['summary']['total_value'] == 24
     assert overview['positions'][0]['acquisition_cost'] == 20
@@ -194,7 +448,7 @@ def test_consolidation_continues_after_missing_quote(client, monkeypatch):
         }).status_code == 200
     monkeypatch.setattr('src.market_prices.market_data.fetch_latest',
                         lambda symbol, *_: (_ for _ in ()).throw(OSError(symbol)))
-    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *_: [])
+    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *_, **kwargs: [])
     result = c.post(base + '/consolidate').json()
     assert result['complete'] is False
     assert 'BAD12' in result['incomplete_assets']
@@ -228,6 +482,8 @@ def test_mixed_currency_btc_sale_is_one_lifetime_position(client):
         'trade_date': second, 'settlement_date': second, 'type': 'Sell',
         'quantity': 1, 'price': 30, 'transaction_currency': 'USD', 'fx_rate': 5,
     }).status_code == 201
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    certify_no_additional_actions(c, pid, aid, date.fromisoformat(first))
     overview = c.get(base + '/overview').json()
     assert len(overview['positions']) == 1
     position = overview['positions'][0]
@@ -272,6 +528,7 @@ def test_reporting_fx_and_dividend_change_history_without_source_mutation(client
                                     'amount_per_unit': 1, 'currency': 'USD'}).status_code == 201
     original = c.get(base + '/transactions').json()
     original_events = c.get(event_path).json()
+    certify_no_additional_actions(c, pid, asset_id, first)
     brl_overview = c.get(base + '/overview').json()
     brl_current = brl_overview['positions'][0]
     assert Decimal(str(brl_current['display_price'])) == 60
@@ -330,6 +587,8 @@ def test_native_valuation_uses_native_currency_when_quote_differs(client):
                                  reference_date=day, rate=5, source='test',
                                  retrieved_at=datetime.now(timezone.utc)))
         session.commit()
+    aid = c.get(base + '/overview').json()['assets'][0]['id']
+    certify_no_additional_actions(c, pid, aid, day)
     position = c.get(base + '/overview').json()['positions'][0]
     assert position['quote_currency'] == 'BRL'
     assert position['native_currency'] == 'USD'
@@ -450,7 +709,7 @@ def test_consolidation_reuses_fresh_shared_quote_without_provider_call(client, m
     def fresh_quote(*args):
         calls.append(args)
         return {'price': Decimal('14'), 'currency': 'BRL',
-                'market_at': datetime.now(timezone.utc),
+                'market_at': datetime.now().astimezone(),
                 'retrieved_at': datetime.now(timezone.utc)}
     monkeypatch.setattr('src.market_prices.market_data.fetch_latest', fresh_quote)
     refreshed = c.post(base + '/consolidate').json()
@@ -472,7 +731,7 @@ def test_consolidation_fetches_daily_history_and_exposes_yesterday_value(client,
         'broker': 'A', 'quantity': 1, 'price': 10, 'transaction_currency': 'BRL',
     }).status_code == 201
     calls = []
-    def fetch_history(symbol, currency, start, end):
+    def fetch_history(symbol, currency, start, end, **kwargs):
         calls.append((start, end))
         return [dict(date=start + timedelta(days=offset), price=Decimal('12'),
                      currency='BRL', source='yfinance')
@@ -482,7 +741,7 @@ def test_consolidation_fetches_daily_history_and_exposes_yesterday_value(client,
     monkeypatch.setattr('src.api.market_data.fetch_history', fetch_history)
     monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *_: {
         'price': Decimal('13'), 'currency': 'BRL',
-        'market_at': datetime.now(timezone.utc), 'retrieved_at': datetime.now(timezone.utc),
+        'market_at': datetime.now().astimezone(), 'retrieved_at': datetime.now(timezone.utc),
     })
     result = c.post(base + '/consolidate')
     assert result.status_code == 200, result.text
@@ -504,6 +763,7 @@ def test_split_dividend_and_illiquidity_flow_from_yahoo_to_reporting(client, mon
     import yfinance as yf
     from types import SimpleNamespace
     from src.models import UserDefinedPrice
+    monkeypatch.setattr('src.api.market_data.fetch_history', fetch_provider_history)
 
     c, connection = client
     pid = c.post('/api/portfolios', json={'name': 'Share units', 'display_currency': 'USD'}).json()['id']
@@ -519,7 +779,7 @@ def test_split_dividend_and_illiquidity_flow_from_yahoo_to_reporting(client, mon
         get_history_metadata=lambda: {'currency': 'USD', 'exchangeTimezoneName': 'America/New_York'}))
     monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *_: {
         'price': Decimal('55'), 'currency': 'USD',
-        'market_at': datetime.now(timezone.utc), 'retrieved_at': datetime.now(timezone.utc)})
+        'market_at': datetime.now().astimezone(), 'retrieved_at': datetime.now(timezone.utc)})
     assert c.post(base + '/transactions', json={
         'asset': 'UNITS12', 'instrument_id': iid, 'broker': 'A', 'type': 'Buy',
         'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
@@ -564,6 +824,7 @@ def test_crud_prices_isolation_and_rollback(client, monkeypatch):
     result = c.get(base + '/overview').json()
     assert result['positions'][0]['average_cost'] == 20.3
     aid = result['assets'][0]['id']
+    certify_no_additional_actions(c, pid, aid, date(2024, 1, 2))
     assert c.put(base + f'/assets/{aid}/quote', json={'date': '2024-01-03', 'close': 30}).status_code == 200
     result = c.get(base + '/overview').json()
     assert result['summary']['total_value'] == 300
@@ -935,7 +1196,9 @@ def test_crypto_accounting_currency_is_separate_from_provider_quotes(client, mon
         session.commit()
     history_calls = []
     monkeypatch.setattr('src.api.market_data.fetch_latest', lambda *a: pytest.fail('Fresh USD quote fetched again'))
-    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *a: history_calls.append(a) or [])
+    monkeypatch.setattr('src.api.market_data.fetch_history', lambda *a, **kwargs: history_calls.append(a) or [])
+    aid = c.get(f'/api/portfolios/{pid}/overview').json()['assets'][0]['id']
+    certify_no_additional_actions(c, pid, aid, date(2024, 1, 2))
     overview = c.get(f'/api/portfolios/{pid}/overview').json()
     assert len(overview['positions']) == 1
     position = overview['positions'][0]

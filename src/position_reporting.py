@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
-from src.corporate_actions import get_stored_actions
+from src.corporate_actions import get_stored_actions, missing_action_ranges
 from src.domain import ZERO, decimal, position_history, position_now, summary_totals, transaction_date
 from src.market_prices import history_for_reporting, quote_refresh_required
 from src.models import Asset, Portfolio, PortfolioSnapshot, PositionSnapshot, Transaction
@@ -22,7 +22,8 @@ def sources(session, portfolio_id):
     return portfolio, transactions, assets
 
 
-def reporting_factors(session, display_currency, transactions, events, prices, *, read_only=True):
+def reporting_factors(session, display_currency, transactions, events, prices, *, read_only=True,
+                      valuation_date=None):
     """Return dated conversion factors, leaving unavailable rates absent."""
     factors = {}
     fetcher = (lambda *_: []) if read_only else None
@@ -52,11 +53,12 @@ def reporting_factors(session, display_currency, transactions, events, prices, *
     for quote in prices:
         if quote is None:
             continue
-        key = (quote.currency, quote.date)
-        if key not in factors and quote.date <= date.today():
+        fx_date = valuation_date if valuation_date is not None else quote.date
+        key = (quote.currency, fx_date)
+        if key not in factors and fx_date <= date.today():
             try:
                 factors[key] = convert_amount(session, Decimal('1'), quote.currency,
-                                              display_currency, quote.date, fetcher=fetcher)
+                                              display_currency, fx_date, fetcher=fetcher)
             except RateUnavailable:
                 pass
     return factors
@@ -64,22 +66,28 @@ def reporting_factors(session, display_currency, transactions, events, prices, *
 
 def get_overview(session, portfolio_id):
     portfolio, transactions, assets = sources(session, portfolio_id)
+    valuation_date = date.today()
     positions = []
     asset_rows = []
     missing_prices = []
     missing_fx = []
     missing_cost_fx = []
+    missing_actions = []
     for asset in assets:
         rows = [row for row in transactions if row.instrument_id == asset.instrument_id]
         if not rows:
             continue
-        events = get_stored_actions(session, asset)
-        prices = history_for_reporting(session, asset)
+        events = get_stored_actions(session, asset, end=valuation_date)
+        action_gaps = missing_action_ranges(session, asset, min(row.trade_date for row in rows), valuation_date)
+        if action_gaps:
+            missing_actions.append(asset.instrument.symbol)
+        prices = [price for price in history_for_reporting(session, asset) if price.date <= valuation_date]
         latest = prices[-1] if prices else None
         rates = reporting_factors(session, portfolio.display_currency, rows, events,
-                                  [latest] if latest else [])
-        current = position_now(rows, events, latest, portfolio.display_currency, rates)
-        quote_valid = latest is not None and current['date'] is not None
+                                  [latest] if latest else [], valuation_date=valuation_date)
+        current = position_now(rows, events, latest, portfolio.display_currency, rates,
+                               valuation_date=valuation_date, actions_complete=not action_gaps)
+        quote_valid = latest is not None and current['quote_date'] is not None and not action_gaps
         native_currency = asset.instrument.currency
         native_state = None
         if native_currency:
@@ -87,8 +95,9 @@ def get_overview(session, portfolio_id):
                 native_state = current
             else:
                 native_rates = reporting_factors(session, native_currency, rows, events,
-                                                 [latest] if latest else [])
-                native_state = position_now(rows, events, latest, native_currency, native_rates)
+                                                 [latest] if latest else [], valuation_date=valuation_date)
+                native_state = position_now(rows, events, latest, native_currency, native_rates,
+                                            valuation_date=valuation_date, actions_complete=not action_gaps)
         native_cost = native_state['remaining_acquisition_cost'] if native_state else None
         native_average = native_state['average_cost'] if native_state else None
         native_income = native_state['gross_income'] if native_state else None
@@ -131,7 +140,8 @@ def get_overview(session, portfolio_id):
             'return_date': None,
             'income_by_currency': current['income_by_currency'],
             'corporate_action_count': len(events), 'price_date': latest.date if latest else None,
-            'gain_date': latest.date if latest else None,
+            'gain_date': valuation_date, 'valuation_date': valuation_date,
+            'action_coverage_through': action_gaps[0][0] - timedelta(days=1) if action_gaps else valuation_date,
             'quote_refresh_required': quote_refresh_required(latest) if current['quantity'] else False,
             'history_behind_transactions': bool(latest and latest.date < max(
                 [transaction_date(row) for row in rows] + [event.effective_date for event in events]
@@ -147,16 +157,19 @@ def get_overview(session, portfolio_id):
             if snapshot is not None:
                 state['current_accumulated_profitability'] = snapshot.cumulative_return_pct
                 state['return_date'] = snapshot.date
-                if latest is not None and latest.date == date.today() and snapshot.date == date.today() - timedelta(days=1):
+                if snapshot.date == valuation_date - timedelta(days=1):
                     today_rows = [row for row in rows if row.trade_date == date.today()]
                     today_events = [event for event in events if event.effective_date == date.today()]
                     current_day = position_history(
-                        today_rows, today_events, [latest], portfolio.display_currency,
+                        today_rows, today_events, [latest] if latest else [], portfolio.display_currency,
                         rates, start=date.today(), end=date.today(),
                         initial_state=snapshot.ledger_state,
+                        missing_action_ranges=action_gaps,
                     )[0]
                     state['current_accumulated_profitability'] = current_day['cumulative_return_pct']
                     state['return_date'] = date.today()
+                if action_gaps:
+                    state['current_accumulated_profitability'] = None
         positions.append(state)
         asset_rows.append({
             'id': asset.id, 'ticker': asset.instrument.symbol,
@@ -189,6 +202,7 @@ def get_overview(session, portfolio_id):
             'total_gain': totals['total_gain'],
             'missing_prices': missing_prices, 'missing_fx': missing_fx,
             'missing_cost_fx': missing_cost_fx,
+            'missing_actions': missing_actions,
             'display_currency': portfolio.display_currency,
             'currencies': sorted({row.transaction_currency for row in transactions}),
             'totals_by_currency': {},

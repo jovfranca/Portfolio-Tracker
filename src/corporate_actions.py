@@ -6,9 +6,10 @@ import hashlib
 from types import SimpleNamespace
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.api import market_data
-from src.config import market_data_provider
+from src.config import market_data_provider, quote_ttl
 from src.instruments import provider_mapping
 from src.models import (
     CorporateAction, CorporateActionCoverage, MarketPrice, MarketPriceCoverage,
@@ -149,19 +150,47 @@ def store_provider_actions(session, instrument_id, values):
     return inserted
 
 
-def record_coverage(session, instrument_id, source, start, end, retrieved_at=None):
-    exists = session.scalar(select(CorporateActionCoverage.id).where(
+def record_coverage(session, instrument_id, source, start, end, retrieved_at=None, *, is_final=True):
+    existing = session.scalar(select(CorporateActionCoverage).where(
         CorporateActionCoverage.instrument_id == instrument_id,
         CorporateActionCoverage.source == source,
         CorporateActionCoverage.start_date == start,
         CorporateActionCoverage.end_date == end,
     ))
-    if exists is None:
+    if existing is None:
         session.add(CorporateActionCoverage(
             instrument_id=instrument_id, source=source, start_date=start, end_date=end,
             retrieved_at=retrieved_at or datetime.now(timezone.utc),
+            is_final=is_final,
         ))
         session.flush()
+    elif not existing.is_final:
+        existing.is_final = is_final
+        existing.retrieved_at = retrieved_at or datetime.now(timezone.utc)
+        session.flush()
+
+
+def _stored_coverage(session, instrument_id, *, include_current=False):
+    now = datetime.now(timezone.utc)
+    rows = session.scalars(select(CorporateActionCoverage).where(
+        CorporateActionCoverage.instrument_id == instrument_id,
+        CorporateActionCoverage.source == market_data_provider(),
+    ))
+    result = []
+    for row in rows:
+        retrieved = row.retrieved_at
+        if retrieved.tzinfo is None:
+            retrieved = retrieved.replace(tzinfo=timezone.utc)
+        if row.is_final or (include_current and row.start_date == row.end_date == date.today()
+                            and now - retrieved <= quote_ttl()):
+            result.append(row)
+    return result
+
+
+def missing_action_ranges(session, asset, start, end):
+    """Read coverage without fetching; manual prices/events cannot certify absence."""
+    return _missing_ranges(start, end, _stored_coverage(
+        session, asset.instrument_id, include_current=True))
 
 
 def store_actions_from_history(session, instrument_id, rows, start, end, source=None):
@@ -227,17 +256,43 @@ def get_actions(session, asset, start, end, fetcher=None):
     """Return local actions and query only provider ranges not checked before."""
     if end < start:
         raise ValueError('A data final deve ser igual ou posterior à data inicial.')
-    if end >= date.today():
-        raise ValueError('O histórico de eventos deve terminar antes da data atual.')
+    today = date.today()
+    if end > today:
+        raise ValueError('A data final dos eventos não pode ser futura.')
+    if end == today:
+        # A current action observation is useful immediately, but must be checked
+        # again after its TTL and finalized after the day ends. Never cache its
+        # accompanying intraday price as a historical close.
+        missing = (get_actions(session, asset, start, today - timedelta(days=1), fetcher).missing_ranges
+                   if start < today else [])
+        if missing_action_ranges(session, asset, today, today):
+            try:
+                mapping = provider_mapping(session, asset.instrument, provider=market_data_provider())
+                rows = list(fetcher(mapping.provider_symbol, mapping.quote_currency, today, today)
+                            if fetcher is not None else market_data.fetch_history(
+                                mapping.provider_symbol, mapping.quote_currency, today, today,
+                                actions_only=True))
+                for row in rows:
+                    if row.get('currency') != mapping.quote_currency:
+                        raise ValueError('Invalid provider currency.')
+                    if (row.get('date') or row['reference_at'].date()) != today:
+                        raise ValueError('Provider date outside requested range.')
+                values = actions_from_history_rows(rows)
+            except SQLAlchemyError:
+                raise
+            except Exception:
+                missing.append((today, today))
+            else:
+                store_provider_actions(session, asset.instrument_id, values)
+                record_coverage(session, asset.instrument_id, market_data_provider(),
+                                today, today, is_final=False)
+        return CorporateActionResult(get_stored_actions(session, asset, start, end), missing)
     source = market_data_provider()
     try:
         mapping = provider_mapping(session, asset.instrument, provider=source)
     except ValueError:
         return CorporateActionResult(get_stored_actions(session, asset, start, end), [(start, end)])
-    coverage = list(session.scalars(select(CorporateActionCoverage).where(
-        CorporateActionCoverage.instrument_id == asset.instrument_id,
-        CorporateActionCoverage.source == source,
-    )))
+    coverage = _stored_coverage(session, asset.instrument_id)
     price_coverage = session.scalars(select(MarketPriceCoverage).where(
         MarketPriceCoverage.provider_instrument_id == mapping.id,
         MarketPriceCoverage.interval == '1d',
@@ -297,6 +352,8 @@ def get_actions(session, asset, start, end, fetcher=None):
             store_actions_from_history(
                 session, asset.instrument_id, rows, gap_start, gap_end, source,
             )
+        except SQLAlchemyError:
+            raise
         except Exception:
             missing.append((gap_start, gap_end))
     return CorporateActionResult(get_stored_actions(session, asset, start, end), missing)

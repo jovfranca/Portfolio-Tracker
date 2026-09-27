@@ -448,6 +448,7 @@ class PositionLedger:
         self.last_value = ZERO
         self.last_status = 'complete'
         self.last_split_date = None
+        self.actions_complete = True
         if state:
             self.brokers = {
                 broker: {'quantity': decimal(row['quantity']),
@@ -463,6 +464,7 @@ class PositionLedger:
             self.last_value = decimal(state['last_value']) if state['last_value'] is not None else None
             self.last_status = state['last_status']
             self.last_split_date = state.get('last_split_date')
+            self.actions_complete = state.get('actions_complete', True)
 
     @property
     def quantity(self):
@@ -530,7 +532,8 @@ class PositionLedger:
                            row['cost'] - attributed if attributed is not None else None)
         return cash, ZERO
 
-    def snapshot(self, day, quote, flow=ZERO, daily_income=ZERO, *, purchases=ZERO, previous_value=None):
+    def snapshot(self, day, quote, flow=ZERO, daily_income=ZERO, *, purchases=ZERO, previous_value=None,
+                 actions_complete=True, prices_complete=True):
         if quote is not None and self.last_split_date and quote.date.isoformat() < self.last_split_date:
             quote = None
         quantity = self.quantity
@@ -551,6 +554,16 @@ class PositionLedger:
         unrealized = market_value - cost if market_value is not None and cost is not None else None
         total = (self.realized + unrealized + self.income
                  if self.realized is not None and unrealized is not None and self.income is not None else None)
+        self.actions_complete = self.actions_complete and actions_complete
+        if not prices_complete:
+            market_value = price = unrealized = total = None
+            status = 'missing_price_history'
+        if not self.actions_complete:
+            # An unseen split can change units and an unseen distribution can
+            # change lifetime income. Known ledger activity is retained for
+            # replay, but must not be published as a complete financial result.
+            market_value = price = unrealized = total = None
+            status = 'missing_actions'
         start_value = self.last_value if previous_value is None else previous_value
         denominator = (start_value + purchases
                        if start_value is not None and purchases is not None else None)
@@ -575,8 +588,9 @@ class PositionLedger:
             'remaining_acquisition_cost': cost,
             'average_cost': cost / quantity if cost is not None and quantity else ZERO if quantity == 0 else None,
             'market_value': market_value, 'current_price': price,
-            'realized_gain': self.realized, 'unrealized_gain': unrealized,
-            'gross_income': self.income, 'income_by_currency': dict(self.income_by_currency),
+            'realized_gain': self.realized if self.actions_complete else None, 'unrealized_gain': unrealized,
+            'gross_income': self.income if self.actions_complete else None,
+            'income_by_currency': dict(self.income_by_currency),
             'total_gain': total,
             'daily_return_pct': daily_return * 100 if daily_return is not None else None,
             'cumulative_return_pct': (self.return_factor - 1) * 100
@@ -604,11 +618,13 @@ class PositionLedger:
             'last_value': str(self.last_value) if self.last_value is not None else None,
             'last_status': self.last_status,
             'last_split_date': self.last_split_date,
+            'actions_complete': self.actions_complete,
         }
 
 
 def position_history(transactions, corporate_events, prices, reporting_currency, rates,
-                     *, start=None, end=None, initial_state=None):
+                     *, start=None, end=None, initial_state=None,
+                     missing_action_ranges=(), missing_price_ranges=()):
     """Daily last-observation valuation, with dated FX and quote provenance.
 
     Carry covers holidays and illiquidity without inventing an observed close.
@@ -647,7 +663,11 @@ def position_history(transactions, corporate_events, prices, reporting_currency,
             last_quote = quote
         else:
             quote = last_quote
-        result.append(ledger.snapshot(day, quote, flow, daily_income, purchases=purchases))
+        result.append(ledger.snapshot(
+            day, quote, flow, daily_income, purchases=purchases,
+            actions_complete=not any(gap_start <= day for gap_start, _ in missing_action_ranges),
+            prices_complete=not any(gap_start <= day <= gap_end for gap_start, gap_end in missing_price_ranges),
+        ))
         if (result[-1]['status'] == 'complete'
                 and result[-1]['cumulative_return_pct'] is None):
             result[-1]['status'] = ledger.last_status = 'incomplete_history'
@@ -656,15 +676,17 @@ def position_history(transactions, corporate_events, prices, reporting_currency,
     return result
 
 
-def position_now(transactions, corporate_events, quote, reporting_currency, rates):
+def position_now(transactions, corporate_events, quote, reporting_currency, rates, *,
+                 valuation_date, actions_complete=True):
     """Use the same ledger rules for the current position without daily replay."""
     ledger = PositionLedger(reporting_currency, rates)
-    for _, _, _, _, kind, item in ordered_activity(transactions, corporate_events):
+    for day, _, _, _, kind, item in ordered_activity(transactions, corporate_events):
+        if day > valuation_date:
+            break
         ledger.apply(kind, item)
-    if quote is not None and any(event.event_type in SPLIT_TYPES and
-                                 event.effective_date > quote.date for event in corporate_events):
+    if quote is not None and quote.date > valuation_date:
         quote = None
-    return ledger.snapshot(quote.date if quote else None, quote)
+    return ledger.snapshot(valuation_date, quote, actions_complete=actions_complete)
 
 
 def sum_known(rows, field):

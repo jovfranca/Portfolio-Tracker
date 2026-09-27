@@ -2,7 +2,7 @@
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database import Base
@@ -68,6 +68,7 @@ class CorporateActionCoverage(Base):
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_final: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
 
 
 class UserCorporateEvent(Base):

@@ -33,14 +33,14 @@ def rates(*pairs):
 def test_canonical_position_cross_currency_sale_and_missing_fx():
     rows = [tx(1, 'Buy', 1, 10, 10), tx(2, 'Sell', 3, 4, 30, 'USD')]
     fx = rates(('USD', 3, 5))
-    result = position_now(rows, [], quote(3, 25), 'BRL', fx)
+    result = position_now(rows, [], quote(3, 25), 'BRL', fx, valuation_date=date(2024, 1, 3))
     assert result['quantity'] == 6
     assert result['remaining_acquisition_cost'] == 60
     assert result['realized_gain'] == 560
     assert result['unrealized_gain'] == 90
     assert result['total_gain'] == 650
     assert result['status'] == 'complete'
-    incomplete = position_now(rows, [], quote(3, 25), 'BRL', {})
+    incomplete = position_now(rows, [], quote(3, 25), 'BRL', {}, valuation_date=date(2024, 1, 3))
     assert incomplete['quantity'] == 6
     assert incomplete['realized_gain'] is None
     assert incomplete['status'] == 'missing_fx'
@@ -98,7 +98,7 @@ def test_splits_do_not_create_return_and_oversell_is_rejected():
     with pytest.raises(ValueError, match='excede'):
         position_history(bad, [], [quote(1, 10), quote(3, 10)], 'BRL', {})
     with pytest.raises(ValueError, match='excede'):
-        position_now(bad, [], quote(3, 10), 'BRL', {})
+        position_now(bad, [], quote(3, 10), 'BRL', {}, valuation_date=date(2024, 1, 3))
 
 
 def test_reporting_currency_fx_changes_return_and_income():
@@ -111,6 +111,21 @@ def test_reporting_currency_fx_changes_return_and_income():
     assert brl[-1]['cumulative_return_pct'] == 20
     assert brl[-1]['market_value'] == 60
     assert brl[-1]['unrealized_gain'] == 10
+
+
+def test_current_valuation_date_is_independent_of_carried_quote_date():
+    rows = [tx(1, 'Buy', 1, 1, 10, 'USD')]
+    price = quote(1, 10, 'USD')
+    fx = rates(('USD', 1, 5), ('USD', 2, 6))
+    current = position_now(rows, [], price, 'BRL', fx, valuation_date=date(2024, 1, 2))
+    history = position_history(rows, [], [price], 'BRL', fx, end=date(2024, 1, 2))
+    assert current['market_value'] == history[-1]['market_value'] == 60
+    assert current['date'] == date(2024, 1, 2)
+    assert current['quote_date'] == date(2024, 1, 1)
+    missing = position_now(rows, [], price, 'BRL', rates(('USD', 1, 5)),
+                           valuation_date=date(2024, 1, 2))
+    assert missing['market_value'] is None
+    assert missing['status'] == 'missing_fx'
 
 
 def test_missing_quote_and_fx_expose_explicit_incomplete_status():

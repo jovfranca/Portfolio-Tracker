@@ -1,5 +1,28 @@
 # Issue #12 escalation review
 
+## Branch review — September 26, 2026
+
+Compared the working branch, including its pre-existing uncommitted corrections, against local `develop` (`b39d81d`) and the current acceptance criteria in [issue #12](https://github.com/jovfranca/Portfolio-Tracker/issues/12). Reviewed the ledger, input resolution, incremental invalidation/replay, migrations, API, reporting UI and regression coverage. This pass found and fixed two additional meaningful defects; both were reproduced by failing PostgreSQL API tests before implementation changes.
+
+- **P2 — Closed positions omitted today's return when no quote existed.** Two completed same-day buy/sell pairs, returning 20% yesterday and 10% today, showed the correct lifetime realized gain but only 20% cumulative return. The overview unnecessarily required a quote to extend yesterday's snapshot through today. It now runs the existing daily ledger even without a quote, so fully liquidated positions report the correct 32% chain-linked return and today's return date. Open positions still require valuation inputs.
+- **P2 — Consolidation could report success despite missing current cost FX.** A USD purchase entered today with future settlement and frozen USD/BRL FX could be valued today in EUR, while its EUR acquisition cost remained unknown. Since finalized snapshots stop yesterday, consolidation checked neither that cost nor its missing settlement-date conversion and returned `complete: true`. It now validates the current position through the same ledger and reports the affected instrument and reason as incomplete. No future FX is invented, and finalized-history status remains separate from current completeness.
+
+Validation after these fixes: standard pytest **195 passed, 51 skipped**; full PostgreSQL suite **246 passed**; frontend build passed; `alembic check` reported no new upgrade operations; `git diff --check` passed. The full suite required normal filesystem access because Windows sandbox permissions blocked pytest temporary directories, including a fresh workspace-local directory. Database tests used the already-migrated `portfolio_tracker_e2e_dev` database and rolled back synthetic records. No personal database or source financial records were changed. Browser acceptance and live provider calls were not rerun in this pass; earlier browser evidence below is historical.
+
+## Independent PR-blocker corrections
+
+The three subsequent independent-review reproductions were confirmed by failing API regressions before changing implementation. They shared an incomplete valuation-input contract: a quote was treated as sufficient evidence for valuation, while its observation date implicitly selected current FX and missing corporate-action coverage did not affect calculation status.
+
+- **Split effective today:** consolidation and quote refresh now check actions through the valuation date. The Yahoo adapter supports an actions-only request that never returns an intraday daily close. Today’s action coverage is provisional, uses the quote TTL, and must be checked again for finalized history after the date changes. The exact 10-shares-at-100 / 2:1-split / quote-50 reproduction now returns 20 shares, value 1,000 and zero gain/return, while yesterday retains 10 shares and value 1,000. Repeating consolidation neither duplicates the split nor rebuilds yesterday.
+- **Carried quote and FX:** `position_now` requires an explicit valuation date. Current conversions resolve FX for that date, preserve the original quote date, and extend the daily return through today even with a carried quote. The USD 10 / FX 5-to-6 reproduction now gives BRL 60 in both current and historical valuation. Missing valuation-day conversion remains incomplete.
+- **Coverage failures:** missing action coverage and failed historical-price queries now reach the ledger, snapshots and consolidation status. Missing actions suppress unverified monetary results and returns; a price-history gap breaks the historical return chain. Manual prices do not certify event coverage. The outage reproduction remains incomplete across repeated consolidation and overview requests. Successful coverage retrieval invalidates the affected history even when no new events or prices are returned. Refreshing only provisional current coverage does not invalidate finalized history.
+
+Apply migration **0017**, then consolidate. It adds explicit coverage finality and marks derived histories for replay; it preserves source financial records. Only the isolated `portfolio_tracker_e2e_dev` database was migrated during this correction. Non-blocking broker-display and setup-documentation follow-ups were left untouched.
+
+Validation: eight focused regression cases passed; standard pytest **195 passed, 49 skipped**; full PostgreSQL suite **244 passed**; frontend build passed; `alembic check` reported no new upgrade operations. Browser acceptance was not rerun for this correction. Earlier acceptance evidence below describes the preceding implementation.
+
+## Earlier escalation assessment
+
 Reviewed the current branch against `develop`, including the pre-existing uncommitted changes, [issue #12](https://github.com/jovfranca/Portfolio-Tracker/issues/12), the domain, market/FX/action services, persistence, API, React screens and tests. This review supersedes the earlier acceptance report.
 
 ## Critical assessment

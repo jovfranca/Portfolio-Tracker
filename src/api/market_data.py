@@ -51,12 +51,13 @@ def search_instruments(query):
     return results
 
 
-def fetch_history(ticker, currency, start, end):
+def fetch_history(ticker, currency, start, end, *, actions_only=False):
     """Return closes and distributions in the share units of their event date.
 
     Yahoo Close (even auto_adjust=False) and dividends are split-adjusted.
     Query through today so splits after the requested interval can be undone.
     The ledger, not the provider's adjusted series, applies corporate actions.
+    An actions-only request may include today, but never returns a daily price.
     """
     import yfinance as yf
     instrument = yf.Ticker(ticker)
@@ -80,7 +81,7 @@ def fetch_history(ticker, currency, start, end):
         trading_date = _trading_date(timestamp, exchange_timezone)
         if not start <= trading_date <= end:
             continue
-        if trading_date >= retrieved_at.astimezone(exchange_timezone).date():
+        if not actions_only and trading_date >= retrieved_at.astimezone(exchange_timezone).date():
             raise ValueError('O fechamento diário ainda não é final no fuso do mercado.')
         try:
             close = float(row['Close'])
@@ -88,7 +89,7 @@ def fetch_history(ticker, currency, start, end):
             close = math.nan
         # Yahoo sometimes returns actions and valid neighbouring closes with a
         # NaN close for one day. Leave that date retryable without losing them.
-        price = Decimal(str(close)) if math.isfinite(close) and close > 0 else None
+        price = Decimal(str(close)) if not actions_only and math.isfinite(close) and close > 0 else None
         share_factor = Decimal('1')
         for split_day, factor in future_splits:
             if split_day > trading_date:
