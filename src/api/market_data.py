@@ -97,8 +97,12 @@ def fetch_history(ticker, currency, start, end, *, actions_only=False):
     """
     import yfinance as yf
     instrument = yf.Ticker(ticker)
+    # A range containing only a market closure makes Yahoo raise "no prices"
+    # with raise_errors=True. Include a prior candle, then return only the
+    # requested dates. Keep real provider failures visible to the caller.
     frame = instrument.history(
-        start=start.isoformat(), end=(max(end, date.today()) + timedelta(days=1)).isoformat(),
+        start=(start - timedelta(days=30)).isoformat(),
+        end=(max(end, date.today()) + timedelta(days=1)).isoformat(),
         interval='1d', auto_adjust=False, timeout=15, raise_errors=True,
     )
     metadata = instrument.get_history_metadata()
