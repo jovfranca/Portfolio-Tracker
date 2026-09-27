@@ -1,15 +1,10 @@
-from datetime import datetime, time
+from datetime import date, datetime, time
 from decimal import Decimal
-from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
-from src.models import Portfolio, Asset, Instrument, Transaction
-from src.domain import overview
-from src.corporate_actions import get_stored_actions
+from src.models import Portfolio, Asset, Instrument
 from src.instruments import resolve_instrument
-from src.market_prices import history_for_domain
 from src.rates import get_rates
 
 
@@ -88,23 +83,5 @@ def transaction_values(session, payload, transaction_currency=None):
 
 
 def get_overview(session, portfolio_id):
-    get_portfolio(session, portfolio_id)
-    transactions = list(session.scalars(select(Transaction).where(Transaction.portfolio_id == portfolio_id)
-                                       .order_by(Transaction.trade_date, Transaction.id)))
-    assets = list(session.scalars(select(Asset).where(Asset.portfolio_id == portfolio_id)
-                                 .options(joinedload(Asset.instrument))))
-    calculation_assets = [
-        SimpleNamespace(
-            id=asset.id, instrument_id=asset.instrument_id,
-            ticker=asset.instrument.symbol, transaction_currency=currency,
-            history=history_for_domain(session, asset, currency=currency),
-            corporate_events=get_stored_actions(session, asset),
-        )
-        for asset in assets
-        for currency in sorted({
-            transaction.transaction_currency
-            for transaction in transactions
-            if transaction.instrument_id == asset.instrument_id
-        })
-    ]
-    return overview(transactions, calculation_assets)
+    from src.position_reporting import get_overview as reporting_overview
+    return reporting_overview(session, portfolio_id)

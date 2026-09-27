@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace as Obj
 
@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.api import routes
-from src.corporate_actions import get_actions, get_stored_actions, store_provider_actions
+from src.corporate_actions import get_actions, get_stored_actions, missing_action_ranges, store_provider_actions
 from src.database import Base
 from src.domain import cost_and_quantity, corporate_event_effects, historical_profitability, overview
 from src.models import (
@@ -78,6 +78,38 @@ def test_provider_actions_are_shared_and_empty_coverage_is_cached(action_session
     get_actions(action_session, first, date(2024, 1, 10), date(2024, 1, 10), empty)
     get_actions(action_session, second, date(2024, 1, 10), date(2024, 1, 10), empty)
     assert len(empty_calls) == 1
+
+
+def test_current_action_coverage_expires_and_must_be_finalized_next_day(action_session, monkeypatch):
+    from src import corporate_actions
+    first, second = list(action_session.scalars(select(Asset).order_by(Asset.id)))
+    today = date.today()
+    calls = []
+    def fetch(*args):
+        calls.append(args)
+        return [_provider_row(today, split='2')]
+    assert get_actions(action_session, first, today, today, fetch).complete
+    assert get_actions(action_session, second, today, today, fetch).complete
+    assert len(calls) == 1
+    coverage = action_session.scalar(select(CorporateActionCoverage))
+    assert coverage.is_final is False
+    coverage.retrieved_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    action_session.flush()
+    assert missing_action_ranges(action_session, first, today, today) == [(today, today)]
+    assert get_actions(action_session, first, today, today, fetch).complete
+    assert len(calls) == 2
+    assert len(get_stored_actions(action_session, first)) == 1
+
+    class Tomorrow(date):
+        @classmethod
+        def today(cls):
+            return today + timedelta(days=1)
+    monkeypatch.setattr(corporate_actions, 'date', Tomorrow)
+    assert missing_action_ranges(action_session, first, today, today) == [(today, today)]
+    assert get_actions(action_session, first, today, today, fetch).complete
+    assert len(calls) == 3
+    assert coverage.is_final is True
+    assert not missing_action_ranges(action_session, first, today, today)
 
 
 def test_manual_event_is_private_and_overrides_equivalent_provider_action(action_session):
@@ -319,7 +351,7 @@ def test_overview_does_not_value_post_split_shares_with_pre_split_price():
         corporate_events=[split],
     )
 
-    result = overview([transaction], [asset])
+    result = overview([transaction], [asset], display_currency='USD')
 
     assert result['positions'][0]['quantity'] == 20
     assert result['positions'][0]['total_value'] is None
@@ -332,7 +364,7 @@ def test_overview_does_not_value_post_split_shares_with_pre_split_price():
     assert result['assets'][0]['current_price'] is None
 
     asset.history.append(Obj(date=date(2024, 1, 3), close=Decimal('10')))
-    current = overview([transaction], [asset])
+    current = overview([transaction], [asset], display_currency='USD')
     assert current['positions'][0]['total_value'] == Decimal('200')
     assert current['summary']['total_value'] == Decimal('200')
 

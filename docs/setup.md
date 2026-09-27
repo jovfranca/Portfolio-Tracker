@@ -78,19 +78,23 @@ Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.
 ## Primeiro teste manual
 
 1. Selecione a carteira migrada ou crie uma carteira separada para testes.
-2. Clique em **Nova transação** e registre uma compra fictícia de 10 unidades a 20.
-3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 na data atual.
+2. Clique em **Nova transação** e registre uma compra fictícia de 10 unidades a 20
+   com data de negociação de ontem.
+3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 para ontem e
+   para a data atual.
 4. Confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
-5. Abra **Desempenho** para ver o ganho legado de 100.
+5. Clique em **Consolidar carteira** e abra **Desempenho** para ver o resultado de
+   100 e o retorno diário ponderado no tempo.
 6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2 e confira
    quantidade 20 e preço médio 10 em **Posições**.
 7. Adicione um dividendo manual e confira seu valor bruto e a linha correspondente
    em **Atividade do ativo**.
-8. Edite a quantidade da transação para 5, confira o recálculo e recarregue a página
-   para confirmar persistência.
+8. Edite a quantidade da transação para 5, confira a posição atual, consolide
+   novamente para atualizar o histórico e recarregue a página para confirmar persistência.
 
-Não use os valores fictícios acima na carteira real. Os resultados não têm conversão
-de moedas. O histórico antigo de cotações termina na data do cache original;
+Não use os valores fictícios acima na carteira real. A conversão de valores atuais
+usa cotações FX datadas; se faltar FX, o total é identificado como incompleto.
+O histórico antigo de cotações termina na data do cache original;
 use atualização Yahoo ou cotações manuais para datas mais recentes.
 
 ## Instalação em outra máquina
@@ -203,7 +207,8 @@ Em texto, use ponto decimal e nenhum símbolo monetário/separador de milhar:
 exibidas com vírgula. Para muitos dígitos, use células de texto para evitar a
 perda de precisão do próprio Excel. O parser também aceita notação científica
 (`1e2`) e sublinhados (`1_000.50`). Todos os decimais aceitam até 10¹⁵, até 28
-dígitos e até 12 casas decimais. Taxas são registradas sem alterar os cálculos atuais.
+dígitos e até 12 casas decimais. Taxas de compra integram o custo de aquisição;
+taxas de venda reduzem o ganho realizado.
 
 Datas em texto como `02/01/2024` são inválidas. O validador também aceita ISO com
 horário à meia-noite e timestamps Unix (segundos ou milissegundos) que representem
@@ -352,19 +357,46 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 
 ## Limites mantidos e ajustes da migração
 
-- Preço médio, ganho realizado e ganho não realizado preservam as fórmulas Buy/Sell,
-  com quantidade e preço médio ajustados por desdobramentos explícitos.
-- Taxas continuam fora dos cálculos; renda corporativa é calculada e apresentada
-  separadamente do ganho de negociação.
-- A variação diária é a variação do ganho; não é TWR ou retorno total com proventos.
+- Uma posição corresponde a um instrumento canônico, mesmo com operações em
+  moedas distintas ou em várias corretoras. Vendas acima da quantidade da corretora
+  são rejeitadas.
+- Taxas de compra integram o custo médio e taxas de venda reduzem o ganho
+  realizado; renda corporativa é apresentada separadamente do ganho de negociação.
+- O retorno diário usa fluxos de compra/venda e renda bruta, com resultados
+  encadeados no tempo. Eventos e negociações são processados antes do fechamento
+  diário. Dias sem observação, inclusive feriados e baixa liquidez, usam a última
+  cotação anterior, com FX da data avaliada. A data dessa cotação aparece no
+  histórico. Sem observação inicial, FX ou cotação compatível após um split,
+  o resultado continua incompleto. A consolidação consulta também os 30 dias
+  anteriores à primeira operação para procurar uma observação inicial.
 - Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
   cotações históricas continuam no formato legado.
 - Cotações ausentes aparecem como ausentes, e não como preço zero.
-- Operações anteriores à primeira cotação são consideradas nessa primeira avaliação;
-  a migração corrige esse desalinhamento de datas sem mudar a fórmula de ganho.
+- O histórico derivado é consolidado sob demanda; alterações de transações,
+  eventos, preços e FX marcam `dirty_from`. A consolidação recalcula desde essa
+  data e preserva os snapshots anteriores.
 - Não há redesenho para titularidade, alocação ideal, aposentadoria ou múltiplos usuários.
 - Mensagens UTF-8 devem ser lidas com `Get-Content -Encoding UTF8` no Windows PowerShell
   antigo. A exibição incorreta nesse terminal não significa corrupção no navegador.
+
+## Atualização da consolidação — migração 0016
+
+Aplique `python -m alembic upgrade head` e consolide as carteiras. A migração
+invalida os caches históricos compartilhados de preços/eventos Yahoo e suas
+coberturas, pois os valores antigos podem estar ajustados por splits. A próxima
+consolidação baixa novamente esses dados e reconstrói o histórico derivado.
+Transações, preços/eventos manuais, FX e arquivos importados são preservados.
+Preços privados de origem `legacy`/`yfinance` permanecem armazenados para auditoria,
+mas deixam de substituir preços verificados: sua base de ajuste é desconhecida.
+Ativos sem provedor precisam de preços manuais confiáveis.
+
+A troca de moeda na interface consolida automaticamente o histórico e mostra
+eventuais falhas parciais. A API de alteração da carteira mantém a invalidação
+explícita; clientes próprios devem chamar o endpoint de consolidação.
+
+O gráfico de desempenho mostra ganho monetário, com unidade identificada;
+retorno percentual aparece na tabela. O retorno pode ter sinal diferente do
+ganho após aportes, e não é forçado a concordar com ele.
 
 ## Backup
 

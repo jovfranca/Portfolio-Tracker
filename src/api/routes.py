@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
-from src.domain import corporate_event_effects, historical_profitability
+from src.domain import corporate_event_effects
 from src.models import Portfolio, Transaction, TransactionImport, UserCorporateEvent
 from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
@@ -26,6 +26,7 @@ from src.services import (
 )
 from src.transaction_import import MAX_IMPORT_BYTES, preview_import
 from src.import_template import transaction_template
+from src.consolidation import consolidate, portfolio_series, position_series
 
 
 router = APIRouter(prefix='/api')
@@ -43,7 +44,8 @@ def health(session: DB):
 @router.get('/portfolios')
 def portfolios(session: DB):
     return [
-        {'id': portfolio.id, 'name': portfolio.name}
+        {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
+         'dirty_from': portfolio.dirty_from, 'history_built_through': portfolio.history_built_through}
         for portfolio in session.scalars(select(Portfolio).order_by(Portfolio.id))
     ]
 
@@ -53,15 +55,19 @@ def create_portfolio(payload: PortfolioInput, session: DB):
     portfolio = Portfolio(**payload.model_dump())
     session.add(portfolio)
     session.commit()
-    return {'id': portfolio.id, 'name': portfolio.name}
+    return {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
+            'dirty_from': portfolio.dirty_from, 'history_built_through': portfolio.history_built_through}
 
 
 @router.put('/portfolios/{portfolio_id}')
 def rename_portfolio(portfolio_id: int, payload: PortfolioInput, session: DB):
     portfolio = get_portfolio(session, portfolio_id, lock=True)
     portfolio.name = payload.name
+    if 'display_currency' in payload.model_fields_set:
+        portfolio.display_currency = payload.display_currency
     session.commit()
-    return {'id': portfolio.id, 'name': portfolio.name}
+    return {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
+            'dirty_from': portfolio.dirty_from, 'history_built_through': portfolio.history_built_through}
 
 
 @router.get('/instruments/search')
@@ -112,6 +118,18 @@ def select_instrument():
 @router.get('/portfolios/{portfolio_id}/overview')
 def portfolio_overview(portfolio_id: int, session: DB):
     return get_overview(session, portfolio_id)
+
+
+@router.post('/portfolios/{portfolio_id}/consolidate')
+def consolidate_portfolio(portfolio_id: int, session: DB):
+    result = consolidate(session, portfolio_id)
+    session.commit()
+    return result
+
+
+@router.get('/portfolios/{portfolio_id}/history')
+def portfolio_performance(portfolio_id: int, session: DB):
+    return portfolio_series(session, portfolio_id)
 
 
 @router.get('/portfolios/{portfolio_id}/transactions', response_model=list[TransactionOutput])
@@ -453,6 +471,12 @@ def asset_activity(portfolio_id: int, asset_id: int, session: DB):
 def latest_quote(portfolio_id: int, asset_id: int, session: DB):
     asset = get_asset(session, portfolio_id, asset_id)
     result = get_latest(session, asset)
+    first = session.scalar(select(Transaction.trade_date).where(
+        Transaction.portfolio_id == portfolio_id,
+        Transaction.instrument_id == asset.instrument_id,
+    ).order_by(Transaction.trade_date).limit(1))
+    if first is not None:
+        get_actions(session, asset, first, date.today())
     session.commit()
     if not result.available:
         raise HTTPException(404, 'Não há cotação disponível para este ativo.')
@@ -481,7 +505,7 @@ def refresh_quotes(portfolio_id: int, asset_id: int, session: DB):
     start = min(transaction.trade_date for transaction in transactions)
     history_end = date.today() - timedelta(days=1)
     result = get_history(session, asset, start, history_end) if start <= history_end else None
-    action_result = get_actions(session, asset, start, history_end) if start <= history_end else None
+    action_result = get_actions(session, asset, start, date.today())
     latest = get_latest(session, asset)
     session.commit()
     if not latest.available or latest.stale:
@@ -511,22 +535,9 @@ def performance(
     portfolio_id: int,
     session: DB,
     asset_id: int,
-    broker: str,
-    allocation_class: str,
-    transaction_currency: str,
 ):
     asset = get_asset(session, portfolio_id, asset_id)
-    transactions = list(session.scalars(select(Transaction).where(
-        Transaction.portfolio_id == portfolio_id,
-        Transaction.instrument_id == asset.instrument_id,
-        Transaction.broker == broker,
-        Transaction.allocation_class == allocation_class,
-        Transaction.transaction_currency == transaction_currency,
-    )))
-    return historical_profitability(
-        transactions, get_stored_history(session, asset, currency=transaction_currency),
-        get_stored_actions(session, asset),
-    )
+    return position_series(session, portfolio_id, asset.instrument_id)
 
 
 @router.get('/rates/{rate_type}/{currency}/{reference_date}')

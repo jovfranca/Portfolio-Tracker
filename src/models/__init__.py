@@ -9,10 +9,12 @@ from .broker import Broker
 from .imports import LegacyImport, TransactionImport
 from .exchange_rate import ExchangeRate
 from .corporate_action import CorporateAction, CorporateActionCoverage, UserCorporateEvent
+from .snapshot import PositionSnapshot, PortfolioSnapshot
 
 __all__ = [
     'Portfolio', 'Transaction', 'Asset', 'Broker', 'LegacyImport', 'ExchangeRate',
     'TransactionImport', 'Instrument', 'InstrumentAlias', 'ProviderInstrument',
     'MarketPrice', 'MarketPriceCoverage', 'LatestMarketQuote', 'UserDefinedPrice',
     'CorporateAction', 'CorporateActionCoverage', 'UserCorporateEvent',
+    'PositionSnapshot', 'PortfolioSnapshot',
 ]

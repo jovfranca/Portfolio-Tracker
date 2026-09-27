@@ -15,6 +15,12 @@ class Input(BaseModel):
 
 class PortfolioInput(Input):
     name: Name
+    display_currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')] = 'BRL'
+
+    @field_validator('display_currency')
+    @classmethod
+    def normalize_display_currency(cls, value):
+        return value.upper()
 
 
 class TransactionInput(Input):
