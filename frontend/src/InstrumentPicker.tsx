@@ -1,20 +1,30 @@
 import { useEffect, useState } from 'react'
-import { api, InstrumentSearchResult } from './api'
+import { api, type FixedIncomeProduct, type InstrumentSearchResult } from './api'
 
 type Props = {
   query: string
   onSelect: (instrument: InstrumentSearchResult & { instrument_id: number }) => void | Promise<void>
   initialMode?: Mode
   showModeChoices?: boolean
+  portfolioId?: number
+  fixedIncomeProducts?: FixedIncomeProduct[]
 }
 type Mode = 'LISTED' | 'CRYPTO' | 'FIXED_INCOME' | 'CUSTOM'
 
-export default function InstrumentPicker({ query, onSelect, initialMode = 'LISTED', showModeChoices = true }: Props) {
+export default function InstrumentPicker({ query, onSelect, initialMode = 'LISTED', showModeChoices = true, portfolioId, fixedIncomeProducts }: Props) {
   const [mode, setMode] = useState<Mode>(initialMode)
   const [results, setResults] = useState<InstrumentSearchResult[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [custom, setCustom] = useState({ name: '', symbol: query.toUpperCase(), currency: 'BRL', asset_type: initialMode === 'FIXED_INCOME' ? 'FIXED_INCOME' : 'OTHER' })
+  useEffect(() => {
+    if (initialMode !== 'FIXED_INCOME') return
+    setResults((fixedIncomeProducts ?? []).map(row => ({
+        instrument_id: row.instrument_id, symbol: row.symbol, name: row.name,
+        asset_type: 'FIXED_INCOME' as const, exchange: null, currency: null, status: 'ACTIVE' as const,
+        provider: null, provider_symbol: null,
+      })))
+  }, [initialMode, fixedIncomeProducts])
   useEffect(() => {
     if (mode === 'CUSTOM' && initialMode === 'CUSTOM') setCustom(current => ({ ...current, symbol: query.toUpperCase() }))
   }, [query, mode, initialMode])
@@ -38,7 +48,7 @@ export default function InstrumentPicker({ query, onSelect, initialMode = 'LISTE
 
     {mode !== 'CUSTOM' && <>
       <button type="button" className="button outline" disabled={busy || !query.trim()} onClick={() => void run(async () => {
-        const found = await api<InstrumentSearchResult[]>('/instruments/search?q=' + encodeURIComponent(query) + '&category=' + mode)
+        const found = await api<InstrumentSearchResult[]>('/instruments/search?q=' + encodeURIComponent(query) + '&category=' + mode + (mode === 'FIXED_INCOME' && portfolioId ? '&portfolio_id=' + portfolioId : ''))
         setResults(found)
         if (!found.length) setError('Nenhum instrumento do catálogo encontrado. Crie um instrumento manual para continuar.')
       })}>{busy ? 'Pesquisando…' : 'Pesquisar no catálogo'}</button>
@@ -61,7 +71,8 @@ export default function InstrumentPicker({ query, onSelect, initialMode = 'LISTE
         <option value="OTHER">Outro / privado</option><option value="STOCK">Ação</option><option value="ETF">ETF</option><option value="CRYPTO">Cripto</option>
       </select></label>}
       <button type="button" className="button outline" disabled={busy || !custom.name || !custom.symbol || !/^[A-Z]{3}$/.test(custom.currency)} onClick={() => void run(async () => {
-        const created = await api<InstrumentSearchResult & { id: number }>('/instruments/custom', 'POST', custom)
+        const endpoint = initialMode === 'FIXED_INCOME' && portfolioId ? `/portfolios/${portfolioId}/fixed-income/instruments/custom` : '/instruments/custom'
+        const created = await api<InstrumentSearchResult & { id: number }>(endpoint, 'POST', custom)
         await onSelect({ ...created, currency: custom.currency, instrument_id: created.id, provider: null, provider_symbol: null, is_custom: true })
       })}>Criar ativo personalizado</button>
     </div>}

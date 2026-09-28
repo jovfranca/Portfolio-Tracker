@@ -169,10 +169,10 @@ AnnualRate = Annotated[Decimal, Field(ge=-1, le=1000, allow_inf_nan=False,
 
 class FixedIncomeLotInput(Input):
     instrument_id: int = Field(gt=0)
-    product_type: Literal['CDB', 'LCI', 'LCA']
+    product_type: Annotated[str, Field(min_length=1, max_length=40, pattern=r'^[A-Za-z0-9_-]+$')]
     issuer: Annotated[str, Field(min_length=1, max_length=200)]
     broker: Name
-    currency: CurrencyCode
+    currency: CurrencyCode | None = None
     start_date: date
     maturity_date: date | None = None
     yield_structure: Literal['FIXED_RATE', 'BENCHMARK_MULTIPLE', 'BENCHMARK_SPREAD']
@@ -180,16 +180,21 @@ class FixedIncomeLotInput(Input):
     benchmark_id: int | None = Field(default=None, gt=0)
     benchmark_multiplier: ContractFraction | None = None
     benchmark_spread: AnnualRate | None = None
-    day_count_basis: Literal['BUS_252', 'ACT_365', 'ACT_360']
-    compounding: Literal['SIMPLE', 'COMPOUND']
-    business_day_calendar: Literal['BR', 'NONE']
-    benchmark_lag_months: int = Field(ge=0, le=24)
+    day_count_basis: Literal['BUS_252', 'ACT_365', 'ACT_360'] | None = None
+    compounding: Literal['SIMPLE', 'COMPOUND'] | None = None
+    business_day_calendar: Literal['BR', 'NONE'] | None = None
+    benchmark_lag_months: int | None = Field(default=None, ge=0, le=24)
     opening_amount: PositiveDecimalAmount
     notes: Annotated[str, Field(max_length=5000)] = ''
 
     @field_validator('currency')
     @classmethod
     def normalize_lot_currency(cls, value):
+        return value.upper() if value else None
+
+    @field_validator('product_type')
+    @classmethod
+    def normalize_product_type(cls, value):
         return value.upper()
 
     @model_validator(mode='after')

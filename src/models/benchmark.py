@@ -2,7 +2,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.database import Base
@@ -28,6 +28,7 @@ class BenchmarkProviderMapping(Base):
     __tablename__ = 'benchmark_provider_mappings'
     __table_args__ = (
         UniqueConstraint('provider', 'series_id'),
+        UniqueConstraint('id', 'benchmark_id', name='uq_benchmark_provider_mappings_id'),
         Index('uq_benchmark_primary_mapping', 'benchmark_id', unique=True,
               postgresql_where=text('is_primary'), sqlite_where=text('is_primary')),
         CheckConstraint('NOT is_primary OR active', name='primary_mapping_active'),
@@ -46,6 +47,10 @@ class BenchmarkObservation(Base):
     __tablename__ = 'benchmark_observations'
     __table_args__ = (
         UniqueConstraint('provider_mapping_id', 'reference_date', 'retrieved_at'),
+        ForeignKeyConstraint(
+            ['provider_mapping_id', 'benchmark_id'],
+            ['benchmark_provider_mappings.id', 'benchmark_provider_mappings.benchmark_id'],
+            name='fk_benchmark_observations_mapping_benchmark', ondelete='RESTRICT'),
         Index('ix_benchmark_observations_lookup', 'benchmark_id', 'reference_date'),
     )
 

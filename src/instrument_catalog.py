@@ -180,7 +180,11 @@ def seed_catalog(session, path=CATALOG_PATH):
     """Upsert trusted catalog rows atomically; ownership conflicts raise."""
     rows = read_catalog(path)
     with session.begin_nested():
-        return _seed_rows(session, rows)
+        result = _seed_rows(session, rows)
+        if Path(path).resolve() == CATALOG_PATH.resolve():
+            from src.fixed_income_catalog import seed_products
+            result['instruments'] += seed_products(session)
+        return result
 
 
 def _seed_rows(session, rows):

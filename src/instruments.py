@@ -100,7 +100,7 @@ def create_instrument(
     session, *, symbol, currency=None, name='', asset_type='OTHER', exchange=None,
     status='ACTIVE', isin=None, provider=None, provider_symbol=None,
     provider_exchange=None, quote_currency=None, aliases=(), alias_source='manual', instrument_id=None,
-    origin='CUSTOM', is_primary=None,
+    origin='CUSTOM', is_primary=None, portfolio_id=None,
 ):
     """Persist a user-selected provider result or explicit manual instrument."""
     symbol = normalize_identifier(symbol)
@@ -148,7 +148,7 @@ def create_instrument(
             exchange=exchange,
             currency=(currency or quote_currency) if asset_type in ('STOCK', 'ETF')
             else currency if asset_type in ('OTHER', 'FIXED_INCOME') else None,
-            status=status.upper(), isin=isin, origin=origin.upper(),
+            status=status.upper(), isin=isin, origin=origin.upper(), portfolio_id=portfolio_id,
         )
         session.add(instrument)
         session.flush()
@@ -176,11 +176,13 @@ def create_instrument(
     return instrument
 
 
-def search_instruments(session, query, category="ALL"):
+def search_instruments(session, query, category="ALL", portfolio_id=None):
     """Search the trusted local catalog used by ordinary portfolio users."""
     normalized = normalize_identifier(query)
     local_query = select(Instrument).where(
-        Instrument.origin.in_(['CATALOG', 'CUSTOM']) if category == 'FIXED_INCOME' else Instrument.origin == 'CATALOG',
+        ((Instrument.origin == 'CATALOG') | ((Instrument.origin == 'CUSTOM') &
+          (Instrument.portfolio_id == portfolio_id))) if category == 'FIXED_INCOME' and portfolio_id is not None
+        else Instrument.origin == 'CATALOG',
         (func.upper(Instrument.symbol).contains(normalized, autoescape=True))
         | (func.upper(Instrument.name).contains(query.strip().upper(), autoescape=True))
         | Instrument.id.in_(select(InstrumentAlias.instrument_id).where(

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
 from src.domain import corporate_event_effects
-from src.models import Benchmark, Portfolio, Transaction, TransactionImport, UserCorporateEvent
+from src.models import Benchmark, Instrument, Portfolio, Transaction, TransactionImport, UserCorporateEvent
 from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
     add_alias, catalog_instruments, create_instrument, resolve_instrument, search_instruments,
@@ -73,18 +73,34 @@ def rename_portfolio(portfolio_id: int, payload: PortfolioInput, session: DB):
 
 
 @router.get('/instruments/search')
-def instrument_search(q: str, session: DB, category: str = 'ALL'):
+def instrument_search(q: str, session: DB, category: str = 'ALL', portfolio_id: int | None = None):
     if not q.strip():
         raise HTTPException(422, 'Informe um símbolo ou nome para pesquisar.')
     if category not in {'ALL', 'LISTED', 'STOCK', 'ETF', 'CRYPTO', 'FIXED_INCOME'}:
         raise HTTPException(422, 'Unknown instrument category.')
-    return search_instruments(session, q, category=category)
+    if portfolio_id is not None:
+        get_portfolio(session, portfolio_id)
+    return search_instruments(session, q, category=category, portfolio_id=portfolio_id)
 
 
 @router.get('/benchmarks')
 def active_benchmarks(session: DB):
     rows = session.scalars(select(Benchmark).where(Benchmark.status == 'ACTIVE').order_by(Benchmark.code))
     return [{'id': row.id, 'code': row.code, 'name': row.name} for row in rows]
+
+
+@router.get('/fixed-income/products')
+def fixed_income_products(session: DB):
+    from src.models import FixedIncomeProduct
+    rows = session.scalars(select(FixedIncomeProduct).join(FixedIncomeProduct.instrument).where(
+        Instrument.status == 'ACTIVE', Instrument.origin == 'CATALOG').order_by(Instrument.symbol))
+    return [{
+        'instrument_id': row.instrument_id, 'symbol': row.instrument.symbol,
+        'name': row.instrument.name, 'default_currency': row.default_currency,
+        'day_count_basis': row.day_count_basis, 'compounding': row.compounding,
+        'business_day_calendar': row.business_day_calendar,
+        'benchmark_lag_months': row.benchmark_lag_months,
+    } for row in rows]
 
 
 @router.get('/instruments/catalog')
@@ -94,6 +110,8 @@ def instrument_catalog(session: DB):
 
 @router.post('/instruments/custom', status_code=201)
 def create_custom_instrument(payload: CustomInstrumentInput, session: DB):
+    if payload.asset_type == 'FIXED_INCOME':
+        raise HTTPException(422, 'Create private fixed-income instruments within a portfolio.')
     existing = resolve_instrument(session, payload.symbol)
     if existing.status == 'resolved' and existing.instrument.origin == 'CUSTOM':
         instrument = existing.instrument
@@ -116,6 +134,32 @@ def create_custom_instrument(payload: CustomInstrumentInput, session: DB):
         'currency': instrument.currency, 'asset_type': instrument.asset_type,
         'exchange': instrument.exchange, 'status': instrument.status,
     }
+
+
+@router.post('/portfolios/{portfolio_id}/fixed-income/instruments/custom', status_code=201)
+def create_private_fixed_income_instrument(portfolio_id: int, payload: CustomInstrumentInput, session: DB):
+    get_portfolio(session, portfolio_id)
+    if payload.asset_type != 'FIXED_INCOME':
+        raise HTTPException(422, 'This endpoint accepts fixed-income instruments only.')
+    canonical = session.scalar(select(Instrument).where(
+        Instrument.origin == 'CATALOG', Instrument.symbol == payload.symbol))
+    if canonical is not None:
+        raise HTTPException(409, 'Select the canonical product instead.')
+    existing = session.scalar(select(Instrument).where(
+        Instrument.origin == 'CUSTOM', Instrument.portfolio_id == portfolio_id,
+        Instrument.asset_type == 'FIXED_INCOME', Instrument.symbol == payload.symbol))
+    if existing is not None:
+        if existing.name != payload.name or existing.currency != payload.currency:
+            raise HTTPException(409, 'Private instrument already exists with different metadata.')
+        instrument = existing
+    else:
+        instrument = create_instrument(
+            session, **payload.model_dump(), aliases=[payload.symbol],
+            alias_source='custom', origin='CUSTOM', portfolio_id=portfolio_id)
+        session.commit()
+    return {'id': instrument.id, 'symbol': instrument.symbol, 'name': instrument.name,
+            'currency': instrument.currency, 'asset_type': instrument.asset_type,
+            'exchange': instrument.exchange, 'status': instrument.status}
 
 
 @router.post('/instruments', status_code=201)

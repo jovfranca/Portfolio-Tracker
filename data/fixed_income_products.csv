@@ -1,0 +1,4 @@
+symbol,name,default_currency,day_count_basis,compounding,business_day_calendar,benchmark_lag_months
+CDB,Certificado de Depósito Bancário,BRL,BUS_252,COMPOUND,BR,0
+LCI,Letra de Crédito Imobiliário,BRL,BUS_252,COMPOUND,BR,0
+LCA,Letra de Crédito do Agronegócio,BRL,BUS_252,COMPOUND,BR,0

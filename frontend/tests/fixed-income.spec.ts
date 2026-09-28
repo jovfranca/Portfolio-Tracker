@@ -1,35 +1,55 @@
 import { test, expect } from '@playwright/test'
 
-test('creates fixed-income lots with one opening movement and yield-specific terms', async ({ page, request }) => {
-  const portfolioId = (await (await request.post('/api/portfolios', { data: { name: 'Fixed income UI ' + Date.now() } })).json()).id
-  const benchmarks = await (await request.get('/api/benchmarks')).json() as { id: number; code: string }[]
-  expect(benchmarks.some(row => row.code === 'CDI')).toBeTruthy()
+test('waits for product defaults before allowing fixed-income selection', async ({ page, request }) => {
+  const portfolioId = (await (await request.post('/api/portfolios', {
+    data: { name: 'Fixed income defaults ' + Date.now() },
+  })).json()).id
+  let releaseProducts!: () => void
+  const productRequest = new Promise<void>(resolve => { releaseProducts = resolve })
+  await page.route('**/api/fixed-income/products', async route => {
+    await productRequest
+    const response = await route.fetch()
+    const products = await response.json() as { symbol: string; day_count_basis: string }[]
+    await route.fulfill({ response, json: products.map(product => product.symbol === 'CDB'
+      ? { ...product, day_count_basis: 'ACT_365' } : product) })
+  })
+
   await page.goto('/')
   await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
-  const symbol = 'UICDB' + Date.now()
+  await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
+  await page.getByRole('button', { name: 'Renda fixa', exact: true }).click()
+  await expect(page.getByRole('listitem')).toHaveCount(0)
+  await expect(page.getByText('Carregando produtos de renda fixa…')).toBeVisible()
+
+  releaseProducts()
+  await page.getByRole('listitem').filter({ hasText: 'CDB' }).click()
+  await page.getByText('Configurações avançadas do contrato').click()
+  await expect(page.getByLabel('Base de dias')).toHaveValue('ACT_365')
+})
+
+test('canonical fixed-income products prefill lots and appear in positions and operations', async ({ page, request }) => {
+  const portfolioId = (await (await request.post('/api/portfolios', { data: { name: 'Fixed income UI ' + Date.now() } })).json()).id
+  const benchmarks = await (await request.get('/api/benchmarks')).json() as { id: number; code: string }[]
+  const products = await (await request.get('/api/fixed-income/products')).json() as { symbol: string; instrument_id: number }[]
+  expect(products.map(row => row.symbol).sort()).toEqual(['CDB', 'LCA', 'LCI'])
+  await page.goto('/')
+  await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
   let lotPosts = 0
   let transactionPosts = 0
-  page.on('request', request => {
-    if (request.method() === 'POST' && request.url().includes('/fixed-income/lots')) lotPosts++
-    if (request.method() === 'POST' && request.url().endsWith('/transactions')) transactionPosts++
+  page.on('request', outgoing => {
+    if (outgoing.method() === 'POST' && outgoing.url().includes('/fixed-income/lots')) lotPosts++
+    if (outgoing.method() === 'POST' && outgoing.url().endsWith('/transactions')) transactionPosts++
   })
 
   for (const [product, structure] of [['CDB', 'FIXED_RATE'], ['LCI', 'BENCHMARK_MULTIPLE'], ['LCA', 'BENCHMARK_SPREAD']] as const) {
     await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
-    await expect(page.getByLabel('Instrumento', { exact: true })).toHaveCount(0)
     await page.getByRole('button', { name: 'Renda fixa', exact: true }).click()
     await expect(page.getByLabel('Quantidade', { exact: true })).toHaveCount(0)
-    await page.getByLabel('Instrumento', { exact: true }).fill(symbol)
-    if (product === 'CDB') {
-      await page.getByRole('button', { name: 'Criar instrumento de renda fixa' }).click()
-      await page.getByLabel('Nome do ativo', { exact: true }).fill('CDB UI test')
-      await page.getByLabel('Símbolo', { exact: true }).fill(symbol)
-      await page.getByRole('button', { name: 'Criar ativo personalizado' }).click()
-    } else {
-      await page.getByRole('button', { name: 'Pesquisar no catálogo' }).click()
-      await page.getByRole('listitem').filter({ hasText: symbol }).click()
-    }
-    await page.getByLabel('Produto').selectOption(product)
+    await page.getByRole('listitem').filter({ hasText: product }).click()
+    await page.getByText('Configurações avançadas do contrato').click()
+    await expect(page.getByLabel('Moeda', { exact: true })).toHaveValue('BRL')
+    await expect(page.getByLabel('Base de dias')).toHaveValue('BUS_252')
+    await page.getByText('Configurações avançadas do contrato').click()
     await page.getByLabel('Emissor').fill('Banco Exemplo')
     await page.getByLabel('Corretora').fill('Corretora Exemplo')
     await page.getByLabel('Data da aplicação').fill('2024-01-02')
@@ -37,10 +57,8 @@ test('creates fixed-income lots with one opening movement and yield-specific ter
     await page.getByLabel('Valor aplicado').fill('1000.25')
     await page.getByLabel('Estrutura de rendimento').selectOption(structure)
     if (structure === 'FIXED_RATE') {
-      await expect(page.getByRole('combobox', { name: 'Indexador', exact: true })).toHaveCount(0)
       await page.getByLabel(/Taxa fixa anual/).fill('0.12')
     } else {
-      await expect(page.getByLabel(/Taxa fixa anual/)).toHaveCount(0)
       await page.getByRole('combobox', { name: 'Indexador', exact: true }).selectOption(String(benchmarks.find(row => row.code === 'CDI')!.id))
       if (structure === 'BENCHMARK_MULTIPLE') await page.getByLabel(/Multiplicador/).fill('1.10')
       else await page.getByLabel(/Spread anual/).fill('0.06')
@@ -55,5 +73,9 @@ test('creates fixed-income lots with one opening movement and yield-specific ter
   expect(lots.map((lot: { product_type: string }) => lot.product_type)).toEqual(['CDB', 'LCI', 'LCA'])
   expect(lots.every((lot: { movements: { movement_type: string; amount: string }[] }) =>
     lot.movements.length === 1 && lot.movements[0].movement_type === 'INITIAL_INVESTMENT' && Number(lot.movements[0].amount) === 1000.25)).toBeTruthy()
-  expect(lots.every((lot: { current_value: null; valuation_status: string }) => lot.current_value === null && lot.valuation_status === 'pending')).toBeTruthy()
+  await expect(page.getByRole('heading', { name: 'Renda fixa' })).toBeVisible()
+  await expect(page.getByRole('table').filter({ hasText: 'Pendente' }).getByRole('row')).toHaveCount(4)
+  await page.getByRole('button', { name: 'Transações', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Movimentos de renda fixa' })).toBeVisible()
+  await expect(page.getByRole('table').filter({ hasText: 'Aplicação inicial' }).getByRole('row')).toHaveCount(4)
 })

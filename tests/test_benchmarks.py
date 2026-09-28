@@ -2,7 +2,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.benchmark_catalog import read_catalog, seed_catalog
@@ -20,6 +21,37 @@ def session():
     BenchmarkCoverage.__table__.create(engine)
     with Session(engine) as value:
         yield value
+
+
+def test_observation_mapping_must_belong_to_its_benchmark():
+    engine = create_engine('sqlite://')
+    @event.listens_for(engine, 'connect')
+    def enable_foreign_keys(dbapi_connection, _):
+        dbapi_connection.execute('PRAGMA foreign_keys=ON')
+
+    for table in (Benchmark.__table__, BenchmarkProviderMapping.__table__,
+                  BenchmarkObservation.__table__):
+        table.create(engine)
+    with Session(engine) as session:
+        first = Benchmark(code='FIRST', name='First', kind='INTEREST_RATE',
+                          frequency='DAILY', value_type='RATE', unit='PERCENT_PER_DAY',
+                          status='ACTIVE')
+        second = Benchmark(code='SECOND', name='Second', kind='INTEREST_RATE',
+                           frequency='DAILY', value_type='RATE', unit='PERCENT_PER_DAY',
+                           status='ACTIVE')
+        session.add_all([first, second])
+        session.flush()
+        mapping = BenchmarkProviderMapping(benchmark_id=first.id, provider='test',
+                                           series_id='1', active=True, is_primary=True)
+        session.add(mapping)
+        session.flush()
+        session.add(BenchmarkObservation(
+            benchmark_id=second.id, provider_mapping_id=mapping.id,
+            reference_date=date(2024, 1, 2), value=Decimal('1'), source='test',
+            retrieved_at=datetime(2024, 1, 3, tzinfo=timezone.utc)))
+        with pytest.raises(IntegrityError):
+            session.flush()
+    engine.dispose()
 
 
 def test_catalog_is_idempotent_and_separates_identity_from_mapping(session):

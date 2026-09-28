@@ -27,9 +27,12 @@ class Instrument(Base):
     # Native/listing currency, never the transaction or provider currency.
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default='ACTIVE')
-    # CATALOG is maintained from data/instruments.csv. CUSTOM is explicitly
+    # CATALOG is maintained from version-controlled product/instrument catalogs. CUSTOM is explicitly
     # user-created; MIGRATED preserves pre-catalog history without trusting it.
     origin: Mapped[str] = mapped_column(String(16), default='CUSTOM')
+    # Private fixed-income identities are scoped to a portfolio until accounts exist.
+    portfolio_id: Mapped[int | None] = mapped_column(ForeignKey('portfolios.id', ondelete='RESTRICT'), nullable=True,
+                                                     index=True)
     isin: Mapped[str | None] = mapped_column(String(12), nullable=True)
     provider_mappings: Mapped[list['ProviderInstrument']] = relationship(
         back_populates='instrument', cascade='all, delete-orphan'

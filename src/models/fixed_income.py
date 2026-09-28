@@ -56,6 +56,20 @@ class FixedIncomeLot(Base):
         back_populates='lot', order_by='(FixedIncomeMovement.effective_date, FixedIncomeMovement.id)')
 
 
+class FixedIncomeProduct(Base):
+    """Shared product template; lot terms are independent snapshots."""
+
+    __tablename__ = 'fixed_income_products'
+
+    instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'), primary_key=True)
+    default_currency: Mapped[str] = mapped_column(String(3))
+    day_count_basis: Mapped[str] = mapped_column(String(20))
+    compounding: Mapped[str] = mapped_column(String(20))
+    business_day_calendar: Mapped[str] = mapped_column(String(40))
+    benchmark_lag_months: Mapped[int] = mapped_column(Integer)
+    instrument: Mapped['Instrument'] = relationship()
+
+
 class FixedIncomeMovement(Base):
     __tablename__ = 'fixed_income_movements'
     __table_args__ = (

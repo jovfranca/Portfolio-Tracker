@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, engine as postgres_engine, get_session
 from src.main import app
-from src.models import Benchmark, FixedIncomeLot, FixedIncomeMovement, Instrument, Portfolio, PortfolioSnapshot
+from src.models import Benchmark, FixedIncomeLot, FixedIncomeMovement, FixedIncomeProduct, Instrument, Portfolio, PortfolioSnapshot
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def client():
     with Session(engine) as session:
         session.add_all([
             Portfolio(name='Savings'),
-            Instrument(symbol='CDB-ISSUER', name='Issuer CDB', asset_type='FIXED_INCOME', currency='BRL'),
+            Instrument(symbol='CDB-ISSUER', name='Issuer CDB', asset_type='FIXED_INCOME', currency='BRL', portfolio_id=1),
             Benchmark(code='CDI', name='CDI', kind='INTEREST_RATE', frequency='DAILY',
                       value_type='RATE', unit='PERCENT_PER_DAY', status='ACTIVE'),
         ])
@@ -67,10 +67,59 @@ def test_active_benchmark_catalog_and_fixed_income_search(client):
     response = c.get('/api/benchmarks')
     assert response.status_code == 200
     assert response.json() == [{'id': 1, 'code': 'CDI', 'name': 'CDI'}]
-    search = c.get('/api/instruments/search', params={'q': 'CDB', 'category': 'FIXED_INCOME'})
+    search = c.get('/api/instruments/search', params={'q': 'CDB', 'category': 'FIXED_INCOME', 'portfolio_id': 1})
     assert search.status_code == 200
     assert len(search.json()) == 1
     assert search.json()[0]['asset_type'] == 'FIXED_INCOME'
+
+
+def test_private_fixed_income_instrument_is_scoped_to_portfolio(client):
+    c, _ = client
+    other = c.post('/api/portfolios', json={'name': 'Other'}).json()['id']
+    payload = {'symbol': 'PRIVATE-BOND', 'name': 'Private bond',
+               'asset_type': 'FIXED_INCOME', 'currency': 'USD'}
+    assert c.post('/api/instruments/custom', json=payload).status_code == 422
+    created = c.post('/api/portfolios/1/fixed-income/instruments/custom', json=payload)
+    assert created.status_code == 201, created.text
+    assert c.get('/api/instruments/search', params={
+        'q': 'PRIVATE-BOND', 'category': 'FIXED_INCOME', 'portfolio_id': 1}).json()[0]['instrument_id'] == created.json()['id']
+    assert c.get('/api/instruments/search', params={
+        'q': 'PRIVATE-BOND', 'category': 'FIXED_INCOME', 'portfolio_id': other}).json() == []
+    assert c.post(f'/api/portfolios/{other}/fixed-income/lots', json=lot_payload(
+        instrument_id=created.json()['id'], product_type='PRIVATE-BOND')).status_code == 422
+
+
+def test_canonical_product_defaults_are_snapshotted_into_lots(client):
+    from src.instrument_catalog import seed_catalog
+
+    c, engine = client
+    with Session(engine) as session:
+        seed_catalog(session)
+        session.commit()
+    products = c.get('/api/fixed-income/products').json()
+    assert {row['symbol'] for row in products} == {'CDB', 'LCI', 'LCA'}
+    cdb = next(row for row in products if row['symbol'] == 'CDB')
+    assert cdb['default_currency'] == 'BRL'
+    payload = lot_payload(instrument_id=cdb['instrument_id'])
+    for field in ('currency', 'day_count_basis', 'compounding', 'business_day_calendar', 'benchmark_lag_months'):
+        del payload[field]
+    first = c.post('/api/portfolios/1/fixed-income/lots', json=payload)
+    assert first.status_code == 201, first.text
+    assert first.json()['day_count_basis'] == 'BUS_252'
+    with Session(engine) as session:
+        session.get(FixedIncomeProduct, cdb['instrument_id']).day_count_basis = 'ACT_365'
+        session.commit()
+    second = c.post('/api/portfolios/1/fixed-income/lots', json={
+        **payload, 'issuer': 'Another bank', 'fixed_rate': '0.15'})
+    assert second.status_code == 201, second.text
+    assert c.get(f"/api/portfolios/1/fixed-income/lots/{first.json()['id']}").json()['day_count_basis'] == 'BUS_252'
+    assert second.json()['day_count_basis'] == 'ACT_365'
+    assert first.json()['asset_id'] == second.json()['asset_id']
+    assert first.json()['issuer'] != second.json()['issuer']
+    override = c.post('/api/portfolios/1/fixed-income/lots', json={
+        **payload, 'currency': 'USD', 'day_count_basis': 'ACT_360'})
+    assert override.status_code == 201, override.text
+    assert override.json()['currency'] == 'USD' and override.json()['day_count_basis'] == 'ACT_360'
 
 
 def test_independent_lots_and_authoritative_opening_movements(client):
@@ -81,6 +130,10 @@ def test_independent_lots_and_authoritative_opening_movements(client):
     assert first['id'] != second['id']
     assert first['asset_id'] == second['asset_id']
     assert first['instrument_id'] == second['instrument_id'] == 1
+    assert first['instrument_symbol'] == 'CDB-ISSUER'
+    assert first['instrument_name'] == 'Issuer CDB'
+    assert Decimal(first['opening_amount']) == Decimal('1000.00')
+    assert first['current_value'] is None and first['profitability'] is None
     assert first['current_value'] is None and first['valuation_status'] == 'pending'
     assert first['business_day_calendar'] == 'BR' and first['benchmark_lag_months'] == 0
     assert first['movements'][0]['amount'] == '1000.000000000000'
@@ -126,6 +179,7 @@ def test_benchmark_terms_and_movements_are_preserved(client):
     assert response.status_code == 201, response.text
     lot = response.json()
     assert lot['benchmark_id'] == 1 and Decimal(lot['benchmark_multiplier']) == Decimal('1.10')
+    assert lot['benchmark_code'] == 'CDI'
     movement = c.post(f"/api/portfolios/1/fixed-income/lots/{lot['id']}/movements", json={
         'movement_type': 'ADDITIONAL_INVESTMENT', 'effective_date': '2024-03-01',
         'amount': '250.50', 'currency': 'BRL',
@@ -147,7 +201,7 @@ def test_benchmark_terms_and_movements_are_preserved(client):
 
 def test_spread_contract_and_foreign_currency_are_independent_of_benchmark(client):
     c, engine = client
-    response = c.post('/api/instruments/custom', json={
+    response = c.post('/api/portfolios/1/fixed-income/instruments/custom', json={
         'symbol': 'FOREIGN-BOND', 'name': 'Foreign bond',
         'asset_type': 'FIXED_INCOME', 'currency': 'USD'})
     assert response.status_code == 201, response.text
@@ -212,9 +266,12 @@ def test_fixed_income_api_persists_lots_and_movements_in_postgres():
         try:
             with Session(connection, join_transaction_mode='create_savepoint') as session:
                 portfolio = Portfolio(name='Fixed-income PostgreSQL test')
+                session.add(portfolio)
+                session.flush()
                 instrument = Instrument(symbol='FI-POSTGRES-TEST', name='Test CDB',
-                                        asset_type='FIXED_INCOME', currency='BRL')
-                session.add_all([portfolio, instrument])
+                                        asset_type='FIXED_INCOME', currency='BRL',
+                                        portfolio_id=portfolio.id)
+                session.add(instrument)
                 session.commit()
                 portfolio_id, instrument_id = portfolio.id, instrument.id
 
