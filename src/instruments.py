@@ -180,7 +180,7 @@ def search_instruments(session, query, category="ALL"):
     """Search the trusted local catalog used by ordinary portfolio users."""
     normalized = normalize_identifier(query)
     local_query = select(Instrument).where(
-        Instrument.origin == 'CATALOG',
+        Instrument.origin.in_(['CATALOG', 'CUSTOM']) if category == 'FIXED_INCOME' else Instrument.origin == 'CATALOG',
         (func.upper(Instrument.symbol).contains(normalized, autoescape=True))
         | (func.upper(Instrument.name).contains(query.strip().upper(), autoescape=True))
         | Instrument.id.in_(select(InstrumentAlias.instrument_id).where(

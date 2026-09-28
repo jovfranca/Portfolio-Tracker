@@ -58,6 +58,21 @@ def lot_payload(**changes):
     return payload
 
 
+def test_active_benchmark_catalog_and_fixed_income_search(client):
+    c, engine = client
+    with Session(engine) as session:
+        session.add(Benchmark(code='RETIRED', name='Retired', kind='INTEREST_RATE', frequency='DAILY',
+                              value_type='RATE', unit='PERCENT_PER_DAY', status='INACTIVE'))
+        session.commit()
+    response = c.get('/api/benchmarks')
+    assert response.status_code == 200
+    assert response.json() == [{'id': 1, 'code': 'CDI', 'name': 'CDI'}]
+    search = c.get('/api/instruments/search', params={'q': 'CDB', 'category': 'FIXED_INCOME'})
+    assert search.status_code == 200
+    assert len(search.json()) == 1
+    assert search.json()[0]['asset_type'] == 'FIXED_INCOME'
+
+
 def test_independent_lots_and_authoritative_opening_movements(client):
     c, engine = client
     first = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload()).json()

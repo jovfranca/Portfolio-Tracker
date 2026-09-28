@@ -8,8 +8,8 @@ test('create, price, edit and delete a position through the real API', async ({ 
   await page.getByLabel('Nome da carteira', { exact: true }).fill('Browser test ' + Date.now())
   await page.getByRole('button', { name: 'Criar carteira', exact: true }).click()
   await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
-  await page.getByLabel('Instrumento', { exact: true }).fill('WEBTEST')
   await page.getByRole('button', { name: 'Personalizado', exact: true }).click()
+  await page.getByLabel('Instrumento', { exact: true }).fill('WEBTEST')
   await page.getByLabel('Nome do ativo', { exact: true }).fill('Web test asset')
   let finishCreation!: () => void
   const creationGate = new Promise<void>(resolve => { finishCreation = resolve })

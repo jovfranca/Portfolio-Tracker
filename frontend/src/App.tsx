@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric, type CatalogInstrument, type CorporateEvent, type Activity } from './api'
 import TransactionImportPage from './TransactionImportPage'
 import InstrumentPicker from './InstrumentPicker'
+import FixedIncomeForm from './FixedIncomeForm'
+
+type OperationType = 'LISTED' | 'CRYPTO' | 'FIXED_INCOME' | 'CUSTOM'
 
 const tabPaths: Record<string, string> = { 'Posições': '/', 'Transações': '/transactions', 'Cotações': '/quotes', 'Desempenho': '/performance', 'Catálogo': '/catalog' }
 const currentPath = () => window.location.hash.slice(1) || '/'
@@ -44,6 +47,7 @@ export default function App() {
   const lockedCurrency = listedCurrency
   const [editing, setEditing] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
+  const [operationType, setOperationType] = useState<OperationType | null>(null)
   const [portfolioName, setPortfolioName] = useState('')
   const [newPortfolio, setNewPortfolio] = useState(false)
   const [query, setQuery] = useState('')
@@ -75,7 +79,7 @@ export default function App() {
   }, [selected])
 
   useEffect(() => {
-    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(false); setQuery('')
+    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(false); setOperationType(null); setQuery('')
     if (selected === null) return
     const controller = new AbortController()
     setLoading(true); setError('')
@@ -133,7 +137,7 @@ export default function App() {
   }
   function edit(tx: Transaction) {
     const { id, portfolio_id: _portfolioId, transaction_currency_locked: currencyLocked, ...values } = tx
-    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setFormOpen(true)
+    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setOperationType(null); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
   const filteredPositions = overview?.positions.filter(p => (showClosed || Number(p.quantity) !== 0) && [p.asset, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
@@ -162,7 +166,7 @@ export default function App() {
           <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
           {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && <div className="page-actions">
             {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
-            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
+            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setOperationType(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
           </div>}
         </div>
         {error && <div role="alert" className="alert error">{error} <button className="button quiet" disabled={busy} onClick={() => void loadPortfolios().then(() => reload()).catch(e => setError(message(e)))}>Tentar novamente</button></div>}
@@ -172,7 +176,11 @@ export default function App() {
           <label>Nome da carteira<input required maxLength={120} value={portfolioName} onChange={e => setPortfolioName(e.target.value)} placeholder="Ex.: Investimentos pessoais" /></label>
           <button className="button primary" disabled={busy}>Criar carteira</button>
         </form>}
-        {formOpen && !importing && !cataloging && <form className="panel transaction-form" onSubmit={saveTransaction}>
+        {formOpen && !importing && !cataloging && editing === null && <section className="panel"><div className="section-heading"><h2>Tipo de ativo</h2><button className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div><div className="asset-type-choices" aria-label="Tipo de ativo da nova operação">
+          {([['LISTED', 'Ações e ETFs'], ['CRYPTO', 'Cripto'], ['FIXED_INCOME', 'Renda fixa'], ['CUSTOM', 'Personalizado']] as const).map(([value, label]) => <button type="button" key={value} disabled={busy} className={'button ' + (operationType === value ? 'primary' : 'outline')} onClick={() => { setOperationType(value); setDraft(current => ({ ...emptyDraft(), asset: current.asset })); setListedCurrency(null) }}>{label}</button>)}
+        </div></section>}
+        {formOpen && !importing && !cataloging && operationType === 'FIXED_INCOME' && selected !== null && <FixedIncomeForm key={selected} portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setFormOpen(false)} />}
+        {formOpen && !importing && !cataloging && (editing !== null || (operationType !== null && operationType !== 'FIXED_INCOME')) && <form className="panel transaction-form" onSubmit={saveTransaction}>
           <div className="section-heading"><h2>{editing === null ? 'Registrar transação' : 'Editar transação'}</h2><button type="button" className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div>
           <fieldset disabled={busy}>
             <div className="form-grid">
@@ -180,7 +188,7 @@ export default function App() {
               <label>Data da negociação<input required type="date" max={localDate().slice(0, 10)} value={draft.trade_date} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></label>
               <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
               <label>Instrumento<input readOnly={draft.instrument_id !== null} required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
-              {draft.instrument_id === null ? <InstrumentPicker query={draft.asset} onSelect={item => {
+              {draft.instrument_id === null ? <InstrumentPicker key={operationType ?? 'edit'} query={draft.asset} initialMode={operationType ?? 'LISTED'} showModeChoices={editing !== null} onSelect={item => {
                 setListedCurrency(item.asset_type === 'STOCK' || item.asset_type === 'ETF' ? item.currency : null)
                 setDraft(current => {
                   const currency = (item.asset_type === 'STOCK' || item.asset_type === 'ETF')

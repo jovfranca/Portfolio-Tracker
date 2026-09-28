@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
 from src.domain import corporate_event_effects
-from src.models import Portfolio, Transaction, TransactionImport, UserCorporateEvent
+from src.models import Benchmark, Portfolio, Transaction, TransactionImport, UserCorporateEvent
 from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
     add_alias, catalog_instruments, create_instrument, resolve_instrument, search_instruments,
@@ -76,9 +76,15 @@ def rename_portfolio(portfolio_id: int, payload: PortfolioInput, session: DB):
 def instrument_search(q: str, session: DB, category: str = 'ALL'):
     if not q.strip():
         raise HTTPException(422, 'Informe um símbolo ou nome para pesquisar.')
-    if category not in {'ALL', 'LISTED', 'STOCK', 'ETF', 'CRYPTO'}:
+    if category not in {'ALL', 'LISTED', 'STOCK', 'ETF', 'CRYPTO', 'FIXED_INCOME'}:
         raise HTTPException(422, 'Unknown instrument category.')
     return search_instruments(session, q, category=category)
+
+
+@router.get('/benchmarks')
+def active_benchmarks(session: DB):
+    rows = session.scalars(select(Benchmark).where(Benchmark.status == 'ACTIVE').order_by(Benchmark.code))
+    return [{'id': row.id, 'code': row.code, 'name': row.name} for row in rows]
 
 
 @router.get('/instruments/catalog')

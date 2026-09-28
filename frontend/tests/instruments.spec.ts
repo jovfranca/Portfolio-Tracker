@@ -8,6 +8,8 @@ async function openTransaction(page: Page, portfolioId: number) {
   await page.goto('/')
   await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
   await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
+  await expect(page.getByLabel('Instrumento', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Ações e ETFs', exact: true }).click()
 }
 
 test('selects trusted ARKX without exposing canonical or provider metadata', async ({ page, request }) => {
