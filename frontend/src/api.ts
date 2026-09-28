@@ -9,7 +9,7 @@ export type Transaction = {
   transaction_currency_locked: boolean
 }
 export type InstrumentSearchResult = {
-  instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'OTHER';
+  instrument_id: number | null; symbol: string; name: string; asset_type: 'STOCK' | 'ETF' | 'CRYPTO' | 'FIXED_INCOME' | 'OTHER';
   exchange: string | null; currency: string | null; status: 'ACTIVE' | 'INACTIVE' | 'DELISTED';
   quote_currency?: string | null;
   quote_currencies?: string[];
@@ -50,10 +50,27 @@ export type Asset = { id: number; ticker: string; transaction_currency: string |
   current_price: Numeric | null; total_value: Numeric | null; price_date: string | null;
   income_by_currency: Record<string, Numeric>; corporate_action_count: number }
 export type Overview = { positions: Position[]; assets: Asset[];
+  fixed_income?: { lot_count: number; valuation_status: 'none' | 'pending';
+    lots: { id: number; asset_id: number; instrument_id: number; currency: string;
+      current_value: null; valuation_status: 'pending' }[] };
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;
     total_value: number | null; missing_prices: string[]; missing_fx: string[]; missing_cost_fx: string[]; missing_actions?: string[]; display_currency: string; currencies: string[];
     totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric>;
     history_status: string; dirty_from: string | null; gross_income: Numeric | null }; methodology: string }
+export type FixedIncomeLot = {
+  id: number; instrument_symbol: string; instrument_name: string; product_type: string;
+  issuer: string; broker: string; currency: string; start_date: string; maturity_date: string | null;
+  yield_structure: 'FIXED_RATE' | 'BENCHMARK_MULTIPLE' | 'BENCHMARK_SPREAD';
+  fixed_rate: string | null; benchmark_id: number | null; benchmark_code: string | null; benchmark_multiplier: string | null;
+  benchmark_spread: string | null; opening_amount: string | null;
+  current_value: null; profitability: null; valuation_status: 'pending';
+  movements: { id: number; movement_type: string; amount: string; effective_date: string; currency: string }[]
+}
+export type FixedIncomeProduct = {
+  instrument_id: number; symbol: string; name: string; default_currency: string;
+  day_count_basis: string; compounding: string; business_day_calendar: string;
+  benchmark_lag_months: number
+}
 export type Performance = { date: string; quote_date?: string | null; reporting_currency: string; status: string;
   quantity: Numeric; remaining_acquisition_cost: Numeric | null; average_cost: Numeric | null;
   market_value: Numeric | null; total_gain: Numeric | null; realized_gain: Numeric | null;

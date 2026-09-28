@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric, type CatalogInstrument, type CorporateEvent, type Activity } from './api'
 import TransactionImportPage from './TransactionImportPage'
 import InstrumentPicker from './InstrumentPicker'
+import FixedIncomeForm from './FixedIncomeForm'
+import FixedIncomeLots from './FixedIncomeLots'
+
+type OperationType = 'LISTED' | 'CRYPTO' | 'FIXED_INCOME' | 'CUSTOM'
 
 const tabPaths: Record<string, string> = { 'Posições': '/', 'Transações': '/transactions', 'Cotações': '/quotes', 'Desempenho': '/performance', 'Catálogo': '/catalog' }
 const currentPath = () => window.location.hash.slice(1) || '/'
@@ -44,6 +48,7 @@ export default function App() {
   const lockedCurrency = listedCurrency
   const [editing, setEditing] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
+  const [operationType, setOperationType] = useState<OperationType | null>(null)
   const [portfolioName, setPortfolioName] = useState('')
   const [newPortfolio, setNewPortfolio] = useState(false)
   const [query, setQuery] = useState('')
@@ -75,7 +80,7 @@ export default function App() {
   }, [selected])
 
   useEffect(() => {
-    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(false); setQuery('')
+    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(false); setOperationType(null); setQuery('')
     if (selected === null) return
     const controller = new AbortController()
     setLoading(true); setError('')
@@ -133,7 +138,7 @@ export default function App() {
   }
   function edit(tx: Transaction) {
     const { id, portfolio_id: _portfolioId, transaction_currency_locked: currencyLocked, ...values } = tx
-    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setFormOpen(true)
+    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setOperationType(null); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
   const filteredPositions = overview?.positions.filter(p => (showClosed || Number(p.quantity) !== 0) && [p.asset, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
@@ -162,7 +167,7 @@ export default function App() {
           <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
           {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && <div className="page-actions">
             {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
-            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
+            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setOperationType(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
           </div>}
         </div>
         {error && <div role="alert" className="alert error">{error} <button className="button quiet" disabled={busy} onClick={() => void loadPortfolios().then(() => reload()).catch(e => setError(message(e)))}>Tentar novamente</button></div>}
@@ -172,7 +177,11 @@ export default function App() {
           <label>Nome da carteira<input required maxLength={120} value={portfolioName} onChange={e => setPortfolioName(e.target.value)} placeholder="Ex.: Investimentos pessoais" /></label>
           <button className="button primary" disabled={busy}>Criar carteira</button>
         </form>}
-        {formOpen && !importing && !cataloging && <form className="panel transaction-form" onSubmit={saveTransaction}>
+        {formOpen && !importing && !cataloging && editing === null && <section className="panel"><div className="section-heading"><h2>Tipo de ativo</h2><button className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div><div className="asset-type-choices" aria-label="Tipo de ativo da nova operação">
+          {([['LISTED', 'Ações e ETFs'], ['CRYPTO', 'Cripto'], ['FIXED_INCOME', 'Renda fixa'], ['CUSTOM', 'Personalizado']] as const).map(([value, label]) => <button type="button" key={value} disabled={busy} className={'button ' + (operationType === value ? 'primary' : 'outline')} onClick={() => { setOperationType(value); setDraft(current => ({ ...emptyDraft(), asset: current.asset })); setListedCurrency(null) }}>{label}</button>)}
+        </div></section>}
+        {formOpen && !importing && !cataloging && operationType === 'FIXED_INCOME' && selected !== null && <FixedIncomeForm key={selected} portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setFormOpen(false)} />}
+        {formOpen && !importing && !cataloging && (editing !== null || (operationType !== null && operationType !== 'FIXED_INCOME')) && <form className="panel transaction-form" onSubmit={saveTransaction}>
           <div className="section-heading"><h2>{editing === null ? 'Registrar transação' : 'Editar transação'}</h2><button type="button" className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div>
           <fieldset disabled={busy}>
             <div className="form-grid">
@@ -180,7 +189,7 @@ export default function App() {
               <label>Data da negociação<input required type="date" max={localDate().slice(0, 10)} value={draft.trade_date} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></label>
               <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
               <label>Instrumento<input readOnly={draft.instrument_id !== null} required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
-              {draft.instrument_id === null ? <InstrumentPicker query={draft.asset} onSelect={item => {
+              {draft.instrument_id === null ? <InstrumentPicker key={operationType ?? 'edit'} query={draft.asset} initialMode={operationType ?? 'LISTED'} showModeChoices={editing !== null} onSelect={item => {
                 setListedCurrency(item.asset_type === 'STOCK' || item.asset_type === 'ETF' ? item.currency : null)
                 setDraft(current => {
                   const currency = (item.asset_type === 'STOCK' || item.asset_type === 'ETF')
@@ -209,9 +218,10 @@ export default function App() {
             {!['BRL', 'USD', 'EUR'].includes(currencyDraft) && <label>Código da moeda<input aria-label="Código da moeda" value={currencyDraft} onChange={e => setCurrencyDraft(e.target.value.toUpperCase())} minLength={3} maxLength={3} pattern="[A-Za-z]{3}" placeholder="Ex.: GBP" required /></label>}
             <button className="button outline" disabled={busy || currencyDraft === selectedPortfolio?.display_currency}>Aplicar moeda</button>
           </form>
-          <div className="method-note">Histórico: {overview.summary.history_status === 'pending' ? 'atualização pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'dados incompletos'}{overview.summary.dirty_from && overview.summary.history_status === 'pending' ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. {overview.summary.history_status === 'incomplete' ? 'Confira cotações e câmbio nas datas marcadas como incompletas. ' : ''}<button className="button outline" disabled={busy} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Carteira consolidada.')}>{busy ? 'Consolidando…' : 'Consolidar carteira'}</button></div>
+          <div className="method-note">Histórico: {overview.summary.history_status === 'pending' ? 'atualização pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'dados incompletos'}{overview.summary.dirty_from && overview.summary.history_status === 'pending' ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. {overview.summary.history_status === 'incomplete' && !overview.fixed_income?.lot_count ? 'Confira cotações e câmbio nas datas marcadas como incompletas. ' : ''}<button className="button outline" disabled={busy} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Carteira consolidada.')}>{busy ? 'Consolidando…' : 'Consolidar carteira'}</button></div>
+          {overview.fixed_income?.lot_count ? <div className="method-note">{overview.fixed_income.lot_count} lote(s) de renda fixa registrado(s). Avaliação pendente; o valor total da carteira permanece indisponível.</div> : null}
           <div className="metrics">
-            <article className="metric featured"><span>Valor das posições · {overview.summary.display_currency}</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.summary.missing_actions?.length ? 'Eventos não verificados: ' + overview.summary.missing_actions.join(', ') : overview.summary.missing_fx.length ? 'FX indisponível: ' + overview.summary.missing_fx.join(', ') : overview.summary.missing_prices.length ? 'Sem cotação: ' + overview.summary.missing_prices.join(', ') : 'Total convertido na data da avaliação'}</small></article>
+            <article className="metric featured"><span>Valor das posições · {overview.summary.display_currency}</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.fixed_income?.lot_count ? 'Avaliação de renda fixa pendente' : overview.summary.missing_actions?.length ? 'Eventos não verificados: ' + overview.summary.missing_actions.join(', ') : overview.summary.missing_fx.length ? 'FX indisponível: ' + overview.summary.missing_fx.join(', ') : overview.summary.missing_prices.length ? 'Sem cotação: ' + overview.summary.missing_prices.join(', ') : 'Total convertido na data da avaliação'}</small></article>
             <article className="metric"><span>Ativos acompanhados</span><strong>{overview.summary.assets.toString().padStart(2, '0')}</strong><small>{overview.summary.positions} posições registradas</small></article>
             <article className="metric"><span>Operações registradas</span><strong>{overview.summary.transactions.toString().padStart(2, '0')}</strong><small>Compras e vendas persistidas</small></article>
           </div>
@@ -219,18 +229,20 @@ export default function App() {
           {tab === 'Posições' && <section className="panel">
             <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição por instrumento.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
             <label className="checkbox-control"><input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} /> Mostrar posições encerradas</label>
-            {!overview.positions.length ? <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
+            {!overview.positions.length ? overview.fixed_income?.lot_count ? <div className="empty">Os lotes de renda fixa estão listados abaixo. Não há posições de ações, ETFs ou cripto.</div> : <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
               <div className="table-wrap"><table><thead><tr><th>Ativo / classe</th><th>Quantidade</th><th>Preço médio / custo</th><th>Cotação</th><th>Valor atual</th><th>Renda bruta</th><th>Resultado total</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={p.asset_id ?? p.asset}>
                 <td><strong>{p.asset}</strong><small>{p.allocation_class}</small></td><td>{fmt(p.quantity, 6)}</td><td>{p.display_currency} {fmt(p.display_average_cost, 4)}<small>Custo {p.display_currency} {fmt(p.display_acquisition_cost)}</small>{p.native_currency && p.native_currency !== p.display_currency && p.native_average_cost !== null && <small>{p.native_currency} {fmt(p.native_average_cost, 4)} · custo {fmt(p.native_acquisition_cost)}</small>}</td><td>{p.display_currency} {fmt(p.display_price)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.current_price)}</small>}<small>{dateLabel(p.price_date)}{p.quote_refresh_required ? " · atualização pendente" : ""}</small></td><td>{p.display_currency} {fmt(p.display_value)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.total_value)}</small>}</td>
                 <td>{p.display_currency} {fmt(p.gross_income)}{p.native_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.native_gross_income)}</small>}</td>
                 <td className={Number(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{p.display_currency} {fmt(p.current_total_gain)}<small>{p.current_accumulated_profitability === null ? 'Retorno histórico indisponível' : fmt(p.current_accumulated_profitability) + '%' + (p.return_date ? ' até ' + dateLabel(p.return_date) : '')}{p.status !== 'complete' ? ' · valores incompletos' : ''}{p.history_behind_transactions ? ' · cotação anterior à última atividade' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
+          {tab === 'Posições' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${overview.fixed_income.lot_count}`} portfolioId={selected!} view="positions" />}
           {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar recalcula as posições automaticamente.</p></div></div>
-            {!transactions.length ? <div className="empty">Nenhuma transação registrada.</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
+            {!transactions.length ? <div className="empty">{overview.fixed_income?.lot_count ? 'Não há compras ou vendas de mercado. Os movimentos de renda fixa estão abaixo.' : 'Nenhuma transação registrada.'}</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
               if (window.confirm('Excluir esta transação e recalcular as posições?')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída.')
             }}>Excluir</button></div></td></tr>)}</tbody></table></div>}
           </section>}
+          {tab === 'Transações' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${overview.fixed_income.lot_count}`} portfolioId={selected!} view="movements" />}
           {tab === 'Cotações' && <Quotes key={selected} portfolioId={selected!} assets={overview.assets} busy={busy} mutate={mutate} />}
           {tab === 'Desempenho' && <PerformancePanel key={selected} portfolioId={selected!} overview={overview} />}
           <footer className="footnote">Portfolio Tracker · Cálculos executados no backend Python · Uso local individual</footer>

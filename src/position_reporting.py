@@ -9,6 +9,7 @@ from src.corporate_actions import get_stored_actions, missing_action_ranges
 from src.domain import ZERO, decimal, position_history, position_now, summary_totals, transaction_date
 from src.market_prices import history_for_reporting, quote_refresh_required
 from src.models import Asset, Portfolio, PortfolioSnapshot, PositionSnapshot, Transaction
+from src.fixed_income import list_lots
 from src.rates import RateUnavailable, convert_amount
 
 
@@ -66,6 +67,7 @@ def reporting_factors(session, display_currency, transactions, events, prices, *
 
 def get_overview(session, portfolio_id):
     portfolio, transactions, assets = sources(session, portfolio_id)
+    fixed_income_lots = list_lots(session, portfolio_id)
     valuation_date = date.today()
     positions = []
     asset_rows = []
@@ -190,7 +192,7 @@ def get_overview(session, portfolio_id):
             PortfolioSnapshot.reporting_currency == portfolio.display_currency,
         ))
         latest_snapshot_status = latest_snapshot.status if latest_snapshot else None
-    return {
+    result = {
         'positions': positions, 'assets': asset_rows,
         'summary': {
             'transactions': len(transactions), 'positions': len(positions), 'assets': len(asset_rows),
@@ -220,3 +222,19 @@ def get_overview(session, portfolio_id):
                         'sua data é indicada no histórico. Ganho monetário e retorno percentual '
                         'podem ter sinais diferentes após aportes e variações cambiais.'),
     }
+    if fixed_income_lots:
+        result['fixed_income'] = {
+            'lot_count': len(fixed_income_lots), 'valuation_status': 'pending',
+            'lots': [{'id': lot.id, 'asset_id': lot.asset_id, 'instrument_id': lot.asset.instrument_id,
+                      'currency': lot.currency, 'current_value': None,
+                      'valuation_status': 'pending'} for lot in fixed_income_lots],
+        }
+        result['summary']['total_value'] = None
+        for field in ('priced_value', 'acquisition_cost', 'realized_gain',
+                      'unrealized_gain', 'total_gain', 'gross_income'):
+            result['summary'][field] = None
+        result['summary']['income_by_currency'] = {}
+        result['summary']['history_status'] = 'incomplete'
+    else:
+        result['fixed_income'] = {'lot_count': 0, 'valuation_status': 'none', 'lots': []}
+    return result

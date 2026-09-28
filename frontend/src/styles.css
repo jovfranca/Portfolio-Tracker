@@ -8,5 +8,6 @@
 .checkbox-control{display:inline-flex;flex-direction:row;align-items:center;gap:8px;padding:0 25px 16px;cursor:pointer}.checkbox-control input{width:auto;margin:0}
 @media(max-width:700px){.page-heading{flex-wrap:wrap}.page-actions{width:100%}.import-instructions{padding:0 18px 18px}.transaction-import-page .import-box{margin:0 18px 18px}.import-preview .form-footer{flex-wrap:wrap}.import-preview .form-footer>span{max-width:100%}.instrument-results,.custom-instrument-form{grid-template-columns:1fr}.catalog-page>article{grid-template-columns:1fr;gap:10px}}
 .warning{background:#fff8e9;color:#805d20;border:1px solid #e8d8b7}
+.advanced-settings{grid-column:1/-1;border:1px solid #e2e8df;border-radius:8px;padding:12px 16px}.advanced-settings summary{cursor:pointer;font-size:12px;font-weight:600;color:#426a54}.advanced-settings .form-grid{margin-top:15px}
 
 @media(max-width:700px){.chart{overflow-x:auto}.chart svg{min-width:700px}.chart text{font-size:12px}}

@@ -56,6 +56,8 @@ def ensure_asset(session, portfolio_id, instrument):
 
 def transaction_currency_for(instrument, supplied_currency):
     """Resolve a transaction currency without changing canonical identity."""
+    if instrument.asset_type == 'FIXED_INCOME':
+        raise HTTPException(422, 'Use o registro de lotes e movimentos para renda fixa.')
     if instrument.asset_type in ('STOCK', 'ETF'):
         if not instrument.currency:
             raise HTTPException(422, 'O instrumento listado não tem moeda nativa configurada.')

@@ -151,12 +151,83 @@ class TransactionOutput(TransactionInput):
 class CustomInstrumentInput(Input):
     symbol: Annotated[str, Field(min_length=1, max_length=40, pattern=r'^[A-Za-z0-9.^=:/_-]+$')]
     name: Annotated[str, Field(min_length=1, max_length=200)]
-    asset_type: Literal['STOCK', 'ETF', 'CRYPTO', 'OTHER'] = 'OTHER'
+    asset_type: Literal['STOCK', 'ETF', 'CRYPTO', 'FIXED_INCOME', 'OTHER'] = 'OTHER'
     currency: Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')]
 
     @field_validator('symbol', 'asset_type', 'currency')
     @classmethod
     def normalize_custom_codes(cls, value):
+        return value.upper()
+
+
+CurrencyCode = Annotated[str, Field(min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')]
+ContractFraction = Annotated[Decimal, Field(ge=0, le=1000, allow_inf_nan=False,
+                                           max_digits=28, decimal_places=12)]
+AnnualRate = Annotated[Decimal, Field(ge=-1, le=1000, allow_inf_nan=False,
+                                     max_digits=28, decimal_places=12)]
+
+
+class FixedIncomeLotInput(Input):
+    instrument_id: int = Field(gt=0)
+    product_type: Annotated[str, Field(min_length=1, max_length=40, pattern=r'^[A-Za-z0-9_-]+$')]
+    issuer: Annotated[str, Field(min_length=1, max_length=200)]
+    broker: Name
+    currency: CurrencyCode | None = None
+    start_date: date
+    maturity_date: date | None = None
+    yield_structure: Literal['FIXED_RATE', 'BENCHMARK_MULTIPLE', 'BENCHMARK_SPREAD']
+    fixed_rate: AnnualRate | None = None
+    benchmark_id: int | None = Field(default=None, gt=0)
+    benchmark_multiplier: ContractFraction | None = None
+    benchmark_spread: AnnualRate | None = None
+    day_count_basis: Literal['BUS_252', 'ACT_365', 'ACT_360'] | None = None
+    compounding: Literal['SIMPLE', 'COMPOUND'] | None = None
+    business_day_calendar: Literal['BR', 'NONE'] | None = None
+    benchmark_lag_months: int | None = Field(default=None, ge=0, le=24)
+    opening_amount: PositiveDecimalAmount
+    notes: Annotated[str, Field(max_length=5000)] = ''
+
+    @field_validator('currency')
+    @classmethod
+    def normalize_lot_currency(cls, value):
+        return value.upper() if value else None
+
+    @field_validator('product_type')
+    @classmethod
+    def normalize_product_type(cls, value):
+        return value.upper()
+
+    @model_validator(mode='after')
+    def valid_contract(self):
+        if self.maturity_date and self.maturity_date < self.start_date:
+            raise ValueError('Maturity date must be on or after start date.')
+        terms = (self.fixed_rate, self.benchmark_id, self.benchmark_multiplier, self.benchmark_spread)
+        if self.yield_structure == 'FIXED_RATE' and not (
+            terms[0] is not None and terms[1:] == (None, None, None)
+        ):
+            raise ValueError('Fixed rate requires only fixed_rate.')
+        if self.yield_structure == 'BENCHMARK_MULTIPLE' and not (
+            terms[0] is None and terms[1] is not None and terms[2] is not None and terms[3] is None
+        ):
+            raise ValueError('Benchmark multiple requires benchmark_id and benchmark_multiplier.')
+        if self.yield_structure == 'BENCHMARK_SPREAD' and not (
+            terms[0] is None and terms[1] is not None and terms[2] is None and terms[3] is not None
+        ):
+            raise ValueError('Benchmark spread requires benchmark_id and benchmark_spread.')
+        return self
+
+
+class FixedIncomeMovementInput(Input):
+    movement_type: Literal['ADDITIONAL_INVESTMENT', 'PARTIAL_REDEMPTION', 'FULL_REDEMPTION',
+                           'MATURITY', 'AMORTIZATION']
+    effective_date: date
+    amount: PositiveDecimalAmount
+    currency: CurrencyCode
+    notes: Annotated[str, Field(max_length=5000)] = ''
+
+    @field_validator('currency')
+    @classmethod
+    def normalize_movement_currency(cls, value):
         return value.upper()
 
 

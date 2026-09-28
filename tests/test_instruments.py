@@ -10,7 +10,7 @@ from src.market_prices import get_latest, get_stored_history, save_user_price
 from src.models import (
     Asset, Instrument, InstrumentAlias, LatestMarketQuote, MarketPrice,
     MarketPriceCoverage, Portfolio, ProviderInstrument, UserDefinedPrice,
-    CorporateAction, CorporateActionCoverage,
+    CorporateAction, CorporateActionCoverage, FixedIncomeProduct,
 )
 from src.services import ensure_asset
 
@@ -23,7 +23,7 @@ def session():
         InstrumentAlias.__table__, Asset.__table__, MarketPrice.__table__,
         MarketPriceCoverage.__table__, LatestMarketQuote.__table__,
         UserDefinedPrice.__table__,
-        CorporateAction.__table__, CorporateActionCoverage.__table__,
+        CorporateAction.__table__, CorporateActionCoverage.__table__, FixedIncomeProduct.__table__,
     ]:
         table.create(engine)
     from sqlalchemy import text
@@ -473,14 +473,28 @@ def test_catalog_seed_is_idempotent_and_loads_aliases_and_mappings(session):
     from src.instrument_catalog import seed_catalog
     first = seed_catalog(session)
     second = seed_catalog(session)
-    assert first == second == {'instruments': 24, 'mappings': 26}
-    assert session.scalar(select(func.count()).select_from(Instrument)) == 24
+    assert first == second == {'instruments': 27, 'mappings': 26}
+    assert session.scalar(select(func.count()).select_from(Instrument)) == 27
     assert session.scalar(select(func.count()).select_from(ProviderInstrument)) == 26
     assert resolve_instrument(session, 'PETR4.SA').instrument.symbol == 'PETR4'
     assert resolve_instrument(session, 'BTCBRL').instrument.symbol == 'BTC'
     btc = session.scalar(select(Instrument).where(Instrument.symbol == 'BTC'))
     assert btc.origin == 'CATALOG'
     assert provider_mapping(session, btc).provider_symbol == 'BTC-USD'
+
+
+def test_fixed_income_products_have_persisted_defaults_and_no_provider(session):
+    from src.instrument_catalog import seed_catalog
+
+    seed_catalog(session)
+    for symbol in ('CDB', 'LCI', 'LCA'):
+        instrument = session.scalar(select(Instrument).where(Instrument.symbol == symbol))
+        product = session.get(FixedIncomeProduct, instrument.id)
+        assert instrument.origin == 'CATALOG' and instrument.asset_type == 'FIXED_INCOME'
+        assert instrument.provider_mappings == []
+        assert (product.default_currency, product.day_count_basis, product.compounding,
+                product.business_day_calendar, product.benchmark_lag_months) == (
+                    'BRL', 'BUS_252', 'COMPOUND', 'BR', 0)
 
 
 def test_mvp_catalog_metadata_mappings_and_symbols_are_resolvable(session):
@@ -519,7 +533,7 @@ def test_mvp_catalog_metadata_mappings_and_symbols_are_resolvable(session):
         instrument.symbol: instrument
         for instrument in session.scalars(select(Instrument)).all()
     }
-    assert set(instruments) == {row[0] for row in expected_rows}
+    assert set(instruments) == {row[0] for row in expected_rows} | {'CDB', 'LCI', 'LCA'}
 
     for symbol, name, asset_type, exchange, currency, provider_symbol, quote_currency, primary in expected_rows:
         instrument = instruments[symbol]
