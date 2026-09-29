@@ -59,6 +59,11 @@ def _stored(session, benchmark, start, end):
     return latest
 
 
+def stored_observations(session, benchmark, start, end):
+    """Read canonical observations for valuation without provider calls or writes."""
+    return list(_stored(session, benchmark, start, end).values())
+
+
 def _missing_periods(start, end, frequency, cached, coverage):
     missing = []
     cursor = start

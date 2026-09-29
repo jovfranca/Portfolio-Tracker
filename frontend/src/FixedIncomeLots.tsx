@@ -27,7 +27,7 @@ export default function FixedIncomeLots({ portfolioId, view }: { portfolioId: nu
   }, [portfolioId])
 
   return <section className="panel">
-    <div className="section-heading"><div><h2>{view === 'positions' ? 'Renda fixa' : 'Movimentos de renda fixa'}</h2><p>Contratos registrados; avaliação e retorno ainda pendentes.</p></div></div>
+    <div className="section-heading"><div><h2>{view === 'positions' ? 'Renda fixa' : 'Movimentos de renda fixa'}</h2><p>Valor bruto contratual por lote, antes de impostos.</p></div></div>
     {error && <div role="alert" className="alert error">{error}</div>}
     {view === 'positions' ? <div className="table-wrap"><table><thead><tr><th>Instrumento</th><th>Emissor / corretora</th><th>Rendimento</th><th>Aplicação / vencimento</th><th>Valor aplicado</th><th>Saldo atual</th><th>Retorno</th></tr></thead><tbody>
       {lots.map(lot => <tr key={lot.id}>
@@ -36,7 +36,8 @@ export default function FixedIncomeLots({ portfolioId, view }: { portfolioId: nu
         <td>{yieldLabel(lot)}</td>
         <td>{dateLabel(lot.start_date)}<small>Vencimento {dateLabel(lot.maturity_date)}</small></td>
         <td>{lot.currency} {amountLabel(lot.opening_amount)}</td>
-        <td>Pendente</td><td>Pendente</td>
+        <td>{lot.valuation?.status === 'complete' ? <>{lot.currency} {amountLabel(String(lot.valuation.gross_accrued_value))}<small>Principal {amountLabel(String(lot.valuation.outstanding_principal))}</small>{lot.valuation.display_currency !== lot.currency && <small>{lot.valuation.display_currency} {amountLabel(String(lot.valuation.display_value))}</small>}</> : <span title={lot.valuation?.status}>Indisponível · {lot.valuation?.status ?? 'pendente'}</span>}</td>
+        <td>{lot.valuation?.status === 'complete' ? <>{lot.currency} {amountLabel(String(lot.valuation.accrued_gain))}<small>Bruto, antes de impostos</small></> : '—'}</td>
       </tr>)}
     </tbody></table></div> : <div className="table-wrap"><table><thead><tr><th>Data</th><th>Instrumento / emissor</th><th>Movimento</th><th>Valor</th><th>Rendimento</th></tr></thead><tbody>
       {lots.flatMap(lot => lot.movements.map(movement => <tr key={`${lot.id}-${movement.id}`}>

@@ -21,7 +21,7 @@ from src.schemas import (
     TransactionImportConfirm, TransactionSelectionInput, TransactionOutput,
     FixedIncomeLotInput, FixedIncomeMovementInput,
 )
-from src.fixed_income import add_movement, create_lot, get_lot, list_lots, lot_data, movement_data
+from src.fixed_income import add_movement, create_lot, get_lot, list_lots, lot_data, movement_data, value_lot
 from src.services import (
     ensure_asset, get_asset, get_overview, get_portfolio, require_instrument,
     transaction_currency_for, transaction_values,
@@ -181,13 +181,23 @@ def create_fixed_income_lot(portfolio_id: int, payload: FixedIncomeLotInput, ses
 
 
 @router.get('/portfolios/{portfolio_id}/fixed-income/lots')
-def fixed_income_lots(portfolio_id: int, session: DB):
-    return [lot_data(lot) for lot in list_lots(session, portfolio_id)]
+def fixed_income_lots(portfolio_id: int, session: DB, as_of: date | None = None):
+    valuation_date = as_of or date.today()
+    if valuation_date > date.today():
+        raise HTTPException(422, 'Valuation date cannot be in the future.')
+    portfolio = get_portfolio(session, portfolio_id)
+    return [lot_data(lot, value_lot(session, lot, valuation_date, portfolio.display_currency))
+            for lot in list_lots(session, portfolio_id)]
 
 
 @router.get('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}')
-def fixed_income_lot(portfolio_id: int, lot_id: int, session: DB):
-    return lot_data(get_lot(session, portfolio_id, lot_id))
+def fixed_income_lot(portfolio_id: int, lot_id: int, session: DB, as_of: date | None = None):
+    valuation_date = as_of or date.today()
+    if valuation_date > date.today():
+        raise HTTPException(422, 'Valuation date cannot be in the future.')
+    lot = get_lot(session, portfolio_id, lot_id)
+    portfolio = get_portfolio(session, portfolio_id)
+    return lot_data(lot, value_lot(session, lot, valuation_date, portfolio.display_currency))
 
 
 @router.post('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements', status_code=201)

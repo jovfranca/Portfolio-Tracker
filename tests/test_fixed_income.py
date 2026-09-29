@@ -1,3 +1,4 @@
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import os
 
@@ -9,7 +10,10 @@ from sqlalchemy.pool import StaticPool
 
 from src.database import Base, engine as postgres_engine, get_session
 from src.main import app
-from src.models import Benchmark, FixedIncomeLot, FixedIncomeMovement, FixedIncomeProduct, Instrument, Portfolio, PortfolioSnapshot
+from src.models import (
+    Benchmark, BenchmarkObservation, BenchmarkProviderMapping, ExchangeRate,
+    FixedIncomeLot, FixedIncomeMovement, FixedIncomeProduct, Instrument, Portfolio, PortfolioSnapshot,
+)
 
 
 @pytest.fixture
@@ -124,9 +128,14 @@ def test_canonical_product_defaults_are_snapshotted_into_lots(client):
 
 def test_independent_lots_and_authoritative_opening_movements(client):
     c, engine = client
-    first = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload()).json()
+    start = date.today() - timedelta(days=3)
+    first = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None, day_count_basis='ACT_365',
+        business_day_calendar='NONE')).json()
     second = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
-        start_date='2024-02-02', fixed_rate='0.13', opening_amount='2000')).json()
+        start_date=(start + timedelta(days=1)).isoformat(), maturity_date=None,
+        day_count_basis='ACT_365', business_day_calendar='NONE',
+        fixed_rate='0.13', opening_amount='2000')).json()
     assert first['id'] != second['id']
     assert first['asset_id'] == second['asset_id']
     assert first['instrument_id'] == second['instrument_id'] == 1
@@ -135,7 +144,7 @@ def test_independent_lots_and_authoritative_opening_movements(client):
     assert Decimal(first['opening_amount']) == Decimal('1000.00')
     assert first['current_value'] is None and first['profitability'] is None
     assert first['current_value'] is None and first['valuation_status'] == 'pending'
-    assert first['business_day_calendar'] == 'BR' and first['benchmark_lag_months'] == 0
+    assert first['business_day_calendar'] == 'NONE' and first['benchmark_lag_months'] == 0
     assert first['movements'][0]['amount'] == '1000.000000000000'
     assert [x['id'] for x in c.get('/api/portfolios/1/fixed-income/lots').json()] == [first['id'], second['id']]
     assert c.get(f"/api/portfolios/1/fixed-income/lots/{first['id']}").json()['fixed_rate'] == '0.120000000000'
@@ -143,13 +152,17 @@ def test_independent_lots_and_authoritative_opening_movements(client):
         assert session.query(FixedIncomeLot).count() == 2
         assert session.query(FixedIncomeMovement).count() == 2
     overview = c.get('/api/portfolios/1/overview').json()
-    assert overview['fixed_income']['valuation_status'] == 'pending'
-    assert overview['summary']['total_value'] is None
-    assert overview['summary']['total_gain'] is None
-    assert overview['summary']['gross_income'] is None
+    assert overview['fixed_income']['valuation_status'] == 'complete'
+    assert overview['summary']['total_value'] > 3000
+    assert overview['summary']['total_gain'] > 0
+    assert overview['summary']['gross_income'] == 0
+    assert len(overview['fixed_income']['positions']) == 1
+    assert len(overview['fixed_income']['positions'][0]['lots']) == 2
     consolidation = c.post('/api/portfolios/1/consolidate').json()
-    assert consolidation['complete'] is False
-    assert 'pendente' in consolidation['message']
+    assert consolidation['complete'] is True
+    history = c.get('/api/portfolios/1/history').json()
+    assert history and all(row['status'] == 'complete' for row in history)
+    assert history[-1]['market_value'] > 3000
 
 
 @pytest.mark.parametrize('changes', [
@@ -250,6 +263,187 @@ def test_portfolio_history_never_reports_equity_only_values_as_complete_after_lo
                   'unrealized_gain', 'gross_income', 'total_gain',
                   'daily_return_pct', 'cumulative_return_pct'):
         assert history[1][field] is None, field
+
+
+def test_current_lot_api_and_history_use_accrued_value_without_rewriting_sources(client):
+    c, engine = client
+    start = date.today() - timedelta(days=3)
+    payload = lot_payload(start_date=start.isoformat(), maturity_date=None,
+                          day_count_basis='ACT_365', business_day_calendar='NONE')
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=payload).json()
+    lot_id = created['id']
+    current = c.get(f'/api/portfolios/1/fixed-income/lots/{lot_id}').json()
+    assert current['valuation_status'] == 'complete'
+    assert Decimal(current['current_value']) > 1000
+    assert Decimal(str(current['valuation']['outstanding_principal'])) == 1000
+    opening = c.get(f'/api/portfolios/1/fixed-income/lots/{lot_id}',
+                    params={'as_of': start.isoformat()}).json()
+    assert Decimal(opening['current_value']) == 1000
+    assert opening['valuation']['valuation_date'] == start.isoformat()
+    first = c.post('/api/portfolios/1/consolidate').json()
+    assert first['complete'] is True
+    history = c.get('/api/portfolios/1/history').json()
+    assert len(history) == 3
+    assert history[0]['market_value'] == 1000
+    assert history[-1]['market_value'] > 1000
+    performance = c.get('/api/portfolios/1/performance',
+                        params={'asset_id': created['asset_id']}).json()
+    assert performance[0]['quantity'] is None
+    assert performance[0]['cumulative_return_pct'] == 0
+    assert performance[-1]['cumulative_return_pct'] > 0
+    c.post('/api/portfolios/1/consolidate')
+    assert c.get('/api/portfolios/1/history').json() == history
+    with Session(engine) as session:
+        assert session.get(FixedIncomeLot, lot_id).fixed_rate == Decimal('0.12')
+        assert session.query(FixedIncomeMovement).filter_by(lot_id=lot_id).count() == 1
+
+
+def test_future_dirty_movement_preserves_finalized_history(client):
+    c, _ = client
+    start = date.today() - timedelta(days=3)
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None,
+        day_count_basis='ACT_365', business_day_calendar='NONE')).json()
+    assert c.post('/api/portfolios/1/consolidate').json()['complete']
+    history = c.get('/api/portfolios/1/history').json()
+    assert all(row['status'] == 'complete' for row in history)
+
+    response = c.post(f"/api/portfolios/1/fixed-income/lots/{created['id']}/movements", json={
+        'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': date.today().isoformat(),
+        'amount': '100', 'currency': 'BRL',
+    })
+    assert response.status_code == 201, response.text
+    assert c.get('/api/portfolios/1/history').json() == history
+
+
+def test_missing_cdi_and_fx_keep_current_value_unknown(client):
+    c, engine = client
+    start = date.today() - timedelta(days=5)
+    benchmark = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None, yield_structure='BENCHMARK_MULTIPLE',
+        fixed_rate=None, benchmark_id=1, benchmark_multiplier='1.10')).json()
+    overview = c.get('/api/portfolios/1/overview').json()
+    assert overview['summary']['total_value'] is None
+    assert overview['fixed_income']['lots'][0]['status'] == 'missing_benchmark'
+    assert overview['fixed_income']['lots'][0]['gross_accrued_value'] is None
+    with Session(engine) as session:
+        assert session.query(Benchmark).count() == 1
+    foreign = c.post('/api/portfolios/1/fixed-income/instruments/custom', json={
+        'symbol': 'USD-TEST', 'name': 'USD test', 'asset_type': 'FIXED_INCOME', 'currency': 'USD'}).json()
+    usd = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        instrument_id=foreign['id'], product_type='CDB', currency='USD',
+        start_date=start.isoformat(), maturity_date=None)).json()
+    state = c.get(f"/api/portfolios/1/fixed-income/lots/{usd['id']}").json()
+    assert state['valuation_status'] == 'missing_fx'
+    assert state['current_value'] is not None
+    assert state['valuation']['gross_accrued_value'] is not None
+    consolidation = c.post('/api/portfolios/1/consolidate').json()
+    assert consolidation['history_status'] == 'incomplete'
+    history = c.get('/api/portfolios/1/history').json()
+    assert any(row['status'] == 'incomplete' and row['market_value'] is None for row in history)
+
+
+def test_missing_historical_fx_keeps_later_returns_incomplete(client):
+    c, engine = client
+    start = date.today() - timedelta(days=3)
+    instrument = c.post('/api/portfolios/1/fixed-income/instruments/custom', json={
+        'symbol': 'USD-GAP', 'name': 'USD gap', 'asset_type': 'FIXED_INCOME',
+        'currency': 'USD',
+    }).json()
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        instrument_id=instrument['id'], product_type='CDB', currency='USD',
+        start_date=start.isoformat(), maturity_date=None,
+        day_count_basis='ACT_365', business_day_calendar='NONE')).json()
+    with Session(engine) as session:
+        for offset in (1, 2, 3):
+            session.add(ExchangeRate(
+                currency='USD', rate_type='FX', rate_side='MARKET',
+                reference_date=start + timedelta(days=offset),
+                rate=Decimal('5'), source='test',
+            ))
+        session.commit()
+
+    assert c.post('/api/portfolios/1/consolidate').json()['history_status'] == 'incomplete'
+    history = c.get('/api/portfolios/1/history').json()
+    performance = c.get('/api/portfolios/1/performance',
+                        params={'asset_id': created['asset_id']}).json()
+    assert history[0]['status'] == performance[0]['status'] == 'incomplete'
+    assert history[1]['market_value'] is not None
+    assert performance[1]['market_value'] is not None
+    assert history[1]['status'] == performance[1]['status'] == 'incomplete_history'
+    assert history[1]['cumulative_return_pct'] is None
+    assert performance[1]['cumulative_return_pct'] is None
+
+
+def test_partial_redemption_is_lot_scoped_and_fx_converts_display_only(client):
+    c, engine = client
+    start = date.today() - timedelta(days=3)
+    instrument = c.post('/api/portfolios/1/fixed-income/instruments/custom', json={
+        'symbol': 'USD-LOTS', 'name': 'USD lots', 'asset_type': 'FIXED_INCOME', 'currency': 'USD'}).json()
+    payload = lot_payload(instrument_id=instrument['id'], product_type='CDB', currency='USD',
+                          start_date=start.isoformat(), maturity_date=None,
+                          day_count_basis='ACT_365', business_day_calendar='NONE')
+    first = c.post('/api/portfolios/1/fixed-income/lots', json=payload).json()
+    second = c.post('/api/portfolios/1/fixed-income/lots', json=payload).json()
+    movement = c.post(f"/api/portfolios/1/fixed-income/lots/{first['id']}/movements", json={
+        'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': (start + timedelta(days=1)).isoformat(),
+        'amount': '400', 'currency': 'USD'}).json()
+    assert movement['lot_id'] == first['id']
+    with Session(engine) as session:
+        for offset in range(4):
+            session.add(ExchangeRate(currency='USD', rate_type='FX', rate_side='MARKET',
+                                     reference_date=start + timedelta(days=offset),
+                                     rate=Decimal('5'), source='test'))
+        session.commit()
+    overview = c.get('/api/portfolios/1/overview').json()
+    assert overview['fixed_income']['valuation_status'] == 'complete'
+    lots = overview['fixed_income']['lots']
+    assert len(lots) == 2
+    assert lots[0]['outstanding_principal'] < 1000
+    assert lots[1]['outstanding_principal'] == 1000
+    assert lots[0]['currency'] == lots[1]['currency'] == 'USD'
+    assert abs(Decimal(str(lots[0]['display_value'])) -
+               Decimal(str(lots[0]['gross_accrued_value'])) * 5) < Decimal('0.000001')
+    assert overview['summary']['total_value'] == overview['fixed_income']['positions'][0]['display_value']
+    history = c.post('/api/portfolios/1/consolidate').json()
+    assert history['complete'] is True
+    assert all(row['status'] == 'complete' for row in c.get('/api/portfolios/1/history').json())
+    with Session(engine) as session:
+        assert session.get(FixedIncomeLot, first['id']).currency == 'USD'
+        assert session.get(FixedIncomeMovement, movement['id']).amount == Decimal('400')
+
+
+def test_cdi_valuation_reads_only_canonical_stored_observations(client, monkeypatch):
+    from src import benchmarks
+    from src.fixed_income import value_lot
+
+    c, engine = client
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        yield_structure='BENCHMARK_MULTIPLE', fixed_rate=None, benchmark_id=1,
+        benchmark_multiplier='1.10', business_day_calendar='NONE')).json()
+    monkeypatch.setattr(benchmarks, 'fetch_benchmark_history',
+                        lambda *_: pytest.fail('valuation fetched benchmark data'))
+    with Session(engine) as session:
+        lot = session.get(FixedIncomeLot, created['id'])
+        missing = value_lot(session, lot, date(2024, 1, 4), 'BRL')
+        assert missing['status'] == 'missing_benchmark'
+        mapping = BenchmarkProviderMapping(benchmark_id=1, provider='test', series_id='cdi-test',
+                                           active=True, is_primary=True)
+        session.add(mapping)
+        session.flush()
+        for day in (date(2024, 1, 3), date(2024, 1, 4)):
+            session.add(BenchmarkObservation(
+                benchmark_id=1, provider_mapping_id=mapping.id, reference_date=day,
+                value=Decimal('0.04'), source='test',
+                retrieved_at=datetime(2024, 1, 5, tzinfo=timezone.utc)))
+        session.flush()
+        valued = value_lot(session, lot, date(2024, 1, 4), 'BRL')
+        assert valued['status'] == 'complete'
+        assert valued['gross_accrued_value'] == Decimal('1000') * Decimal('1.00044') ** 2
+        assert valued['benchmark_start'] == date(2024, 1, 3)
+        assert valued['benchmark_end'] == date(2024, 1, 4)
 
 
 @pytest.mark.integration
