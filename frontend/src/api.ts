@@ -69,7 +69,16 @@ export type FixedIncomeLot = {
     gross_accrued_value: Numeric | null; accrued_gain: Numeric | null;
     display_currency: string; display_value: Numeric | null; status: string;
     benchmark_start: string | null; benchmark_end: string | null } | null;
-  movements: { id: number; movement_type: string; amount: string; effective_date: string; currency: string }[]
+  movements: FixedIncomeMovement[]
+}
+export type FixedIncomeMovement = {
+  id: number; lot_id: number; movement_type: string; amount: string;
+  effective_date: string; currency: string; notes: string
+}
+export type BenchmarkObservations = {
+  code: string; name: string; unit: string; frequency: string; count: number;
+  earliest: string | null; latest: string | null;
+  observations: { reference_date: string; value: string; unit: string; source: string }[]
 }
 export type FixedIncomeProduct = {
   instrument_id: number; symbol: string; name: string; default_currency: string;

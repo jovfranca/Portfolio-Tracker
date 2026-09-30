@@ -190,7 +190,8 @@ def get_overview(session, portfolio_id):
             **item, 'position_type': 'FIXED_INCOME', 'native_currency': item['currency'],
             'quote_currency': None, 'transaction_currency': item['currency'],
             'broker': ', '.join(sorted({row.broker.name for row in fixed_income_lots
-                                       if row.asset_id == item['asset_id']})),
+                                       if row.asset_id == item['asset_id']
+                                       and row.start_date <= valuation_date})),
             'allocation_class': 'Renda fixa', 'quantity': None, 'average_cost': None,
             'current_price': None, 'total_value': None, 'display_price': None,
             'display_average_cost': None, 'display_acquisition_cost': item['acquisition_cost'],

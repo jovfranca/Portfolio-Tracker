@@ -227,6 +227,7 @@ def _pending_fixed_income_values(values, first_pending_day):
 
 def consolidate(session, portfolio_id):
     from src.services import get_portfolio
+    from src.benchmarks import get_history as get_benchmark_history
     from src.fixed_income import daily_position_rows, list_lots, position_valuations
     portfolio = get_portfolio(session, portfolio_id, lock=True)
     pending_lots = list_lots(session, portfolio_id)
@@ -256,6 +257,20 @@ def consolidate(session, portfolio_id):
     ))
     valuation_date = date.today()
     through = valuation_date - timedelta(days=1)
+    # Valuation reads stored canonical observations; populate them with the
+    # shared benchmark service before replaying portfolio history.
+    for lot in pending_lots:
+        if lot.benchmark is None or lot.start_date > through:
+            continue
+        if lot.yield_structure == 'BENCHMARK_SPREAD':
+            first_month = lot.start_date.year * 12 + lot.start_date.month - 2 - lot.benchmark_lag_months
+            last_month = through.year * 12 + through.month - 2 - lot.benchmark_lag_months
+            first = date(first_month // 12, first_month % 12 + 1, 1)
+            last = date(last_month // 12, last_month % 12 + 1, 1)
+        else:
+            first, last = lot.start_date, through
+        if first <= last:
+            get_benchmark_history(session, lot.benchmark.code, first, last)
     dirty = portfolio.dirty_from
     start = max(first_day, dirty or (portfolio.history_built_through + timedelta(days=1)
                                      if portfolio.history_built_through else first_day))
@@ -330,6 +345,13 @@ def consolidate(session, portfolio_id):
             fx_dates[portfolio.display_currency].update(
                 row.settlement_date for row in rows if row.settlement_date <= date.today())
             fx_assets[portfolio.display_currency].add(asset.instrument.symbol)
+    for lot in pending_lots:
+        if lot.start_date > valuation_date or lot.currency == portfolio.display_currency:
+            continue
+        for currency in {lot.currency, portfolio.display_currency}:
+            fx_dates[currency].update(lot.start_date + timedelta(days=offset)
+                                      for offset in range((valuation_date - lot.start_date).days + 1))
+            fx_assets[currency].add(lot.asset.instrument.symbol)
     for currency, days in fx_dates.items():
         if currency in {'BRL', None}:
             continue

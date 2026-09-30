@@ -218,10 +218,10 @@ class FixedIncomeLotInput(Input):
 
 
 class FixedIncomeMovementInput(Input):
-    movement_type: Literal['ADDITIONAL_INVESTMENT', 'PARTIAL_REDEMPTION', 'FULL_REDEMPTION',
+    movement_type: Literal['INITIAL_INVESTMENT', 'ADDITIONAL_INVESTMENT', 'PARTIAL_REDEMPTION', 'FULL_REDEMPTION',
                            'MATURITY', 'AMORTIZATION']
     effective_date: date
-    amount: PositiveDecimalAmount
+    amount: PositiveDecimalAmount | None = None
     currency: CurrencyCode
     notes: Annotated[str, Field(max_length=5000)] = ''
 
@@ -229,6 +229,12 @@ class FixedIncomeMovementInput(Input):
     @classmethod
     def normalize_movement_currency(cls, value):
         return value.upper()
+
+    @model_validator(mode='after')
+    def require_amount_except_full_redemption(self):
+        if self.amount is None and self.movement_type != 'FULL_REDEMPTION':
+            raise ValueError('Amount is required for this movement.')
+        return self
 
 
 class TransactionImportConfirm(Input):

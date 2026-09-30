@@ -741,6 +741,8 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
     """Value one contractual lot from immutable terms and dated cash movements.
 
     Observation values use the canonical catalog's percent-per-period units.
+    CDI accrues over business-day references in [start_date, valuation_date).
+    Each completed period is applied before movements on the following date.
     A redemption amount is gross cash paid; its principal share is proportional
     to the lot's accrued value immediately before the redemption.
     """
@@ -782,7 +784,8 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
         return incomplete('invalid_contract')
 
     ordered = sorted((row for row in movements if row.effective_date <= valuation_date),
-                     key=lambda row: (row.effective_date, row.id or 0))
+                     key=lambda row: (row.effective_date,
+                                      row.id if row.id is not None else float('inf')))
     if not ordered or ordered[0].movement_type != 'INITIAL_INVESTMENT' or ordered[0].effective_date != lot.start_date:
         return incomplete('invalid_movements')
     original = decimal(ordered[0].amount)
@@ -816,6 +819,13 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
         if not terminated:
             business = _fixed_income_business_day(day, lot.business_day_calendar)
             accrues = accrual_day and (lot.day_count_basis != 'BUS_252' or business)
+            reference = day
+            if lot.yield_structure == 'BENCHMARK_MULTIPLE':
+                # The rate dated D belongs to the period starting on D, not
+                # the balance available on D. Never require today's rate or
+                # observations for non-business periods, even with ACT bases.
+                reference = day - timedelta(days=1)
+                accrues = accrual_day and _fixed_income_business_day(reference, lot.business_day_calendar)
             if accrues:
                 denominator = Decimal('252' if lot.day_count_basis == 'BUS_252' else
                                       '365' if lot.day_count_basis == 'ACT_365' else '360')
@@ -823,7 +833,6 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
                     rate = decimal(lot.fixed_rate)
                     period = (Decimal('1') + rate) ** (Decimal('1') / denominator) - 1 if lot.compounding == 'COMPOUND' else rate / denominator
                 else:
-                    reference = day
                     if lot.yield_structure == 'BENCHMARK_SPREAD':
                         # Monthly observations cover a completed reference month.
                         # Zero lag means the preceding month, never the month being valued.
@@ -866,6 +875,8 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
                     principal -= principal_redeemed
                     gross -= amount
                 else:
+                    if abs(amount - gross) > Decimal('0.000000000001'):
+                        return incomplete('invalid_movements')
                     principal_redeemed = principal
                     principal = gross = zero
                     terminated = True

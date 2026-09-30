@@ -165,6 +165,28 @@ def test_independent_lots_and_authoritative_opening_movements(client):
     assert history[-1]['market_value'] > 3000
 
 
+def test_future_lot_does_not_make_active_position_incomplete(client):
+    c, _ = client
+    today = date.today()
+    active = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=(today - timedelta(days=2)).isoformat(), maturity_date=None,
+        fixed_rate='0', day_count_basis='ACT_365', business_day_calendar='NONE'))
+    assert active.status_code == 201, active.text
+    future = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=(today + timedelta(days=2)).isoformat(), maturity_date=None,
+        fixed_rate='0', day_count_basis='ACT_365', business_day_calendar='NONE',
+        broker='Future Broker'))
+    assert future.status_code == 201, future.text
+
+    overview = c.get('/api/portfolios/1/overview').json()
+    assert overview['fixed_income']['valuation_status'] == 'complete'
+    assert overview['summary']['total_value'] == 1000
+    assert len(overview['fixed_income']['positions'][0]['lots']) == 1
+    assert overview['fixed_income']['positions'][0]['lots'][0]['id'] == active.json()['id']
+    assert overview['positions'][0]['broker'] == 'Broker'
+    assert c.get(f"/api/portfolios/1/fixed-income/lots/{future.json()['id']}").json()['valuation_status'] == 'before_start'
+
+
 @pytest.mark.parametrize('changes', [
     {'fixed_rate': None},
     {'fixed_rate': '0.12', 'benchmark_id': 1},
@@ -317,7 +339,53 @@ def test_future_dirty_movement_preserves_finalized_history(client):
     assert c.get('/api/portfolios/1/history').json() == history
 
 
-def test_missing_cdi_and_fx_keep_current_value_unknown(client):
+@pytest.mark.parametrize('lot_currency,display_currency,expected', [
+    ('BRL', 'USD', 200), ('USD', 'BRL', 5000), ('USD', 'EUR', 500),
+])
+def test_fixed_income_only_consolidation_fetches_required_fx(
+        client, monkeypatch, lot_currency, display_currency, expected):
+    from src import consolidation
+
+    c, engine = client
+    start = date.today() - timedelta(days=3)
+    with Session(engine) as session:
+        session.get(Portfolio, 1).display_currency = display_currency
+        session.get(Instrument, 1).currency = lot_currency
+        session.commit()
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        currency=lot_currency, start_date=start.isoformat(), maturity_date=None,
+        fixed_rate='0', day_count_basis='ACT_365')).json()
+    calls = []
+
+    def backfill(session, currencies, rate_types, first, last):
+        calls.extend(currencies)
+        assert rate_types == ['FX']
+        assert (first, last) == (start, date.today())
+        for currency in currencies:
+            for offset in range((last - first).days + 1):
+                session.add(ExchangeRate(
+                    currency=currency, rate_type='FX', rate_side='MARKET',
+                    reference_date=first + timedelta(days=offset),
+                    rate=Decimal('5' if currency == 'USD' else '10'), source='test'))
+        session.flush()
+
+    monkeypatch.setattr(consolidation, 'backfill_rates', backfill)
+    result = c.post('/api/portfolios/1/consolidate')
+    assert result.status_code == 200, result.text
+    assert result.json()['complete'], result.text
+    assert set(calls) == {lot_currency, display_currency} - {'BRL'}
+    assert c.get('/api/portfolios/1/overview').json()['summary']['total_value'] == expected
+    history = c.get('/api/portfolios/1/history').json()
+    assert len(history) == 3
+    assert all(row['status'] == 'complete' and row['market_value'] == expected for row in history)
+    with Session(engine) as session:
+        stored = session.get(FixedIncomeLot, created['id'])
+        assert stored.currency == lot_currency
+        assert stored.movements[0].amount == 1000
+
+
+def test_missing_cdi_and_fx_keep_current_value_unknown(client, monkeypatch):
+    monkeypatch.setattr('src.consolidation.backfill_rates', lambda *args: None)
     c, engine = client
     start = date.today() - timedelta(days=5)
     benchmark = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
@@ -344,7 +412,8 @@ def test_missing_cdi_and_fx_keep_current_value_unknown(client):
     assert any(row['status'] == 'incomplete' and row['market_value'] is None for row in history)
 
 
-def test_missing_historical_fx_keeps_later_returns_incomplete(client):
+def test_missing_historical_fx_keeps_later_returns_incomplete(client, monkeypatch):
+    monkeypatch.setattr('src.consolidation.backfill_rates', lambda *args: None)
     c, engine = client
     start = date.today() - timedelta(days=3)
     instrument = c.post('/api/portfolios/1/fixed-income/instruments/custom', json={
@@ -433,7 +502,7 @@ def test_cdi_valuation_reads_only_canonical_stored_observations(client, monkeypa
                                            active=True, is_primary=True)
         session.add(mapping)
         session.flush()
-        for day in (date(2024, 1, 3), date(2024, 1, 4)):
+        for day in (date(2024, 1, 2), date(2024, 1, 3)):
             session.add(BenchmarkObservation(
                 benchmark_id=1, provider_mapping_id=mapping.id, reference_date=day,
                 value=Decimal('0.04'), source='test',
@@ -442,8 +511,217 @@ def test_cdi_valuation_reads_only_canonical_stored_observations(client, monkeypa
         valued = value_lot(session, lot, date(2024, 1, 4), 'BRL')
         assert valued['status'] == 'complete'
         assert valued['gross_accrued_value'] == Decimal('1000') * Decimal('1.00044') ** 2
-        assert valued['benchmark_start'] == date(2024, 1, 3)
-        assert valued['benchmark_end'] == date(2024, 1, 4)
+        assert valued['benchmark_start'] == date(2024, 1, 2)
+        assert valued['benchmark_end'] == date(2024, 1, 3)
+
+
+def test_movement_edit_delete_revalidates_later_redemptions_and_history(client):
+    c, engine = client
+    start = date.today() - timedelta(days=4)
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None, fixed_rate='0',
+        day_count_basis='ACT_365', business_day_calendar='NONE')).json()
+    base = f"/api/portfolios/1/fixed-income/lots/{created['id']}/movements"
+    opening = created['movements'][0]
+    first = c.post(base, json={'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': (start + timedelta(days=1)).isoformat(),
+        'amount': '400', 'currency': 'BRL'}).json()
+    second = c.post(base, json={'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': (start + timedelta(days=2)).isoformat(),
+        'amount': '500', 'currency': 'BRL'}).json()
+    assert c.post('/api/portfolios/1/consolidate').json()['complete']
+    before = c.get('/api/portfolios/1/history').json()
+    assert before[0]['market_value'] == 1000
+    assert before[1]['market_value'] == 600
+    assert before[2]['market_value'] == 100
+
+    opening_url = f'{base}/{opening["id"]}'
+    invalid = c.put(opening_url, json={'movement_type': 'INITIAL_INVESTMENT',
+        'effective_date': start.isoformat(), 'amount': '500', 'currency': 'BRL'})
+    assert invalid.status_code == 422
+    assert str(second['id']) in invalid.text
+    assert c.get(base).json()[0]['amount'] == opening['amount']
+    assert c.delete(opening_url).status_code == 422
+
+    assert c.delete(f'{base}/{first["id"]}').status_code == 204
+    assert [row['id'] for row in c.get(base).json()] == [opening['id'], second['id']]
+    lot = c.get(f"/api/portfolios/1/fixed-income/lots/{created['id']}").json()
+    assert Decimal(lot['valuation']['outstanding_principal']) == 500
+    after = c.get('/api/portfolios/1/history').json()
+    assert all(row['status'] == 'complete' for row in after)
+    assert after[1]['market_value'] == 1000
+    assert after[2]['market_value'] == 500
+    with Session(engine) as session:
+        assert session.get(Portfolio, 1).dirty_from is None
+
+
+def test_full_redemption_is_valued_and_closed_lot_rejects_more_movements(client):
+    c, _ = client
+    start = date.today() - timedelta(days=3)
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None, fixed_rate='0',
+        day_count_basis='ACT_365', business_day_calendar='NONE')).json()
+    base = f"/api/portfolios/1/fixed-income/lots/{created['id']}/movements"
+    partial = c.post(base, json={'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': (start + timedelta(days=1)).isoformat(),
+        'amount': '550', 'currency': 'BRL'})
+    assert partial.status_code == 201, partial.text
+    full = c.post(base, json={'movement_type': 'FULL_REDEMPTION',
+        'effective_date': (start + timedelta(days=2)).isoformat(), 'currency': 'BRL'})
+    assert full.status_code == 201, full.text
+    assert Decimal(full.json()['amount']) == 450
+    assert c.post(base, json={'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': date.today().isoformat(), 'amount': '1', 'currency': 'BRL'}).status_code == 422
+    assert c.put(f"{base}/{partial.json()['id']}", json={
+        'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': (start + timedelta(days=1)).isoformat(),
+        'amount': '600', 'currency': 'BRL'}).status_code == 422
+    lot = c.get(f"/api/portfolios/1/fixed-income/lots/{created['id']}").json()
+    assert lot['valuation']['gross_accrued_value'] == 0
+    assert lot['valuation']['realized_gain'] == 0
+
+
+def test_consolidation_populates_canonical_benchmarks_and_inspection_reports_coverage(client, monkeypatch):
+    from src import benchmarks, consolidation, position_reporting
+    from src.api import routes
+
+    class ValuationDay(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 9, 29)  # Tuesday: today's CDI is not published.
+
+    for module in (benchmarks, consolidation, position_reporting, routes):
+        monkeypatch.setattr(module, 'date', ValuationDay)
+
+    c, engine = client
+    start = ValuationDay.today() - timedelta(days=6)
+    with Session(engine) as session:
+        ipca = Benchmark(code='IPCA', name='IPCA', kind='INFLATION', frequency='MONTHLY',
+                         value_type='CHANGE', unit='PERCENT_PER_MONTH', status='ACTIVE')
+        session.add(ipca)
+        session.flush()
+        session.add_all([
+            BenchmarkProviderMapping(benchmark_id=1, provider='bcb_sgs', series_id='12',
+                                     active=True, is_primary=True),
+            BenchmarkProviderMapping(benchmark_id=ipca.id, provider='bcb_sgs', series_id='433',
+                                     active=True, is_primary=True),
+        ])
+        session.commit()
+
+    for changes in ({'yield_structure': 'BENCHMARK_MULTIPLE', 'benchmark_id': 1,
+                     'benchmark_multiplier': '1.10'},
+                    {'yield_structure': 'BENCHMARK_SPREAD', 'benchmark_id': 2,
+                     'benchmark_spread': '0.06'}):
+        response = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+            start_date=start.isoformat(), maturity_date=None, fixed_rate=None,
+            business_day_calendar='NONE', **changes))
+        assert response.status_code == 201, response.text
+
+    assert c.get('/api/portfolios/1/overview').json()['fixed_income']['valuation_status'] == 'incomplete'
+    calls = []
+
+    def fetch(mapping, first, last):
+        calls.append((mapping.series_id, first, last))
+        days = []
+        cursor = first
+        while cursor <= last:
+            if mapping.series_id == '433' and cursor.day == 1 or mapping.series_id == '12' and cursor.weekday() < 5:
+                days.append({'reference_date': ValuationDay(cursor.year, cursor.month, cursor.day),
+                             'value': Decimal('0.5' if mapping.series_id == '433' else '0.04'),
+                             'source': 'bcb_sgs', 'retrieved_at': datetime.now(timezone.utc)})
+            cursor += timedelta(days=1)
+        return days
+
+    monkeypatch.setattr(benchmarks, 'fetch_benchmark_history', fetch)
+    result = c.post('/api/portfolios/1/consolidate')
+    assert result.json()['complete'], result.text
+    assert {series for series, _, _ in calls} == {'12', '433'}
+    for code in ('CDI', 'IPCA'):
+        response = c.get(f'/api/benchmarks/{code}/observations')
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data['count'] > 0 and data['earliest'] <= data['latest']
+        assert all(row['source'] == 'bcb_sgs' and row['unit'] == data['unit'] for row in data['observations'])
+    lots = c.get('/api/portfolios/1/fixed-income/lots',
+                 params={'as_of': (ValuationDay.today() - timedelta(days=1)).isoformat()}).json()
+    assert all(row['valuation_status'] == 'complete' for row in lots)
+    current = c.get('/api/portfolios/1/fixed-income/lots').json()
+    assert all(row['valuation_status'] == 'complete' for row in current)
+    overview = c.get('/api/portfolios/1/overview').json()
+    assert overview['fixed_income']['valuation_status'] == 'complete'
+    assert overview['summary']['total_value'] is not None
+
+
+def test_initial_investment_edit_keeps_contract_date_and_delete_removes_lot(client):
+    c, engine = client
+    start = date.today() - timedelta(days=3)
+    earlier = start - timedelta(days=1)
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None, fixed_rate='0')).json()
+    opening = created['movements'][0]
+    url = f"/api/portfolios/1/fixed-income/lots/{created['id']}/movements/{opening['id']}"
+    response = c.put(url, json={'movement_type': 'INITIAL_INVESTMENT',
+        'effective_date': earlier.isoformat(), 'amount': '1200', 'currency': 'BRL'})
+    assert response.status_code == 200, response.text
+    changed = c.get(f"/api/portfolios/1/fixed-income/lots/{created['id']}").json()
+    assert changed['start_date'] == earlier.isoformat()
+    assert changed['opening_amount'] == '1200.000000000000'
+    assert c.delete(url).status_code == 204
+    overview = c.get('/api/portfolios/1/overview').json()
+    assert overview['fixed_income']['lot_count'] == 0
+    assert overview['summary']['total_value'] == 0
+    with Session(engine) as session:
+        assert session.get(FixedIncomeLot, created['id']) is None
+        assert session.query(FixedIncomeMovement).filter_by(lot_id=created['id']).count() == 0
+
+
+def test_benchmark_redemption_uses_stored_observations_and_rejects_gaps(client):
+    c, engine = client
+    with Session(engine) as session:
+        mapping = BenchmarkProviderMapping(benchmark_id=1, provider='test',
+                                           series_id='redemption-test', active=True, is_primary=True)
+        session.add(mapping)
+        session.flush()
+        for day in (2, 3):
+            session.add(BenchmarkObservation(benchmark_id=1, provider_mapping_id=mapping.id,
+                reference_date=date(2024, 1, day), value=Decimal('10'), source='test',
+                retrieved_at=datetime(2024, 1, 5, tzinfo=timezone.utc)))
+        session.commit()
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        maturity_date=None, fixed_rate=None, yield_structure='BENCHMARK_MULTIPLE',
+        benchmark_id=1, benchmark_multiplier='1', business_day_calendar='NONE')).json()
+    base = f"/api/portfolios/1/fixed-income/lots/{created['id']}/movements"
+    first = c.post(base, json={'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': '2024-01-03', 'amount': '550', 'currency': 'BRL'})
+    assert first.status_code == 201, first.text
+    after = c.get(f"/api/portfolios/1/fixed-income/lots/{created['id']}",
+                  params={'as_of': '2024-01-03'}).json()['valuation']
+    assert Decimal(str(after['outstanding_principal'])) == 500
+    assert Decimal(str(after['gross_accrued_value'])) == 550
+    gap = c.post(base, json={'movement_type': 'FULL_REDEMPTION',
+        'effective_date': '2024-01-05', 'currency': 'BRL'})
+    assert gap.status_code == 422 and 'missing_benchmark' in gap.text
+    full = c.post(base, json={'movement_type': 'FULL_REDEMPTION',
+        'effective_date': '2024-01-04', 'currency': 'BRL'})
+    assert full.status_code == 201, full.text
+    assert Decimal(full.json()['amount']) == 605
+
+
+def test_deleting_required_additional_investment_rejects_dependent_redemption(client):
+    c, _ = client
+    start = date.today() - timedelta(days=2)
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None, fixed_rate='0')).json()
+    base = f"/api/portfolios/1/fixed-income/lots/{created['id']}/movements"
+    additional = c.post(base, json={'movement_type': 'ADDITIONAL_INVESTMENT',
+        'effective_date': start.isoformat(), 'amount': '500', 'currency': 'BRL'}).json()
+    redemption = c.post(base, json={'movement_type': 'PARTIAL_REDEMPTION',
+        'effective_date': (start + timedelta(days=1)).isoformat(),
+        'amount': '1200', 'currency': 'BRL'}).json()
+    result = c.delete(f"{base}/{additional['id']}")
+    assert result.status_code == 422 and str(redemption['id']) in result.text
+    assert [row['id'] for row in c.get(base).json()] == [
+        created['movements'][0]['id'], additional['id'], redemption['id']]
 
 
 @pytest.mark.integration

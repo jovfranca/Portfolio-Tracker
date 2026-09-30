@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric, type CatalogInstrument, type CorporateEvent, type Activity } from './api'
+import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric, type CatalogInstrument, type CorporateEvent, type Activity, type FixedIncomeMovement } from './api'
 import TransactionImportPage from './TransactionImportPage'
 import InstrumentPicker from './InstrumentPicker'
 import FixedIncomeForm from './FixedIncomeForm'
 import FixedIncomeLots from './FixedIncomeLots'
+import FixedIncomeMovementForm from './FixedIncomeMovementForm'
+import BenchmarkInspection from './BenchmarkInspection'
 
 type OperationType = 'LISTED' | 'CRYPTO' | 'FIXED_INCOME' | 'CUSTOM'
 
@@ -49,6 +51,10 @@ export default function App() {
   const [editing, setEditing] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [operationType, setOperationType] = useState<OperationType | null>(null)
+  const [fixedIncomeMode, setFixedIncomeMode] = useState<'LOT' | 'REDEMPTION' | 'ADDITIONAL' | 'EDIT'>('LOT')
+  const [editingFixed, setEditingFixed] = useState<FixedIncomeMovement | null>(null)
+  const [fixedIncomeLotId, setFixedIncomeLotId] = useState<number | undefined>(undefined)
+  const [fixedIncomeVersion, setFixedIncomeVersion] = useState(0)
   const [portfolioName, setPortfolioName] = useState('')
   const [newPortfolio, setNewPortfolio] = useState(false)
   const [query, setQuery] = useState('')
@@ -80,7 +86,7 @@ export default function App() {
   }, [selected])
 
   useEffect(() => {
-    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setFormOpen(false); setOperationType(null); setQuery('')
+    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setEditingFixed(null); setFormOpen(false); setOperationType(null); setQuery('')
     if (selected === null) return
     const controller = new AbortController()
     setLoading(true); setError('')
@@ -95,6 +101,7 @@ export default function App() {
     try {
       const result = await task()
       await reload()
+      setFixedIncomeVersion(value => value + 1)
       const partial = typeof result === 'object' && result !== null && 'complete' in result && result.complete === false
       setNoticePartial(partial)
       setNotice(partial && 'message' in result && typeof result.message === 'string' ? result.message : success)
@@ -138,10 +145,21 @@ export default function App() {
   }
   function edit(tx: Transaction) {
     const { id, portfolio_id: _portfolioId, transaction_currency_locked: currencyLocked, ...values } = tx
-    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditing(id); setOperationType(null); setFormOpen(true)
+    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditingFixed(null); setEditing(id); setOperationType(null); setFormOpen(true)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
-  const filteredPositions = overview?.positions.filter(p => (showClosed || (p.position_type === 'FIXED_INCOME' ? p.display_value === null || Number(p.display_value) !== 0 : Number(p.quantity) !== 0)) && [p.asset, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
+  function editFixedMovement(movement: FixedIncomeMovement) {
+    setEditing(null); setEditingFixed(movement); setFixedIncomeLotId(movement.lot_id)
+    setOperationType('FIXED_INCOME'); setFixedIncomeMode('EDIT'); setFormOpen(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  function redeemLot(lotId: number) {
+    setEditing(null); setEditingFixed(null); setFixedIncomeLotId(lotId)
+    setOperationType('FIXED_INCOME'); setFixedIncomeMode('REDEMPTION'); setFormOpen(true)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  const marketPositions = overview?.positions.filter(p => p.position_type !== 'FIXED_INCOME') ?? []
+  const filteredPositions = marketPositions.filter(p => (showClosed || Number(p.quantity) !== 0) && [p.asset, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
 
   return <div className="app">
     <aside className="sidebar">
@@ -167,7 +185,7 @@ export default function App() {
           <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
           {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && <div className="page-actions">
             {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
-            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setOperationType(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
+            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setEditingFixed(null); setFixedIncomeLotId(undefined); setFixedIncomeMode('LOT'); setOperationType(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
           </div>}
         </div>
         {error && <div role="alert" className="alert error">{error} <button className="button quiet" disabled={busy} onClick={() => void loadPortfolios().then(() => reload()).catch(e => setError(message(e)))}>Tentar novamente</button></div>}
@@ -177,10 +195,15 @@ export default function App() {
           <label>Nome da carteira<input required maxLength={120} value={portfolioName} onChange={e => setPortfolioName(e.target.value)} placeholder="Ex.: Investimentos pessoais" /></label>
           <button className="button primary" disabled={busy}>Criar carteira</button>
         </form>}
-        {formOpen && !importing && !cataloging && editing === null && <section className="panel"><div className="section-heading"><h2>Tipo de ativo</h2><button className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div><div className="asset-type-choices" aria-label="Tipo de ativo da nova operação">
-          {([['LISTED', 'Ações e ETFs'], ['CRYPTO', 'Cripto'], ['FIXED_INCOME', 'Renda fixa'], ['CUSTOM', 'Personalizado']] as const).map(([value, label]) => <button type="button" key={value} disabled={busy} className={'button ' + (operationType === value ? 'primary' : 'outline')} onClick={() => { setOperationType(value); setDraft(current => ({ ...emptyDraft(), asset: current.asset })); setListedCurrency(null) }}>{label}</button>)}
+        {formOpen && !importing && !cataloging && editing === null && editingFixed === null && <section className="panel"><div className="section-heading"><h2>Tipo de ativo</h2><button className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div><div className="asset-type-choices" aria-label="Tipo de ativo da nova operação">
+          {([['LISTED', 'Ações e ETFs'], ['CRYPTO', 'Cripto'], ['FIXED_INCOME', 'Renda fixa'], ['CUSTOM', 'Personalizado']] as const).map(([value, label]) => <button type="button" key={value} disabled={busy} className={'button ' + (operationType === value ? 'primary' : 'outline')} onClick={() => { setOperationType(value); setFixedIncomeMode('LOT'); setFixedIncomeLotId(undefined); setDraft(current => ({ ...emptyDraft(), asset: current.asset })); setListedCurrency(null) }}>{label}</button>)}
         </div></section>}
-        {formOpen && !importing && !cataloging && operationType === 'FIXED_INCOME' && selected !== null && <FixedIncomeForm key={selected} portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setFormOpen(false)} />}
+        {formOpen && !importing && !cataloging && operationType === 'FIXED_INCOME' && editingFixed === null && <section className="panel"><div className="section-heading"><h2>Movimentação de renda fixa</h2></div><div className="asset-type-choices">
+          {([['LOT', 'Nova aplicação'], ['ADDITIONAL', 'Aporte adicional'], ['REDEMPTION', 'Resgate']] as const).map(([value, label]) => <button type="button" key={value} className={'button ' + (fixedIncomeMode === value ? 'primary' : 'outline')} onClick={() => setFixedIncomeMode(value)}>{label}</button>)}
+        </div></section>}
+        {formOpen && !importing && !cataloging && operationType === 'FIXED_INCOME' && selected !== null && (fixedIncomeMode === 'LOT'
+          ? <FixedIncomeForm key={selected} portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setFormOpen(false)} />
+          : <FixedIncomeMovementForm key={`${selected}-${fixedIncomeMode}-${editingFixed?.id ?? fixedIncomeLotId ?? 'new'}`} portfolioId={selected} busy={busy} mutate={mutate} onClose={() => { setFormOpen(false); setEditingFixed(null) }} mode={fixedIncomeMode} initialLotId={fixedIncomeLotId} editing={editingFixed ?? undefined} />)}
         {formOpen && !importing && !cataloging && (editing !== null || (operationType !== null && operationType !== 'FIXED_INCOME')) && <form className="panel transaction-form" onSubmit={saveTransaction}>
           <div className="section-heading"><h2>{editing === null ? 'Registrar transação' : 'Editar transação'}</h2><button type="button" className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div>
           <fieldset disabled={busy}>
@@ -227,23 +250,23 @@ export default function App() {
           </div>
           <div className="method-note"><span>i</span> {overview.methodology} {overview.summary.missing_cost_fx.length ? 'FX histórico indisponível para custo: ' + overview.summary.missing_cost_fx.join(', ') + '. ' : ''}Renda corporativa: {overview.summary.gross_income === null ? 'indisponível por dados incompletos' : Object.keys(overview.summary.income_by_currency).length ? Object.entries(overview.summary.income_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : 'nenhuma'}.</div>
           {tab === 'Posições' && <section className="panel">
-            <div className="section-heading"><div><h2>Composição da carteira</h2><p>Uma posição por instrumento.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
+            <div className="section-heading"><div><h2>Composição da carteira</h2><p>Ativos de mercado por instrumento; renda fixa por lote na seção abaixo.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
             <label className="checkbox-control"><input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} /> Mostrar posições encerradas</label>
-            {!overview.positions.length ? overview.fixed_income?.lot_count ? <div className="empty">Os lotes de renda fixa estão listados abaixo. Não há posições de ações, ETFs ou cripto.</div> : <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
+            {!marketPositions.length ? overview.fixed_income?.lot_count ? <div className="empty">Os lotes de renda fixa estão listados abaixo. Não há posições de ações, ETFs ou cripto.</div> : <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
               <div className="table-wrap"><table><thead><tr><th>Ativo / classe</th><th>Quantidade</th><th>Preço médio / custo</th><th>Cotação</th><th>Valor atual</th><th>Renda bruta</th><th>Resultado total</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={p.asset_id ?? p.asset}>
                 <td><strong>{p.asset}</strong><small>{p.allocation_class}</small></td><td>{fmt(p.quantity, 6)}</td><td>{p.position_type === 'FIXED_INCOME' ? 'Principal' : p.display_currency + ' ' + fmt(p.display_average_cost, 4)}<small>Custo {p.display_currency} {fmt(p.display_acquisition_cost)}</small>{p.native_currency && p.native_currency !== p.display_currency && p.native_average_cost !== null && <small>{p.native_currency} {fmt(p.native_average_cost, 4)} · custo {fmt(p.native_acquisition_cost)}</small>}</td><td>{p.position_type === 'FIXED_INCOME' ? 'Acúmulo contratual' : <>{p.display_currency} {fmt(p.display_price)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.current_price)}</small>}<small>{dateLabel(p.price_date)}{p.quote_refresh_required ? " · atualização pendente" : ""}</small></>}</td><td>{p.display_currency} {fmt(p.display_value)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.total_value)}</small>}</td>
                 <td>{p.display_currency} {fmt(p.gross_income)}{p.native_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.native_gross_income)}</small>}</td>
                 <td className={Number(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{p.display_currency} {fmt(p.current_total_gain)}<small>{p.current_accumulated_profitability === null ? 'Retorno histórico indisponível' : fmt(p.current_accumulated_profitability) + '%' + (p.return_date ? ' até ' + dateLabel(p.return_date) : '')}{p.status !== 'complete' ? ' · valores incompletos' : ''}{p.history_behind_transactions ? ' · cotação anterior à última atividade' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
-          {tab === 'Posições' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${overview.fixed_income.lot_count}`} portfolioId={selected!} view="positions" />}
+          {tab === 'Posições' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="positions" query={query} showClosed={showClosed} busy={busy} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
           {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar recalcula as posições automaticamente.</p></div></div>
             {!transactions.length ? <div className="empty">{overview.fixed_income?.lot_count ? 'Não há compras ou vendas de mercado. Os movimentos de renda fixa estão abaixo.' : 'Nenhuma transação registrada.'}</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
               if (window.confirm('Excluir esta transação e recalcular as posições?')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída.')
             }}>Excluir</button></div></td></tr>)}</tbody></table></div>}
           </section>}
-          {tab === 'Transações' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${overview.fixed_income.lot_count}`} portfolioId={selected!} view="movements" />}
-          {tab === 'Cotações' && <Quotes key={selected} portfolioId={selected!} assets={overview.assets} busy={busy} mutate={mutate} />}
+          {tab === 'Transações' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="movements" busy={busy} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
+          {tab === 'Cotações' && <><Quotes key={selected} portfolioId={selected!} assets={overview.assets} busy={busy} mutate={mutate} /><BenchmarkInspection key={fixedIncomeVersion} /></>}
           {tab === 'Desempenho' && <PerformancePanel key={selected} portfolioId={selected!} overview={overview} />}
           <footer className="footnote">Portfolio Tracker · Cálculos executados no backend Python · Uso local individual</footer>
         </>}

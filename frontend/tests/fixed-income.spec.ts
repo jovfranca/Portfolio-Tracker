@@ -64,7 +64,7 @@ test('canonical fixed-income products prefill lots and appear in positions and o
       else await page.getByLabel(/Spread anual/).fill('0.06')
     }
     await page.getByRole('button', { name: 'Registrar lote' }).click()
-    await expect(page.getByText('Lote de renda fixa registrado. Avaliação pendente.')).toBeVisible()
+    await expect(page.getByText('Lote de renda fixa registrado.')).toBeVisible()
   }
   expect(lotPosts).toBe(3)
   expect(transactionPosts).toBe(0)
@@ -74,8 +74,54 @@ test('canonical fixed-income products prefill lots and appear in positions and o
   expect(lots.every((lot: { movements: { movement_type: string; amount: string }[] }) =>
     lot.movements.length === 1 && lot.movements[0].movement_type === 'INITIAL_INVESTMENT' && Number(lot.movements[0].amount) === 1000.25)).toBeTruthy()
   await expect(page.getByRole('heading', { name: 'Renda fixa' })).toBeVisible()
-  await expect(page.getByRole('table').filter({ hasText: 'Pendente' }).getByRole('row')).toHaveCount(4)
+  await expect(page.locator('section.panel').filter({ has: page.getByRole('heading', { name: 'Renda fixa', exact: true }) }).getByRole('row')).toHaveCount(4)
   await page.getByRole('button', { name: 'Transações', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Movimentos de renda fixa' })).toBeVisible()
   await expect(page.getByRole('table').filter({ hasText: 'Aplicação inicial' }).getByRole('row')).toHaveCount(4)
+})
+
+test('redeems, edits and deletes a fixed-income movement through the shared form', async ({ page, request }) => {
+  const portfolioId = (await (await request.post('/api/portfolios', {
+    data: { name: 'Redemption UI ' + Date.now() },
+  })).json()).id
+  const products = await (await request.get('/api/fixed-income/products')).json() as { symbol: string; instrument_id: number }[]
+  const cdb = products.find(row => row.symbol === 'CDB')!
+  const localDay = (daysAgo: number) => {
+    const day = new Date()
+    day.setDate(day.getDate() - daysAgo)
+    return new Date(day.getTime() - day.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+  }
+  const lotResponse = await request.post(`/api/portfolios/${portfolioId}/fixed-income/lots`, { data: {
+    instrument_id: cdb.instrument_id, product_type: 'CDB', issuer: 'Banco Teste', broker: 'Corretora Teste',
+    currency: 'BRL', start_date: localDay(3), maturity_date: null, opening_amount: '1000',
+    yield_structure: 'FIXED_RATE', fixed_rate: '0', day_count_basis: 'ACT_365',
+    compounding: 'COMPOUND', business_day_calendar: 'NONE', benchmark_lag_months: 0,
+  } })
+  expect(lotResponse.ok()).toBeTruthy()
+  const lot = await lotResponse.json() as { id: number }
+
+  await page.goto('/')
+  await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
+  await page.getByRole('button', { name: 'Transações', exact: true }).click()
+  await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
+  await page.getByRole('button', { name: 'Renda fixa', exact: true }).click()
+  await page.getByRole('button', { name: 'Resgate', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Lote' }).selectOption(String(lot.id))
+  await page.getByLabel('Data do movimento').fill(localDay(2))
+  await page.getByLabel('Valor bruto resgatado').fill('550')
+  await page.getByRole('button', { name: 'Salvar movimento' }).click()
+  const movements = page.getByRole('table').filter({ hasText: 'Aplicação inicial' })
+  await expect(movements.getByText('Resgate parcial')).toBeVisible()
+  await movements.getByRole('row').filter({ hasText: 'Resgate parcial' }).getByRole('button', { name: 'Editar' }).click()
+  await page.getByLabel('Valor bruto resgatado').fill('400')
+  await page.getByRole('button', { name: 'Salvar movimento' }).click()
+  await expect(movements.getByRole('row').filter({ hasText: 'Resgate parcial' })).toContainText('400,00')
+  page.once('dialog', dialog => dialog.accept())
+  await movements.getByRole('row').filter({ hasText: 'Resgate parcial' }).getByRole('button', { name: 'Excluir' }).click()
+  await expect(movements.getByText('Resgate parcial')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Cotações', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Dados dos indexadores' })).toBeVisible()
+  await page.getByRole('combobox', { name: 'Indexador' }).selectOption('IPCA')
+  await expect(page.getByText(/observações · de/)).toBeVisible()
 })
