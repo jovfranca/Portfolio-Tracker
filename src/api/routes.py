@@ -21,7 +21,10 @@ from src.schemas import (
     TransactionImportConfirm, TransactionSelectionInput, TransactionOutput,
     FixedIncomeLotInput, FixedIncomeMovementInput,
 )
-from src.fixed_income import add_movement, create_lot, get_lot, list_lots, lot_data, movement_data
+from src.fixed_income import (
+    add_movement, create_lot, delete_movement, edit_movement, get_lot, list_lots,
+    lot_data, movement_data, value_lot,
+)
 from src.services import (
     ensure_asset, get_asset, get_overview, get_portfolio, require_instrument,
     transaction_currency_for, transaction_values,
@@ -87,6 +90,27 @@ def instrument_search(q: str, session: DB, category: str = 'ALL', portfolio_id: 
 def active_benchmarks(session: DB):
     rows = session.scalars(select(Benchmark).where(Benchmark.status == 'ACTIVE').order_by(Benchmark.code))
     return [{'id': row.id, 'code': row.code, 'name': row.name} for row in rows]
+
+
+@router.get('/benchmarks/{code}/observations')
+def benchmark_observations(code: str, session: DB):
+    from src.benchmarks import stored_observations
+
+    benchmark = session.scalar(select(Benchmark).where(Benchmark.code == code.upper()))
+    if benchmark is None:
+        raise HTTPException(404, 'Canonical benchmark not found.')
+    rows = stored_observations(session, benchmark, date.min, date.max)
+    return {
+        'code': benchmark.code, 'name': benchmark.name, 'unit': benchmark.unit,
+        'frequency': benchmark.frequency, 'count': len(rows),
+        'earliest': rows[0].reference_date if rows else None,
+        'latest': rows[-1].reference_date if rows else None,
+        'observations': [
+            {'reference_date': row.reference_date, 'value': str(row.value),
+             'unit': benchmark.unit, 'source': row.source}
+            for row in rows
+        ],
+    }
 
 
 @router.get('/fixed-income/products')
@@ -181,13 +205,23 @@ def create_fixed_income_lot(portfolio_id: int, payload: FixedIncomeLotInput, ses
 
 
 @router.get('/portfolios/{portfolio_id}/fixed-income/lots')
-def fixed_income_lots(portfolio_id: int, session: DB):
-    return [lot_data(lot) for lot in list_lots(session, portfolio_id)]
+def fixed_income_lots(portfolio_id: int, session: DB, as_of: date | None = None):
+    valuation_date = as_of or date.today()
+    if valuation_date > date.today():
+        raise HTTPException(422, 'Valuation date cannot be in the future.')
+    portfolio = get_portfolio(session, portfolio_id)
+    return [lot_data(lot, value_lot(session, lot, valuation_date, portfolio.display_currency))
+            for lot in list_lots(session, portfolio_id)]
 
 
 @router.get('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}')
-def fixed_income_lot(portfolio_id: int, lot_id: int, session: DB):
-    return lot_data(get_lot(session, portfolio_id, lot_id))
+def fixed_income_lot(portfolio_id: int, lot_id: int, session: DB, as_of: date | None = None):
+    valuation_date = as_of or date.today()
+    if valuation_date > date.today():
+        raise HTTPException(422, 'Valuation date cannot be in the future.')
+    lot = get_lot(session, portfolio_id, lot_id)
+    portfolio = get_portfolio(session, portfolio_id)
+    return lot_data(lot, value_lot(session, lot, valuation_date, portfolio.display_currency))
 
 
 @router.post('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements', status_code=201)
@@ -202,6 +236,24 @@ def create_fixed_income_movement(portfolio_id: int, lot_id: int,
 @router.get('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements')
 def fixed_income_movements(portfolio_id: int, lot_id: int, session: DB):
     return [movement_data(row) for row in get_lot(session, portfolio_id, lot_id).movements]
+
+
+@router.put('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements/{movement_id}')
+def update_fixed_income_movement(portfolio_id: int, lot_id: int, movement_id: int,
+                                 payload: FixedIncomeMovementInput, session: DB):
+    movement = edit_movement(session, portfolio_id, lot_id, movement_id, payload)
+    result = movement_data(movement)
+    consolidate(session, portfolio_id)
+    session.commit()
+    return result
+
+
+@router.delete('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements/{movement_id}', status_code=204)
+def remove_fixed_income_movement(portfolio_id: int, lot_id: int, movement_id: int, session: DB):
+    delete_movement(session, portfolio_id, lot_id, movement_id)
+    consolidate(session, portfolio_id)
+    session.commit()
+    return Response(status_code=204)
 
 
 @router.post('/portfolios/{portfolio_id}/consolidate')

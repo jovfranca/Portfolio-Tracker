@@ -31,10 +31,11 @@ export type ImportPreview = {
   rows: ImportPreviewRow[]
 }
 export type Position = {
+  position_type?: 'FIXED_INCOME';
   native_currency: string | null;
   quote_currency: string | null; status: string; gross_income: Numeric | null;
   asset_id: number | null;
-  asset: string; broker: string; allocation_class: string; transaction_currency: string | null; quantity: Numeric;
+  asset: string; broker: string; allocation_class: string; transaction_currency: string | null; quantity: Numeric | null;
   average_cost: Numeric | null; acquisition_cost: Numeric | null; current_price: Numeric | null; total_value: Numeric | null;
   display_average_cost: Numeric | null; display_acquisition_cost: Numeric | null;
   native_average_cost: Numeric | null; native_acquisition_cost: Numeric | null;
@@ -50,9 +51,9 @@ export type Asset = { id: number; ticker: string; transaction_currency: string |
   current_price: Numeric | null; total_value: Numeric | null; price_date: string | null;
   income_by_currency: Record<string, Numeric>; corporate_action_count: number }
 export type Overview = { positions: Position[]; assets: Asset[];
-  fixed_income?: { lot_count: number; valuation_status: 'none' | 'pending';
+  fixed_income?: { lot_count: number; valuation_status: 'none' | 'pending' | 'complete' | 'incomplete';
     lots: { id: number; asset_id: number; instrument_id: number; currency: string;
-      current_value: null; valuation_status: 'pending' }[] };
+      gross_accrued_value: Numeric | null; status: string }[]; positions?: Position[] };
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;
     total_value: number | null; missing_prices: string[]; missing_fx: string[]; missing_cost_fx: string[]; missing_actions?: string[]; display_currency: string; currencies: string[];
     totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric>;
@@ -63,8 +64,21 @@ export type FixedIncomeLot = {
   yield_structure: 'FIXED_RATE' | 'BENCHMARK_MULTIPLE' | 'BENCHMARK_SPREAD';
   fixed_rate: string | null; benchmark_id: number | null; benchmark_code: string | null; benchmark_multiplier: string | null;
   benchmark_spread: string | null; opening_amount: string | null;
-  current_value: null; profitability: null; valuation_status: 'pending';
-  movements: { id: number; movement_type: string; amount: string; effective_date: string; currency: string }[]
+  current_value: string | null; profitability: null; valuation_status: string;
+  valuation: { original_invested_amount: Numeric | null; outstanding_principal: Numeric | null;
+    gross_accrued_value: Numeric | null; accrued_gain: Numeric | null;
+    display_currency: string; display_value: Numeric | null; status: string;
+    benchmark_start: string | null; benchmark_end: string | null } | null;
+  movements: FixedIncomeMovement[]
+}
+export type FixedIncomeMovement = {
+  id: number; lot_id: number; movement_type: string; amount: string;
+  effective_date: string; currency: string; notes: string
+}
+export type BenchmarkObservations = {
+  code: string; name: string; unit: string; frequency: string; count: number;
+  earliest: string | null; latest: string | null;
+  observations: { reference_date: string; value: string; unit: string; source: string }[]
 }
 export type FixedIncomeProduct = {
   instrument_id: number; symbol: string; name: string; default_currency: string;
@@ -72,7 +86,7 @@ export type FixedIncomeProduct = {
   benchmark_lag_months: number
 }
 export type Performance = { date: string; quote_date?: string | null; reporting_currency: string; status: string;
-  quantity: Numeric; remaining_acquisition_cost: Numeric | null; average_cost: Numeric | null;
+  quantity: Numeric | null; remaining_acquisition_cost: Numeric | null; average_cost: Numeric | null;
   market_value: Numeric | null; total_gain: Numeric | null; realized_gain: Numeric | null;
   unrealized_gain: Numeric | null; gross_income: Numeric | null;
   cumulative_return_pct: Numeric | null; daily_return_pct: Numeric | null }

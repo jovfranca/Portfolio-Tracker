@@ -58,6 +58,26 @@ outro instrumento ou benchmark canônico. O catálogo de benchmarks contém CDI
 (SGS 12, percentual diário) e IPCA (SGS 433, variação percentual mensal).
 Observações históricas ficam apenas no banco. O serviço `src.benchmarks.get_history`
 consulta o banco primeiro e busca intervalos faltantes pelo adaptador do BCB.
+Ao consolidar uma carteira com lotes indexados, o aplicativo usa esse serviço
+para preencher as observações CDI/IPCA necessárias até o último período completo.
+A avaliação do lote lê apenas observações armazenadas; lacunas continuam
+explícitas. Consulte **Cotações → Dados dos indexadores** para ver datas,
+valores, fonte e cobertura presentes no banco.
+
+Na avaliação de CDI, as referências de dias úteis incluem a data da aplicação
+e excluem a data da avaliação. Assim, o saldo atual não exige o CDI do próprio
+dia; fins de semana e feriados do calendário contratado não exigem observações.
+Uma lacuna em um dia útil necessário continua resultando em `missing_benchmark`.
+Movimentos da data avaliada são processados após os períodos já encerrados.
+Essa regra vale também para avaliações históricas e resgates, sem depender do
+relógio dentro do cálculo. A convenção segue o intervalo inicial inclusivo/final
+exclusivo da [metodologia DI da B3](https://b3.com.br/main.jsp?lumA=1&lumII=2C9FBE63638CFE2501638D373B435E37&lumPageId=2C9FBE63638CFE2501638D3464C8577B).
+
+Após atualizar, aplique `python -m alembic upgrade head` e consolide as carteiras.
+A migração `0022` marca o histórico das carteiras com CDI para reconstrução desde
+a primeira aplicação afetada, preservando contratos, movimentos e observações.
+Resgates totais gravados com valores calculados pela regra anterior podem exigir
+revisão: valores incompatíveis continuam sendo rejeitados, sem ajuste silencioso.
 
 ## Desenvolvimento com atualização automática
 

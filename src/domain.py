@@ -735,3 +735,185 @@ def portfolio_day(rows, previous_value, previous_factor):
         'daily_return_pct': daily_return * 100 if daily_return is not None else None,
         'cumulative_return_pct': (factor - 1) * 100 if factor is not None else None,
     }
+
+
+def fixed_income_valuation(lot, movements, valuation_date, observations=()):
+    """Value one contractual lot from immutable terms and dated cash movements.
+
+    Observation values use the canonical catalog's percent-per-period units.
+    CDI accrues over business-day references in [start_date, valuation_date).
+    Each completed period is applied before movements on the following date.
+    A redemption amount is gross cash paid; its principal share is proportional
+    to the lot's accrued value immediately before the redemption.
+    """
+    from calendar import monthrange
+    from datetime import date, timedelta
+
+    zero = Decimal('0')
+    result = {
+        'valuation_date': valuation_date, 'currency': lot.currency,
+        'maturity_date': lot.maturity_date, 'original_invested_amount': None,
+        'outstanding_principal': None, 'gross_accrued_value': None,
+        'accrued_gain': None, 'realized_gain': None,
+        'benchmark_start': None, 'benchmark_end': None, 'status': 'complete',
+    }
+
+    def incomplete(status):
+        result['status'] = status
+        return result
+
+    if valuation_date < lot.start_date:
+        return incomplete('before_start')
+    if lot.day_count_basis not in {'BUS_252', 'ACT_365', 'ACT_360'} or lot.compounding not in {'SIMPLE', 'COMPOUND'}:
+        return incomplete('unsupported_convention')
+    if lot.business_day_calendar not in {'BR', 'NONE'} or not 0 <= lot.benchmark_lag_months <= 24:
+        return incomplete('unsupported_convention')
+    if lot.yield_structure == 'FIXED_RATE':
+        if lot.fixed_rate is None or lot.benchmark_id is not None or decimal(lot.fixed_rate) < -1:
+            return incomplete('invalid_contract')
+    elif lot.yield_structure in {'BENCHMARK_MULTIPLE', 'BENCHMARK_SPREAD'}:
+        if lot.benchmark is None or lot.benchmark_id is None or (lot.benchmark_multiplier if lot.yield_structure == 'BENCHMARK_MULTIPLE' else lot.benchmark_spread) is None:
+            return incomplete('invalid_contract')
+        if (lot.yield_structure == 'BENCHMARK_MULTIPLE' and
+                (lot.benchmark.code, lot.benchmark.frequency, lot.benchmark.unit) != ('CDI', 'DAILY', 'PERCENT_PER_DAY')):
+            return incomplete('unsupported_convention')
+        if (lot.yield_structure == 'BENCHMARK_SPREAD' and
+                (lot.benchmark.code, lot.benchmark.frequency, lot.benchmark.unit) != ('IPCA', 'MONTHLY', 'PERCENT_PER_MONTH')):
+            return incomplete('unsupported_convention')
+    else:
+        return incomplete('invalid_contract')
+
+    ordered = sorted((row for row in movements if row.effective_date <= valuation_date),
+                     key=lambda row: (row.effective_date,
+                                      row.id if row.id is not None else float('inf')))
+    if not ordered or ordered[0].movement_type != 'INITIAL_INVESTMENT' or ordered[0].effective_date != lot.start_date:
+        return incomplete('invalid_movements')
+    original = decimal(ordered[0].amount)
+    if original <= 0:
+        return incomplete('invalid_movements')
+    result['original_invested_amount'] = original
+    if lot.maturity_date and valuation_date > lot.maturity_date and not any(
+            row.movement_type in {'FULL_REDEMPTION', 'MATURITY'} and
+            row.effective_date <= lot.maturity_date for row in ordered):
+        return incomplete('missing_maturity_movement')
+    principal = gross = original
+    realized = zero
+    terminated = False
+    movements_by_day = defaultdict(list)
+    for index, row in enumerate(ordered):
+        if row.currency != lot.currency or decimal(row.amount) <= 0 or row.effective_date < lot.start_date:
+            return incomplete('invalid_movements')
+        if row.movement_type == 'MATURITY' and row.effective_date != lot.maturity_date:
+            return incomplete('invalid_movements')
+        if index and row.movement_type == 'INITIAL_INVESTMENT':
+            return incomplete('invalid_movements')
+        if index:
+            movements_by_day[row.effective_date].append(row)
+    observed = {row.reference_date: decimal(row.value) for row in observations}
+    day = lot.start_date
+    while day <= valuation_date:
+        if day == lot.start_date:
+            accrual_day = False
+        else:
+            accrual_day = True
+        if not terminated:
+            business = _fixed_income_business_day(day, lot.business_day_calendar)
+            accrues = accrual_day and (lot.day_count_basis != 'BUS_252' or business)
+            reference = day
+            if lot.yield_structure == 'BENCHMARK_MULTIPLE':
+                # The rate dated D belongs to the period starting on D, not
+                # the balance available on D. Never require today's rate or
+                # observations for non-business periods, even with ACT bases.
+                reference = day - timedelta(days=1)
+                accrues = accrual_day and _fixed_income_business_day(reference, lot.business_day_calendar)
+            if accrues:
+                denominator = Decimal('252' if lot.day_count_basis == 'BUS_252' else
+                                      '365' if lot.day_count_basis == 'ACT_365' else '360')
+                if lot.yield_structure == 'FIXED_RATE':
+                    rate = decimal(lot.fixed_rate)
+                    period = (Decimal('1') + rate) ** (Decimal('1') / denominator) - 1 if lot.compounding == 'COMPOUND' else rate / denominator
+                else:
+                    if lot.yield_structure == 'BENCHMARK_SPREAD':
+                        # Monthly observations cover a completed reference month.
+                        # Zero lag means the preceding month, never the month being valued.
+                        month = day.year * 12 + day.month - 2 - lot.benchmark_lag_months
+                        reference = date(month // 12, month % 12 + 1, 1)
+                    if reference not in observed:
+                        return incomplete('missing_benchmark')
+                    result['benchmark_start'] = min(result['benchmark_start'] or reference, reference)
+                    result['benchmark_end'] = max(result['benchmark_end'] or reference, reference)
+                    benchmark_rate = observed[reference] / 100
+                    if benchmark_rate <= -1:
+                        return incomplete('invalid_benchmark')
+                    if lot.yield_structure == 'BENCHMARK_MULTIPLE':
+                        period = benchmark_rate * decimal(lot.benchmark_multiplier)
+                    else:
+                        if lot.day_count_basis == 'BUS_252':
+                            days = sum(_fixed_income_business_day(date(day.year, day.month, index),
+                                                                  lot.business_day_calendar)
+                                       for index in range(1, monthrange(day.year, day.month)[1] + 1))
+                        else:
+                            days = monthrange(day.year, day.month)[1]
+                        inflation = (Decimal('1') + benchmark_rate) ** (Decimal('1') / days) - 1
+                        spread = decimal(lot.benchmark_spread)
+                        period = (Decimal('1') + inflation) * (Decimal('1') + spread) ** (Decimal('1') / denominator) - 1
+                if period <= -1:
+                    return incomplete('invalid_contract')
+                gross = gross * (1 + period) if lot.compounding == 'COMPOUND' else gross + principal * period
+        for row in movements_by_day[day]:
+            amount = decimal(row.amount)
+            if terminated:
+                return incomplete('invalid_movements')
+            if row.movement_type == 'ADDITIONAL_INVESTMENT':
+                principal += amount
+                gross += amount
+            elif row.movement_type in {'PARTIAL_REDEMPTION', 'FULL_REDEMPTION', 'MATURITY'}:
+                if gross <= 0 or (row.movement_type == 'PARTIAL_REDEMPTION' and amount >= gross):
+                    return incomplete('invalid_movements')
+                if row.movement_type == 'PARTIAL_REDEMPTION':
+                    principal_redeemed = principal * amount / gross
+                    principal -= principal_redeemed
+                    gross -= amount
+                else:
+                    if abs(amount - gross) > Decimal('0.000000000001'):
+                        return incomplete('invalid_movements')
+                    principal_redeemed = principal
+                    principal = gross = zero
+                    terminated = True
+                realized += amount - principal_redeemed
+            else:
+                return incomplete('unsupported_movement')
+        day += timedelta(days=1)
+    result.update(outstanding_principal=principal, gross_accrued_value=gross,
+                  accrued_gain=gross - principal, realized_gain=realized)
+    return result
+
+
+def _fixed_income_business_day(day, calendar):
+    """Brazilian national banking holidays; local/municipal holidays are unsupported."""
+    from datetime import date, timedelta
+
+    if day.weekday() >= 5:
+        return False
+    if calendar == 'NONE':
+        return True
+    fixed = {(1, 1), (4, 21), (5, 1), (9, 7), (10, 12),
+             (11, 2), (11, 15), (12, 25), (12, 31)}
+    if day.year >= 2024:
+        fixed.add((11, 20))
+    if (day.month, day.day) in fixed:
+        return False
+    year = day.year
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day_of_month = divmod(h + l - 7 * m + 114, 31)
+    easter = date(year, month, day_of_month + 1)
+    return day not in {easter - timedelta(days=48), easter - timedelta(days=47),
+                       easter - timedelta(days=2), easter + timedelta(days=60)}

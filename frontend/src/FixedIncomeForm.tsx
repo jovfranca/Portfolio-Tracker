@@ -50,7 +50,7 @@ export default function FixedIncomeForm({ portfolioId, busy, mutate, onClose }: 
       business_day_calendar: draft.business_day_calendar,
       benchmark_lag_months: Number(draft.benchmark_lag_months), notes: draft.notes,
     }
-    if (await mutate(() => api('/portfolios/' + portfolioId + '/fixed-income/lots', 'POST', payload), 'Lote de renda fixa registrado. Avaliação pendente.')) onClose()
+    if (await mutate(() => api('/portfolios/' + portfolioId + '/fixed-income/lots', 'POST', payload), 'Lote de renda fixa registrado.')) onClose()
   }
 
   return <form className="panel transaction-form" onSubmit={save}>

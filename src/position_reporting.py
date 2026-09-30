@@ -9,7 +9,7 @@ from src.corporate_actions import get_stored_actions, missing_action_ranges
 from src.domain import ZERO, decimal, position_history, position_now, summary_totals, transaction_date
 from src.market_prices import history_for_reporting, quote_refresh_required
 from src.models import Asset, Portfolio, PortfolioSnapshot, PositionSnapshot, Transaction
-from src.fixed_income import list_lots
+from src.fixed_income import list_lots, position_valuations
 from src.rates import RateUnavailable, convert_amount
 
 
@@ -183,6 +183,30 @@ def get_overview(session, portfolio_id):
             'display_acquisition_cost': acquisition, 'display_average_cost': state['display_average_cost'],
             'display_value': market,
         })
+    fixed_positions = position_valuations(session, fixed_income_lots, valuation_date,
+                                          portfolio.display_currency)
+    for item in fixed_positions:
+        positions.append({
+            **item, 'position_type': 'FIXED_INCOME', 'native_currency': item['currency'],
+            'quote_currency': None, 'transaction_currency': item['currency'],
+            'broker': ', '.join(sorted({row.broker.name for row in fixed_income_lots
+                                       if row.asset_id == item['asset_id']
+                                       and row.start_date <= valuation_date})),
+            'allocation_class': 'Renda fixa', 'quantity': None, 'average_cost': None,
+            'current_price': None, 'total_value': None, 'display_price': None,
+            'display_average_cost': None, 'display_acquisition_cost': item['acquisition_cost'],
+            'native_average_cost': None, 'native_acquisition_cost': None,
+            'native_gross_income': None, 'current_accumulated_profitability': None,
+            'return_date': None, 'income_by_currency': {}, 'corporate_action_count': 0,
+            'price_date': None, 'gain_date': valuation_date,
+            'history_behind_transactions': False, 'quote_refresh_required': False,
+        })
+        asset_rows.append({
+            'id': item['asset_id'], 'ticker': item['asset'], 'transaction_currency': item['currency'],
+            'quantity': None, 'average_cost': None, 'current_price': None,
+            'total_value': None, 'price_date': None, 'income_by_currency': {},
+            'corporate_action_count': 0,
+        })
     totals = summary_totals(positions)
     latest_snapshot_status = None
     if portfolio.history_built_through is not None:
@@ -206,12 +230,13 @@ def get_overview(session, portfolio_id):
             'missing_cost_fx': missing_cost_fx,
             'missing_actions': missing_actions,
             'display_currency': portfolio.display_currency,
-            'currencies': sorted({row.transaction_currency for row in transactions}),
+            'currencies': sorted({row.transaction_currency for row in transactions} |
+                                 {lot.currency for lot in fixed_income_lots}),
             'totals_by_currency': {},
             'income_by_currency': ({portfolio.display_currency: totals['gross_income']}
                                    if totals['gross_income'] is not None else {}),
             'gross_income': totals['gross_income'],
-            'history_status': ('complete' if not transactions else
+            'history_status': ('complete' if not transactions and not fixed_income_lots else
                                'pending' if portfolio.dirty_from or portfolio.history_built_through is None
                                else 'complete' if latest_snapshot_status == 'complete' else 'incomplete'),
             'dirty_from': portfolio.dirty_from,
@@ -224,17 +249,13 @@ def get_overview(session, portfolio_id):
     }
     if fixed_income_lots:
         result['fixed_income'] = {
-            'lot_count': len(fixed_income_lots), 'valuation_status': 'pending',
-            'lots': [{'id': lot.id, 'asset_id': lot.asset_id, 'instrument_id': lot.asset.instrument_id,
-                      'currency': lot.currency, 'current_value': None,
-                      'valuation_status': 'pending'} for lot in fixed_income_lots],
+            'lot_count': len(fixed_income_lots),
+            'valuation_status': 'complete' if all(row['status'] == 'complete' for row in fixed_positions) else 'incomplete',
+            'lots': [value for position in fixed_positions for value in position['lots']],
+            'positions': fixed_positions,
         }
-        result['summary']['total_value'] = None
-        for field in ('priced_value', 'acquisition_cost', 'realized_gain',
-                      'unrealized_gain', 'total_gain', 'gross_income'):
-            result['summary'][field] = None
-        result['summary']['income_by_currency'] = {}
-        result['summary']['history_status'] = 'incomplete'
+        if any(row['status'] != 'complete' for row in fixed_positions):
+            result['summary']['history_status'] = 'incomplete' if portfolio.dirty_from is None else 'pending'
     else:
         result['fixed_income'] = {'lot_count': 0, 'valuation_status': 'none', 'lots': []}
     return result
