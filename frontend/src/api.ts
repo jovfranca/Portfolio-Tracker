@@ -57,7 +57,7 @@ export type Overview = { positions: Position[]; assets: Asset[];
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;
     total_value: number | null; missing_prices: string[]; missing_fx: string[]; missing_cost_fx: string[]; missing_actions?: string[]; display_currency: string; currencies: string[];
     totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric>;
-    history_status: string; dirty_from: string | null; gross_income: Numeric | null }; methodology: string }
+    history_status: string; dirty_from: string | null; history_built_through: string | null; gross_income: Numeric | null }; methodology: string }
 export type FixedIncomeLot = {
   id: number; instrument_symbol: string; instrument_name: string; product_type: string;
   issuer: string; broker: string; currency: string; start_date: string; maturity_date: string | null;

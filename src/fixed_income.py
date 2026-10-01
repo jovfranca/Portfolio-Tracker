@@ -189,7 +189,7 @@ def create_lot(session, portfolio_id, payload):
         amount=payload.opening_amount, currency=values['currency']))
     session.flush()
     from src.consolidation import mark_dirty
-    mark_dirty(session, portfolio_id, payload.start_date)
+    mark_dirty(session, portfolio_id, payload.start_date, asset.instrument_id, 'fixed_income')
     return lot
 
 
@@ -203,7 +203,7 @@ def add_movement(session, portfolio_id, lot_id, payload):
     session.add(movement)
     session.flush()
     from src.consolidation import mark_dirty
-    mark_dirty(session, portfolio_id, payload.effective_date)
+    mark_dirty(session, portfolio_id, payload.effective_date, lot.asset.instrument_id, 'fixed_income')
     return movement
 
 
@@ -255,13 +255,15 @@ def edit_movement(session, portfolio_id, lot_id, movement_id, payload):
     _validate_movements(session, lot, list(lot.movements), fill_full=row)
     session.flush()
     from src.consolidation import mark_dirty
-    mark_dirty(session, portfolio_id, min(old_day, row.effective_date))
+    mark_dirty(session, portfolio_id, min(old_day, row.effective_date),
+               lot.asset.instrument_id, 'fixed_income')
     return row
 
 
 def delete_movement(session, portfolio_id, lot_id, movement_id):
     get_portfolio(session, portfolio_id, lock=True)
     lot = get_lot(session, portfolio_id, lot_id)
+    instrument_id = lot.asset.instrument_id
     row = next((item for item in lot.movements if item.id == movement_id), None)
     if row is None:
         raise HTTPException(404, 'Fixed-income movement not found in this lot.')
@@ -279,7 +281,7 @@ def delete_movement(session, portfolio_id, lot_id, movement_id):
     if row.movement_type != 'INITIAL_INVESTMENT':
         session.expire(lot, ['movements'])
     from src.consolidation import mark_dirty
-    mark_dirty(session, portfolio_id, row.effective_date)
+    mark_dirty(session, portfolio_id, row.effective_date, instrument_id, 'fixed_income')
 
 
 def movement_data(movement):

@@ -58,10 +58,10 @@ export default function FixedIncomeLots({ portfolioId, view, busy, mutate, onEdi
         <td>{yieldLabel(lot)}</td>
         <td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => onEdit(movement)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
           if (window.confirm(movement.movement_type === 'INITIAL_INVESTMENT'
-            ? 'Excluir a aplicação inicial e o lote? Esta ação recalculará o histórico.'
-            : 'Excluir este movimento de renda fixa? Esta ação recalculará o histórico.')) {
+            ? 'Excluir a aplicação inicial e o lote? A atualização das posições ficará pendente.'
+            : 'Excluir este movimento de renda fixa? A atualização das posições ficará pendente.')) {
             void mutate(() => api(`/portfolios/${portfolioId}/fixed-income/lots/${lot.id}/movements/${movement.id}`, 'DELETE'),
-              'Movimento excluído e histórico atualizado.')
+              'Movimento excluído. Atualização das posições pendente.')
           }
         }}>Excluir</button></div></td>
       </tr>))}

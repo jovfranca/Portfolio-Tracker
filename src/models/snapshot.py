@@ -1,4 +1,4 @@
-"""Derived daily reporting views; transactions, events, prices and FX remain authoritative."""
+"""Canonical BRL checkpoints; source activity, quotes and FX remain authoritative."""
 from datetime import date
 from decimal import Decimal
 
@@ -53,3 +53,15 @@ class PortfolioSnapshot(Base):
     cumulative_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     status: Mapped[str] = mapped_column(String(32))
     return_factor: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+
+
+class PositionInvalidation(Base):
+    """Earliest unprocessed source change for one position."""
+    __tablename__ = 'position_invalidations'
+    __table_args__ = (UniqueConstraint('portfolio_id', 'instrument_id'),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
+    instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))
+    dirty_from: Mapped[date] = mapped_column(Date)
+    reason: Mapped[str] = mapped_column(String(32))

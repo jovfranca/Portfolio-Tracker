@@ -533,10 +533,12 @@ class PositionLedger:
         return cash, ZERO
 
     def snapshot(self, day, quote, flow=ZERO, daily_income=ZERO, *, purchases=ZERO, previous_value=None,
-                 actions_complete=True, prices_complete=True):
+                 actions_complete=True, prices_complete=True, canonical_quantity=None):
         if quote is not None and self.last_split_date and quote.date.isoformat() < self.last_split_date:
             quote = None
-        quantity = self.quantity
+        # A reporting projection takes quantity from the persisted canonical
+        # position; activity replay is needed only for dated accounting values.
+        quantity = self.quantity if canonical_quantity is None else decimal(canonical_quantity)
         cost = self.cost
         if quantity == 0:
             market_value, price = ZERO, None
@@ -673,6 +675,47 @@ def position_history(transactions, corporate_events, prices, reporting_currency,
             result[-1]['status'] = ledger.last_status = 'incomplete_history'
         result[-1]['ledger_state'] = ledger.state()
         day += timedelta(days=1)
+    return result
+
+
+def project_position_history(canonical_rows, transactions, corporate_events, prices,
+                             reporting_currency, rates, missing_price_ranges=(), *, include_state=False):
+    """Value canonical daily quantities using stored quotes and dated activity FX."""
+    activity = ordered_activity(transactions, corporate_events)
+    quotes = sorted(prices, key=lambda quote: quote.date)
+    last_quote = None
+    quote_cursor = 0
+    cursor = 0
+    ledger = PositionLedger(reporting_currency, rates)
+    result = []
+    for index, canonical in enumerate(canonical_rows):
+        day = canonical.date
+        flow = daily_income = purchases = ZERO
+        while cursor < len(activity) and activity[cursor][0] <= day:
+            activity_day, _, _, _, kind, item = activity[cursor]
+            item_flow, item_income = ledger.apply(kind, item)
+            if activity_day == day:
+                if kind == 'transaction' and item.type == 'Buy':
+                    purchases = (purchases + item_flow
+                                 if purchases is not None and item_flow is not None else None)
+                flow = flow + item_flow if flow is not None and item_flow is not None else None
+                daily_income = (daily_income + item_income
+                                if daily_income is not None and item_income is not None else None)
+            cursor += 1
+        while quote_cursor < len(quotes) and quotes[quote_cursor].date <= day:
+            last_quote = quotes[quote_cursor]
+            quote_cursor += 1
+        projected = ledger.snapshot(
+            day, last_quote, flow, daily_income, purchases=purchases,
+            canonical_quantity=canonical.quantity,
+            actions_complete=canonical.status != 'missing_actions',
+            prices_complete=not any(start <= day <= end for start, end in missing_price_ranges),
+        )
+        if projected['status'] == 'complete' and projected['cumulative_return_pct'] is None:
+            projected['status'] = ledger.last_status = 'incomplete_history'
+        if include_state and index == len(canonical_rows) - 1:
+            projected['ledger_state'] = ledger.state()
+        result.append(projected)
     return result
 
 

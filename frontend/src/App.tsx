@@ -127,8 +127,8 @@ export default function App() {
         name: selectedPortfolio.name, display_currency: currencyDraft.toUpperCase(),
       })
       setPortfolios(current => current.map(p => p.id === updated.id ? updated : p))
-      return await api('/portfolios/' + updated.id + '/consolidate', 'POST')
-    }, 'Moeda de exibição atualizada e histórico recalculado.')
+      return updated
+    }, 'Moeda de exibição atualizada.')
   }
 
   async function saveTransaction(e: FormEvent) {
@@ -139,7 +139,7 @@ export default function App() {
     }
     const url = '/portfolios/' + selected + '/transactions' + (editing === null ? '' : '/' + editing)
     const payload = { ...draft, fx_rate: draft.fx_rate === '' ? null : draft.fx_rate }
-    if (await mutate(() => api(url, editing === null ? 'POST' : 'PUT', payload), 'Transação salva. Posições recalculadas.')) {
+    if (await mutate(() => api(url, editing === null ? 'POST' : 'PUT', payload), 'Transação salva. Atualização das posições pendente.')) {
       setDraft(emptyDraft()); setEditing(null); setFormOpen(false)
     }
   }
@@ -241,7 +241,7 @@ export default function App() {
             {!['BRL', 'USD', 'EUR'].includes(currencyDraft) && <label>Código da moeda<input aria-label="Código da moeda" value={currencyDraft} onChange={e => setCurrencyDraft(e.target.value.toUpperCase())} minLength={3} maxLength={3} pattern="[A-Za-z]{3}" placeholder="Ex.: GBP" required /></label>}
             <button className="button outline" disabled={busy || currencyDraft === selectedPortfolio?.display_currency}>Aplicar moeda</button>
           </form>
-          <div className="method-note">Histórico: {overview.summary.history_status === 'pending' ? 'atualização pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'dados incompletos'}{overview.summary.dirty_from && overview.summary.history_status === 'pending' ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. {overview.summary.history_status === 'incomplete' && !overview.fixed_income?.lot_count ? 'Confira cotações e câmbio nas datas marcadas como incompletas. ' : ''}<button className="button outline" disabled={busy} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Carteira consolidada.')}>{busy ? 'Consolidando…' : 'Consolidar carteira'}</button></div>
+          <div className="method-note">Posições atualizadas até: {overview.summary.history_built_through ? dateLabel(overview.summary.history_built_through) : 'nunca'}. Histórico: {overview.summary.history_status === 'pending' ? 'atualização pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'dados incompletos'}{overview.summary.dirty_from && overview.summary.history_status === 'pending' ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. {overview.summary.history_status === 'incomplete' && !overview.fixed_income?.lot_count ? 'Confira cotações e câmbio nas datas marcadas como incompletas. ' : ''}<button className="button outline" disabled={busy} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Posições atualizadas.')}>{busy ? 'Atualizando…' : 'Atualizar posições'}</button></div>
           {overview.fixed_income?.lot_count ? <div className="method-note">{overview.fixed_income.lot_count} lote(s) de renda fixa. {overview.fixed_income.valuation_status === 'complete' ? 'Valor bruto contratual incluído no total.' : 'Há avaliações incompletas; confira os lotes abaixo.'}</div> : null}
           <div className="metrics">
             <article className="metric featured"><span>Valor das posições · {overview.summary.display_currency}</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.fixed_income?.valuation_status === 'incomplete' ? 'Avaliação de renda fixa incompleta' : overview.summary.missing_actions?.length ? 'Eventos não verificados: ' + overview.summary.missing_actions.join(', ') : overview.summary.missing_fx.length ? 'FX indisponível: ' + overview.summary.missing_fx.join(', ') : overview.summary.missing_prices.length ? 'Sem cotação: ' + overview.summary.missing_prices.join(', ') : 'Total convertido na data da avaliação'}</small></article>
@@ -260,9 +260,9 @@ export default function App() {
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
           {tab === 'Posições' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="positions" query={query} showClosed={showClosed} busy={busy} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
-          {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar recalcula as posições automaticamente.</p></div></div>
+          {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar deixa a atualização das posições pendente.</p></div></div>
             {!transactions.length ? <div className="empty">{overview.fixed_income?.lot_count ? 'Não há compras ou vendas de mercado. Os movimentos de renda fixa estão abaixo.' : 'Nenhuma transação registrada.'}</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
-              if (window.confirm('Excluir esta transação e recalcular as posições?')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída.')
+              if (window.confirm('Excluir esta transação? A atualização das posições ficará pendente.')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída. Atualização das posições pendente.')
             }}>Excluir</button></div></td></tr>)}</tbody></table></div>}
           </section>}
           {tab === 'Transações' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="movements" busy={busy} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
@@ -399,7 +399,7 @@ function CorporateActionsPanel({ base, currency, busy, mutate, refreshVersion }:
     {error && <div role="alert" className="alert error">{error}</div>}
     {!!events.length && <div className="table-wrap"><table><thead><tr><th>Data / tipo</th><th>Definição</th><th>Efeito na carteira</th><th>Origem</th><th>Ações</th></tr></thead><tbody>{[...events].reverse().map(event => <tr key={event.origin + '-' + event.id}>
       <td>{dateLabel(event.effective_date)}<small>{eventLabels[event.event_type]}</small></td><td>{event.conversion_factor != null ? 'Fator ' + fmt(event.conversion_factor, 6) : fmt(event.amount_per_unit, 6) + ' ' + event.currency}</td><td>{event.gross_amount != null ? 'Bruto ' + fmt(event.gross_amount, 4) + ' ' + event.currency : fmt(event.eligible_quantity, 6) + ' → posição ajustada'}</td><td>{event.origin === 'manual' ? 'Manual' : event.source}</td><td>{event.origin === 'manual' && <div className="row-actions"><button className="button quiet" onClick={() => editEvent(event)}>Editar</button><button className="button danger" onClick={() => {
-        if (window.confirm('Excluir este evento e recalcular as posições?')) void mutate(() => api(base + '/corporate-events/' + event.id, 'DELETE'), 'Evento excluído.').then(ok => { if (ok) { reset(); setVersion(value => value + 1) } })
+        if (window.confirm('Excluir este evento? A atualização das posições ficará pendente.')) void mutate(() => api(base + '/corporate-events/' + event.id, 'DELETE'), 'Evento excluído. Atualização das posições pendente.').then(ok => { if (ok) { reset(); setVersion(value => value + 1) } })
       }}>Excluir</button></div>}</td>
     </tr>)}</tbody></table></div>}
     <div className="section-heading"><div><h2>Atividade do ativo</h2><p>Leitura cronológica unificada; transações e eventos continuam armazenados separadamente.</p></div></div>
@@ -433,11 +433,11 @@ function PerformancePanel({ portfolioId, overview }: { portfolioId: number; over
   }, [portfolioId, assetId, p])
   return <section className="panel"><div className="section-heading"><div><h2>Desempenho da posição · {overview.summary.display_currency}</h2><p>Ganho monetário com renda bruta; retorno percentual diário encadeado na tabela.</p></div>
     <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset}</option>)}</select></label></div>
-    {(overview.summary.history_status === 'pending' || rows.some(r => r.status !== 'complete')) && <div className="method-note">{overview.summary.history_status === 'pending' ? 'Histórico com atualização pendente. Execute “Consolidar carteira”.' : 'Histórico com dados incompletos. Confira as datas sem cotação ou câmbio e tente consolidar novamente.'}</div>}
+    {(overview.summary.history_status === 'pending' || rows.some(r => r.status !== 'complete')) && <div className="method-note">{overview.summary.history_status === 'pending' ? 'Histórico com atualização pendente. Use “Atualizar posições”.' : 'Histórico com dados incompletos. Confira as datas sem cotação ou câmbio e tente atualizar novamente.'}</div>}
     {error && <div role="alert" className="alert error">{error}</div>}
-    {loading ? <div className="empty">Carregando histórico…</div> : !rows.length ? <div className="empty">Consolide a carteira para gerar o histórico desta posição.</div> : <>
+    {loading ? <div className="empty">Carregando histórico…</div> : !rows.length ? <div className="empty">Atualize as posições para gerar o histórico desta posição.</div> : <>
       {rows.some(r => r.total_gain !== null) && <GainChart rows={rows} currency={overview.summary.display_currency} />}
-      <div className="table-wrap"><table><thead><tr><th>Data</th><th>Quantidade</th><th>Custo</th><th>Valor</th><th>Realizado</th><th>Não realizado</th><th>Renda bruta</th><th>Resultado total</th><th>Retorno acumulado</th><th>Cotação utilizada</th><th>Status</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(r => <tr key={r.date}><td>{dateLabel(r.date)}</td><td>{fmt(r.quantity, 6)}</td><td>{fmt(r.remaining_acquisition_cost)}</td><td>{fmt(r.market_value)}</td><td>{fmt(r.realized_gain)}</td><td>{fmt(r.unrealized_gain)}</td><td>{fmt(r.gross_income)}</td><td>{fmt(r.total_gain)}</td><td>{r.cumulative_return_pct === null ? '—' : fmt(r.cumulative_return_pct) + '%'}</td><td>{dateLabel(r.quote_date ?? null)}{r.quote_date && r.quote_date !== r.date && <small>Última disponível</small>}</td><td>{r.status === 'complete' ? 'Completo' : 'Incompleto'}</td></tr>)}</tbody></table></div>
+      <div className="table-wrap"><table><thead><tr><th>Data</th><th>Quantidade</th><th>Custo</th><th>Valor</th><th>Realizado</th><th>Não realizado</th><th>Renda bruta</th><th>Resultado total</th><th>Retorno acumulado</th><th>Cotação utilizada</th><th>Status</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(r => <tr key={r.date}><td>{dateLabel(r.date)}</td><td>{fmt(r.quantity, 6)}</td><td>{fmt(r.remaining_acquisition_cost)}</td><td>{fmt(r.market_value)}</td><td>{fmt(r.realized_gain)}</td><td>{fmt(r.unrealized_gain)}</td><td>{fmt(r.gross_income)}</td><td>{fmt(r.total_gain)}</td><td>{r.cumulative_return_pct === null ? '—' : fmt(r.cumulative_return_pct) + '%'}</td><td>{dateLabel(r.quote_date ?? null)}{r.quote_date && r.quote_date !== r.date && <small>Última disponível</small>}</td><td>{r.status === 'complete' ? 'Completo' : r.status === 'pending' ? 'Pendente' : 'Incompleto'}</td></tr>)}</tbody></table></div>
     </>}
   </section>
 }

@@ -13,7 +13,7 @@ from src.database import Base
 from src.domain import cost_and_quantity, corporate_event_effects, historical_profitability, overview
 from src.models import (
     Asset, CorporateAction, CorporateActionCoverage, Instrument, MarketPrice,
-    MarketPriceCoverage, Portfolio, ProviderInstrument, UserCorporateEvent,
+    MarketPriceCoverage, Portfolio, PositionInvalidation, ProviderInstrument, UserCorporateEvent,
 )
 from src.schemas import CorporateEventInput
 
@@ -25,6 +25,7 @@ def action_session():
         Portfolio.__table__, Instrument.__table__, ProviderInstrument.__table__,
         Asset.__table__, CorporateAction.__table__, CorporateActionCoverage.__table__,
         UserCorporateEvent.__table__, MarketPrice.__table__, MarketPriceCoverage.__table__,
+        PositionInvalidation.__table__,
     ]:
         table.create(engine)
     with Session(engine) as session:

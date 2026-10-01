@@ -259,7 +259,7 @@ def test_spread_contract_and_foreign_currency_are_independent_of_benchmark(clien
         assert session.query(Benchmark).count() == 1
 
 
-def test_portfolio_history_never_reports_equity_only_values_as_complete_after_lot_start(client):
+def test_portfolio_history_requires_canonical_positions_after_lot_start(client):
     c, engine = client
     from datetime import date
 
@@ -277,14 +277,8 @@ def test_portfolio_history_never_reports_equity_only_values_as_complete_after_lo
 
     response = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload())
     assert response.status_code == 201, response.text
-    history = c.get('/api/portfolios/1/history').json()
-    assert history[0]['status'] == 'complete'
-    assert Decimal(str(history[0]['market_value'])) == Decimal('100')
-    assert history[1]['status'] == 'incomplete'
-    for field in ('remaining_acquisition_cost', 'market_value', 'realized_gain',
-                  'unrealized_gain', 'gross_income', 'total_gain',
-                  'daily_return_pct', 'cumulative_return_pct'):
-        assert history[1][field] is None, field
+    # A legacy aggregate snapshot alone cannot certify canonical positions.
+    assert c.get('/api/portfolios/1/history').json() == []
 
 
 def test_current_lot_api_and_history_use_accrued_value_without_rewriting_sources(client):
@@ -548,11 +542,18 @@ def test_movement_edit_delete_revalidates_later_redemptions_and_history(client):
     lot = c.get(f"/api/portfolios/1/fixed-income/lots/{created['id']}").json()
     assert Decimal(lot['valuation']['outstanding_principal']) == 500
     after = c.get('/api/portfolios/1/history').json()
-    assert all(row['status'] == 'complete' for row in after)
-    assert after[1]['market_value'] == 1000
-    assert after[2]['market_value'] == 500
+    assert after[0]['status'] == 'complete'
+    assert any(row['status'] != 'complete' for row in after[1:])
+    position_pending = c.get('/api/portfolios/1/performance', params={
+        'asset_id': created['asset_id']}).json()
+    assert position_pending[1]['status'] == 'pending'
     with Session(engine) as session:
-        assert session.get(Portfolio, 1).dirty_from is None
+        assert session.get(Portfolio, 1).dirty_from == (start + timedelta(days=1))
+    assert c.post('/api/portfolios/1/consolidate').status_code == 200
+    updated = c.get('/api/portfolios/1/history').json()
+    assert all(row['status'] == 'complete' for row in updated)
+    assert updated[1]['market_value'] == 1000
+    assert updated[2]['market_value'] == 500
 
 
 def test_full_redemption_is_valued_and_closed_lot_rejects_more_movements(client):

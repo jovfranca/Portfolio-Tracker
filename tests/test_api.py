@@ -318,7 +318,7 @@ def test_public_api_cannot_write_provider_catalog(client):
 
 
 @pytest.mark.parametrize('source', ['manual_income', 'provider_income', 'manual_price'])
-def test_fx_correction_invalidates_currencies_used_only_by_events_or_prices(client, source):
+def test_fx_correction_does_not_invalidate_canonical_positions(client, source):
     from src.models import Asset, CorporateAction, ExchangeRate, Portfolio, UserCorporateEvent, UserDefinedPrice
     c, connection = client
     pid = c.post('/api/portfolios', json={'name': 'FX dependencies'}).json()['id']
@@ -346,7 +346,7 @@ def test_fx_correction_invalidates_currencies_used_only_by_events_or_prices(clie
         session.flush()
         rate.rate = 7
         session.flush()
-        assert portfolio.dirty_from == day
+        assert portfolio.dirty_from is None
 
 
 def test_portfolio_display_currency_changes_without_editing_transactions(client):
@@ -371,7 +371,7 @@ def test_portfolio_display_currency_changes_without_editing_transactions(client)
     assert c.get(base + '/transactions').json() == saved
 
 
-def test_reporting_fx_correction_rewinds_to_trade_before_settlement(client):
+def test_reporting_fx_correction_does_not_rewind_canonical_trade(client):
     from src.models import ExchangeRate, Portfolio
     c, connection = client
     pid = c.post('/api/portfolios', json={'name': 'Settlement FX', 'display_currency': 'EUR'}).json()['id']
@@ -388,7 +388,7 @@ def test_reporting_fx_correction_rewinds_to_trade_before_settlement(client):
         session.add(ExchangeRate(currency='EUR', rate_type='FX', rate_side='MARKET',
                                  reference_date=date(2024, 1, 4), rate=6, source='yfinance'))
         session.flush()
-        assert portfolio.dirty_from == date(2024, 1, 2)
+        assert portfolio.dirty_from is None
 
 
 def test_consolidation_recalculates_only_dirty_suffix_and_preserves_sources(client):
@@ -427,6 +427,53 @@ def test_consolidation_recalculates_only_dirty_suffix_and_preserves_sources(clie
     after = c.get(base + '/performance', params={'asset_id': aid}).json()
     assert after[0]['quantity'] == 5
     assert c.get(base + '/transactions').json()[0]['price'] == sources[0]['price']
+
+
+def test_single_instrument_edit_preserves_unrelated_position_checkpoints(client, monkeypatch):
+    from src.models import PositionInvalidation, PositionSnapshot
+    from src import consolidation
+
+    c, connection = client
+    pid = c.post('/api/portfolios', json={'name': 'Targeted replay'}).json()['id']
+    base = f'/api/portfolios/{pid}'
+    first = date.today() - timedelta(days=2)
+    ids = {symbol: register_instrument(c, symbol, 'BRL') for symbol in ('PETR4', 'ARKK')}
+    trades = {}
+    for symbol, instrument_id in ids.items():
+        payload = dict(trade_date=first.isoformat(), settlement_date=first.isoformat(),
+                       type='Buy', asset=symbol, instrument_id=instrument_id,
+                       broker='A', quantity=1, price=10, transaction_currency='BRL')
+        trades[symbol] = (c.post(base + '/transactions', json=payload).json(), payload)
+    assets = {row['ticker']: row['id'] for row in c.get(base + '/overview').json()['assets']}
+    for symbol, asset_id in assets.items():
+        for offset in (0, 1, 2):
+            assert c.put(base + f'/assets/{asset_id}/quote', json={
+                'date': (first + timedelta(days=offset)).isoformat(), 'close': 10,
+            }).status_code == 200
+    assert c.post(base + '/consolidate').status_code == 200
+    before = list(connection.scalars(select(PositionSnapshot.id).where(
+        PositionSnapshot.portfolio_id == pid,
+        PositionSnapshot.instrument_id == ids['ARKK']).order_by(PositionSnapshot.date)))
+    transaction, payload = trades['PETR4']
+    monkeypatch.setattr('src.api.routes.get_overview', lambda *_: pytest.fail('write called overview'))
+    assert c.put(base + f'/transactions/{transaction["id"]}', json=payload | {'quantity': 2}).status_code == 200
+    dirty = list(connection.scalars(select(PositionInvalidation.instrument_id).where(
+        PositionInvalidation.portfolio_id == pid)))
+    assert dirty == [ids['PETR4']]
+    calls = []
+    original = consolidation.get_history
+
+    def tracked(session, asset, *args, **kwargs):
+        calls.append(asset.instrument.symbol)
+        return original(session, asset, *args, **kwargs)
+
+    monkeypatch.setattr(consolidation, 'get_history', tracked)
+    assert c.post(base + '/consolidate').status_code == 200
+    assert 'ARKK' not in calls
+    after = list(connection.scalars(select(PositionSnapshot.id).where(
+        PositionSnapshot.portfolio_id == pid,
+        PositionSnapshot.instrument_id == ids['ARKK']).order_by(PositionSnapshot.date)))
+    assert after == before
 
 
 def test_consolidation_continues_after_missing_quote(client, monkeypatch):
@@ -544,9 +591,17 @@ def test_reporting_fx_and_dividend_change_history_without_source_mutation(client
     brl = c.get(base + '/performance', params={'asset_id': asset_id}).json()
     assert Decimal(str(brl[-1]['cumulative_return_pct'])) == 32
     assert Decimal(str(brl[-1]['total_gain'])) == 16
+    before_currency_change = c.get('/api/portfolios').json()[-1]
+    from src.models import PositionSnapshot
+    snapshot_ids = list(connection.scalars(select(PositionSnapshot.id).where(
+        PositionSnapshot.portfolio_id == pid).order_by(PositionSnapshot.date)))
     assert c.put(base, json={'name': 'FX return', 'display_currency': 'USD'}).status_code == 200
-    assert c.post(base + '/consolidate').status_code == 200
+    after_currency_change = c.get('/api/portfolios').json()[-1]
+    assert after_currency_change['dirty_from'] == before_currency_change['dirty_from']
+    assert after_currency_change['history_built_through'] == before_currency_change['history_built_through']
     usd = c.get(base + '/performance', params={'asset_id': asset_id}).json()
+    assert list(connection.scalars(select(PositionSnapshot.id).where(
+        PositionSnapshot.portfolio_id == pid).order_by(PositionSnapshot.date))) == snapshot_ids
     assert Decimal(str(usd[-1]['cumulative_return_pct'])) == 10
     assert Decimal(str(usd[-1]['total_gain'])) == 1
     assert c.get(base + '/transactions').json() == original
@@ -557,7 +612,12 @@ def test_reporting_fx_and_dividend_change_history_without_source_mutation(client
         ))
         corrected.rate = 7
         session.commit()
-    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == second.isoformat()
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] is None
+    assert c.put(base, json={'name': 'FX return', 'display_currency': 'BRL'}).status_code == 200
+    revised = c.get(base + '/performance', params={'asset_id': asset_id}).json()
+    assert Decimal(str(revised[-1]['market_value'])) == 70
+    assert Decimal(str(revised[-1]['gross_income'])) == 7
+    assert Decimal(str(revised[-1]['remaining_acquisition_cost'])) == 50
 
 
 def test_native_valuation_uses_native_currency_when_quote_differs(client):
@@ -622,7 +682,7 @@ def test_reconsolidation_preserves_snapshots_before_dirty_date(client):
     assert c.put(base + f'/transactions/{later["id"]}', json=common | {
         'trade_date': second.isoformat(), 'settlement_date': second.isoformat(), 'price': 12,
     }).status_code == 200
-    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == second.isoformat()
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] is None
     result = c.post(base + '/consolidate').json()
     assert result['recalculated_from'] == second.isoformat()
     assert connection.scalar(select(PositionSnapshot.id).where(
@@ -630,7 +690,7 @@ def test_reconsolidation_preserves_snapshots_before_dirty_date(client):
     assert c.put(base + f'/assets/{aid}/quote', json={
         'date': second.isoformat(), 'close': 11,
     }).status_code == 200
-    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == second.isoformat()
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] is None
 
 
 def test_deleting_first_trade_removes_stale_early_history(client):

@@ -73,7 +73,9 @@ Essa regra vale também para avaliações históricas e resgates, sem depender d
 relógio dentro do cálculo. A convenção segue o intervalo inicial inclusivo/final
 exclusivo da [metodologia DI da B3](https://b3.com.br/main.jsp?lumA=1&lumII=2C9FBE63638CFE2501638D373B435E37&lumPageId=2C9FBE63638CFE2501638D3464C8577B).
 
-Após atualizar, aplique `python -m alembic upgrade head` e consolide as carteiras.
+Após atualizar, aplique `python -m alembic upgrade head` e use **Atualizar posições** nas carteiras.
+A migração `0023` cria invalidações por instrumento e agenda a reconstrução explícita
+das posições em BRL, independentemente da moeda de exibição.
 A migração `0022` marca o histórico das carteiras com CDI para reconstrução desde
 a primeira aplicação afetada, preservando contratos, movimentos e observações.
 Resgates totais gravados com valores calculados pela regra anterior podem exigir
@@ -108,14 +110,14 @@ Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.
 3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 para ontem e
    para a data atual.
 4. Confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
-5. Clique em **Consolidar carteira** e abra **Desempenho** para ver o resultado de
+5. Clique em **Atualizar posições** e abra **Desempenho** para ver o resultado de
    100 e o retorno diário ponderado no tempo.
 6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2 e confira
    quantidade 20 e preço médio 10 em **Posições**.
 7. Adicione um dividendo manual e confira seu valor bruto e a linha correspondente
    em **Atividade do ativo**.
-8. Edite a quantidade da transação para 5, confira a posição atual, consolide
-   novamente para atualizar o histórico e recarregue a página para confirmar persistência.
+8. Edite a quantidade da transação para 5, confira o aviso de atualização pendente,
+   clique em **Atualizar posições** e recarregue a página para confirmar persistência.
 
 Não use os valores fictícios acima na carteira real. A conversão de valores atuais
 usa cotações FX datadas; se faltar FX, o total é identificado como incompleto.

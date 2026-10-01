@@ -4,7 +4,7 @@ from types import SimpleNamespace as Obj
 
 import pytest
 
-from src.domain import portfolio_day, position_history, position_now, summary_totals
+from src.domain import portfolio_day, position_history, position_now, project_position_history, summary_totals
 
 
 def tx(identifier, kind, day, quantity, price, currency='BRL', broker='A', fee=0):
@@ -111,6 +111,48 @@ def test_reporting_currency_fx_changes_return_and_income():
     assert brl[-1]['cumulative_return_pct'] == 20
     assert brl[-1]['market_value'] == 60
     assert brl[-1]['unrealized_gain'] == 10
+
+
+def test_reporting_projection_uses_canonical_quantity_and_daily_quote_fx():
+    trades = [tx(1, 'Buy', 1, 2, 10, 'USD')]
+    prices = [quote(1, 10, 'USD'), quote(2, 12, 'USD')]
+    fx = rates(('USD', 1, 5), ('USD', 2, 6))
+    canonical = position_history(trades, [], prices, 'BRL', fx)
+    stored = [Obj(**row) for row in canonical]
+    # The persisted quantity is authoritative for display valuation.
+    stored[1].quantity = Decimal('3')
+    projected = project_position_history(stored, trades, [], prices, 'BRL', fx)
+    assert [row['market_value'] for row in projected] == [Decimal('100'), Decimal('216')]
+    assert projected[1]['quote_date'] == date(2024, 1, 2)
+
+
+def test_reporting_projection_keeps_transaction_date_fx_for_cost_and_realized_gain():
+    trades = [tx(1, 'Buy', 1, 2, 10, 'USD'), tx(2, 'Sell', 2, 1, 20, 'USD')]
+    prices = [quote(1, 10, 'USD'), quote(2, 20, 'USD'), quote(3, 20, 'USD')]
+    brl_rates = rates(('USD', 1, 5), ('USD', 2, 6), ('USD', 3, 7))
+    canonical = position_history(trades, [], prices, 'BRL', brl_rates)
+    usd = project_position_history([Obj(**row) for row in canonical], trades, [], prices,
+                                   'USD', {})
+    assert usd[-1]['quantity'] == 1
+    assert usd[-1]['remaining_acquisition_cost'] == 10
+    assert usd[-1]['realized_gain'] == 10
+    assert usd[-1]['market_value'] == 20
+    assert usd[-1]['total_gain'] == 20
+    assert usd[-1]['cumulative_return_pct'] == position_history(
+        trades, [], prices, 'USD', {})[-1]['cumulative_return_pct']
+
+
+def test_reporting_checkpoint_extends_into_today_in_selected_currency():
+    trades = [tx(1, 'Buy', 1, 1, 10, 'USD')]
+    prices = [quote(1, 10, 'USD'), quote(2, 12, 'USD')]
+    fx = rates(('USD', 1, 5), ('USD', 2, 6))
+    canonical = position_history(trades, [], prices[:1], 'BRL', fx)
+    projected = project_position_history([Obj(**canonical[0])], trades, [], prices[:1],
+                                         'USD', {}, include_state=True)
+    today = position_history([], [], prices, 'USD', {}, start=date(2024, 1, 2),
+                             end=date(2024, 1, 2),
+                             initial_state=projected[-1]['ledger_state'])[0]
+    assert today['cumulative_return_pct'] == 20
 
 
 def test_current_valuation_date_is_independent_of_carried_quote_date():

@@ -37,7 +37,7 @@ test('reporting values are primary, native values conditional, and closed positi
         .map(p => ({ ...p, display_currency: savedCurrency || 'BRL' })),
       assets: [], methodology: 'Synthetic fixture',
       summary: { display_currency: savedCurrency || 'BRL', total_value: 360, assets: 4, positions: 4,
-        history_status: 'complete', dirty_from: null,
+        history_status: 'complete', dirty_from: null, history_built_through: '2024-01-02',
         transactions: 5, missing_fx: [], missing_cost_fx: [], missing_prices: [], income_by_currency: {} },
     }
     return route.fulfill({ json: body })
@@ -59,16 +59,16 @@ test('reporting values are primary, native values conditional, and closed positi
   await expect(page.getByRole('button', { name: 'Aplicar moeda' })).toBeDisabled()
   await page.getByLabel('Moeda de exibição').selectOption('BRL')
   expect(currencyUpdates).toBe(0)
-  await page.getByRole('button', { name: 'Consolidar carteira' }).click()
+  await page.getByRole('button', { name: 'Atualizar posições' }).click()
   await expect.poll(() => consolidations).toBe(1)
   await page.getByLabel('Moeda de exibição').selectOption('EUR')
   await expect(page.getByRole('button', { name: 'Aplicar moeda' })).toBeEnabled()
   await page.getByRole('button', { name: 'Aplicar moeda' }).click()
   await expect.poll(() => currencyUpdates).toBe(1)
   expect(savedCurrency).toBe('EUR')
-  await expect.poll(() => consolidations).toBe(2)
+  await expect.poll(() => consolidations).toBe(1)
   await expect(value).toHaveText('EUR 120,00USD 24,00')
-  await expect(page.getByText('Moeda de exibição atualizada e histórico recalculado.')).toBeVisible()
+  await expect(page.getByText('Moeda de exibição atualizada.')).toBeVisible()
   await page.getByLabel('Moeda de exibição').selectOption('OTHER')
   await page.getByLabel('Código da moeda').fill('GBP')
   await expect(page.getByRole('button', { name: 'Aplicar moeda' })).toBeEnabled()
@@ -104,12 +104,13 @@ test('partial history is shown as data gaps with visible performance dates', asy
         history_behind_transactions: false }],
       assets: [], methodology: 'Synthetic fixture', summary: { display_currency: 'USD',
         history_status: consolidated ? 'incomplete' : 'pending', dirty_from: consolidated ? null : '2024-05-06',
+        history_built_through: consolidated ? '2024-05-07' : null,
         total_value: 105, assets: 1, positions: 1, transactions: 1,
         missing_fx: [], missing_cost_fx: [], missing_prices: [], gross_income: 0, income_by_currency: { USD: 0 } },
     } })
   })
   await page.goto('/')
-  await page.getByRole('button', { name: 'Consolidar carteira' }).click()
+  await page.getByRole('button', { name: 'Atualizar posições' }).click()
   await expect(page.getByText(/Consolidação parcial: GLD/)).toBeVisible()
   await expect(page.getByText(/Histórico: dados incompletos/)).toBeVisible()
   await expect(page.getByText(/Retorno histórico indisponível/)).toBeVisible()

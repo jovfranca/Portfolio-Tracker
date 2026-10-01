@@ -10,7 +10,7 @@ from src.market_prices import get_latest, get_stored_history, save_user_price
 from src.models import (
     Asset, Instrument, InstrumentAlias, LatestMarketQuote, MarketPrice,
     MarketPriceCoverage, Portfolio, ProviderInstrument, UserDefinedPrice,
-    CorporateAction, CorporateActionCoverage, FixedIncomeProduct,
+    CorporateAction, CorporateActionCoverage, FixedIncomeProduct, PositionInvalidation,
 )
 from src.services import ensure_asset
 
@@ -24,6 +24,7 @@ def session():
         MarketPriceCoverage.__table__, LatestMarketQuote.__table__,
         UserDefinedPrice.__table__,
         CorporateAction.__table__, CorporateActionCoverage.__table__, FixedIncomeProduct.__table__,
+        PositionInvalidation.__table__,
     ]:
         table.create(engine)
     from sqlalchemy import text

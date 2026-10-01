@@ -193,6 +193,39 @@ def get_quote_history(session, asset, start=None, end=None):
     return [by_date[day] for day in sorted(by_date)]
 
 
+def stored_price_gaps(session, asset, start, end, *, mapping=None, target_currency=None):
+    """Check stored daily coverage without fetching provider history."""
+    target_currency = target_currency or valuation_currency(session, asset)
+    if mapping is None:
+        try:
+            mapping = provider_mapping(session, asset.instrument, provider=market_data_provider())
+        except ValueError:
+            return [(start, end)]
+    coverage = list(session.scalars(select(MarketPriceCoverage).where(
+        MarketPriceCoverage.provider_instrument_id == mapping.id,
+        MarketPriceCoverage.interval == '1d',
+    )))
+    for row in session.scalars(select(MarketPrice).where(
+        MarketPrice.provider_instrument_id == mapping.id,
+        MarketPrice.currency == mapping.quote_currency,
+        MarketPrice.interval == '1d',
+        MarketPrice.reference_at >= _daily_reference(start),
+        MarketPrice.reference_at < _daily_reference(end + timedelta(days=1)),
+    )):
+        day = _reference_date(row.reference_at)
+        coverage.append(SimpleNamespace(start_date=day, end_date=day))
+    if target_currency == mapping.quote_currency:
+        for day in session.scalars(select(UserDefinedPrice.reference_date).where(
+            UserDefinedPrice.asset_id == asset.id,
+            UserDefinedPrice.currency == target_currency,
+            UserDefinedPrice.source.notin_(['legacy', 'yfinance']),
+            UserDefinedPrice.reference_date >= start,
+            UserDefinedPrice.reference_date <= end,
+        )):
+            coverage.append(SimpleNamespace(start_date=day, end_date=day))
+    return _missing_ranges(start, end, coverage)
+
+
 def save_user_price(
     session, asset, reference_date, price, currency=None,
     dividends=None, stock_splits=None,
@@ -294,29 +327,8 @@ def get_history(session, asset, start, end, fetcher=None):
         return HistoricalPriceResult(
             get_quote_history(session, asset, start, end), [(start, end)],
         )
-    coverage = list(session.scalars(select(MarketPriceCoverage).where(
-        MarketPriceCoverage.provider_instrument_id == mapping.id,
-        MarketPriceCoverage.interval == '1d',
-    )))
-    for row in session.scalars(select(MarketPrice).where(
-        MarketPrice.provider_instrument_id == mapping.id,
-        MarketPrice.currency == mapping.quote_currency,
-        MarketPrice.interval == '1d',
-        MarketPrice.reference_at >= _daily_reference(start),
-        MarketPrice.reference_at < _daily_reference(end + timedelta(days=1)),
-    )):
-        day = _reference_date(row.reference_at)
-        coverage.append(SimpleNamespace(start_date=day, end_date=day))
-    if target_currency == mapping.quote_currency:
-        for day in session.scalars(select(UserDefinedPrice.reference_date).where(
-            UserDefinedPrice.asset_id == asset.id,
-            UserDefinedPrice.currency == target_currency,
-            UserDefinedPrice.source.notin_(['legacy', 'yfinance']),
-            UserDefinedPrice.reference_date >= start,
-            UserDefinedPrice.reference_date <= end,
-        )):
-            coverage.append(SimpleNamespace(start_date=day, end_date=day))
-    gaps = _missing_ranges(start, end, coverage)
+    gaps = stored_price_gaps(session, asset, start, end, mapping=mapping,
+                             target_currency=target_currency)
     fetcher = fetcher or market_data.fetch_history
     missing = []
     for gap_start, gap_end in gaps:
