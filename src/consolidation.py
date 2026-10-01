@@ -4,17 +4,18 @@ from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import delete, event, inspect, select
+from sqlalchemy import delete, event, func, inspect, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from src.corporate_actions import get_actions, get_stored_actions
 from src.domain import ZERO, portfolio_day, position_history, position_now, project_position_history
-from src.market_prices import get_history, get_latest, get_quote_history, history_for_reporting, stored_price_gaps
+from src.market_prices import (accounting_currency, get_history, get_latest, get_quote_history,
+                               history_for_reporting, stored_price_gaps)
 from src.models import (
     Asset, BenchmarkObservation, CorporateAction, CorporateActionCoverage, FixedIncomeLot,
-    Portfolio, PortfolioSnapshot, PositionInvalidation, PositionSnapshot, Transaction,
-    UserCorporateEvent,
+    Portfolio, PortfolioSnapshot, PositionInvalidation, PositionSnapshot, ProviderInstrument, Transaction,
+    UserCorporateEvent, UserDefinedPrice,
 )
 from src.position_reporting import historical_valuation_factors, reporting_factors, sources
 from src.rates import RateUnavailable, backfill_rates, convert_amount
@@ -25,7 +26,6 @@ POSITION_FIELDS = (
     'realized_gain', 'unrealized_gain', 'gross_income', 'total_gain',
     'net_flow', 'purchases', 'daily_income', 'daily_return_pct', 'cumulative_return_pct',
 )
-CANONICAL_CURRENCY = 'BRL'
 PORTFOLIO_FIELDS = (
     'remaining_acquisition_cost', 'market_value', 'realized_gain',
     'unrealized_gain', 'gross_income', 'total_gain',
@@ -77,6 +77,32 @@ def invalidate_changed_inputs(session, flush_context, instances):
             asset = session.get(Asset, obj.asset_id)
             if asset is not None:
                 add(asset.portfolio_id, asset.instrument_id, old_day(obj, 'effective_date'), 'event')
+        elif isinstance(obj, UserDefinedPrice):
+            if obj not in session.deleted and not inspect(obj).attrs.currency.history.has_changes():
+                continue
+            asset = session.get(Asset, obj.asset_id)
+            if asset is None or session.scalar(select(ProviderInstrument.id).where(
+                    ProviderInstrument.instrument_id == asset.instrument_id).limit(1)) is not None:
+                continue
+            portfolio = session.get(Portfolio, asset.portfolio_id)
+            if portfolio is None or portfolio.history_built_through is None:
+                continue
+            saved_currency = session.scalar(select(PositionSnapshot.reporting_currency).where(
+                PositionSnapshot.portfolio_id == asset.portfolio_id,
+                PositionSnapshot.instrument_id == asset.instrument_id).limit(1))
+            prices = list(session.scalars(select(UserDefinedPrice).where(
+                UserDefinedPrice.asset_id == asset.id)))
+            prices.extend(row for row in session.new if isinstance(row, UserDefinedPrice)
+                          and row.asset_id == asset.id)
+            currencies = {row.currency for row in prices if row not in session.deleted
+                          and row.source not in {'legacy', 'yfinance'}}
+            resolved = (next(iter(currencies)) if len(currencies) == 1 else
+                        asset.instrument.currency if not currencies else None)
+            if saved_currency is not None and resolved != saved_currency:
+                first = session.scalar(select(func.min(Transaction.trade_date)).where(
+                    Transaction.portfolio_id == asset.portfolio_id,
+                    Transaction.instrument_id == asset.instrument_id))
+                add(asset.portfolio_id, asset.instrument_id, first, 'pricing')
         elif isinstance(obj, (CorporateAction, CorporateActionCoverage)):
             if isinstance(obj, CorporateActionCoverage) and obj.is_final is False:
                 # A TTL refresh of today's coverage changes no finalized daily
@@ -89,6 +115,30 @@ def invalidate_changed_inputs(session, flush_context, instances):
                 for portfolio_id in session.scalars(select(Asset.portfolio_id).where(
                     Asset.instrument_id == affected_instrument_id).distinct()):
                     add(portfolio_id, affected_instrument_id, day, 'event')
+        elif isinstance(obj, ProviderInstrument):
+            mapping = inspect(obj)
+            fields = ('provider', 'provider_symbol', 'quote_currency', 'active',
+                      'is_primary', 'instrument_id')
+            if obj not in session.new and obj not in session.deleted and not any(
+                    mapping.attrs[field].history.has_changes() for field in fields):
+                continue
+            connection = session.connection()
+            schema = connection.get_execution_options().get('schema_translate_map', {}).get(None)
+            database = inspect(connection)
+            if (not database.has_table('position_invalidations', schema=schema)
+                    or not database.has_table('transactions', schema=schema)
+                    or 'trade_date' not in {column['name'] for column in
+                                            database.get_columns('transactions', schema=schema)}):
+                continue
+            instrument_ids = {obj.instrument_id, *mapping.attrs.instrument_id.history.deleted}
+            for instrument_id in instrument_ids - {None}:
+                for portfolio_id in session.scalars(select(Asset.portfolio_id).where(
+                        Asset.instrument_id == instrument_id)):
+                    first = session.scalar(select(Transaction.trade_date).where(
+                        Transaction.portfolio_id == portfolio_id,
+                        Transaction.instrument_id == instrument_id,
+                    ).order_by(Transaction.trade_date).limit(1))
+                    add(portfolio_id, instrument_id, first, 'pricing')
         elif isinstance(obj, BenchmarkObservation):
             connection = session.connection()
             translated_schema = connection.get_execution_options().get('schema_translate_map', {}).get(None)
@@ -169,7 +219,6 @@ def position_series(session, portfolio_id, instrument_id, *, include_state=False
     rows = list(session.scalars(select(PositionSnapshot).where(
         PositionSnapshot.portfolio_id == portfolio_id,
         PositionSnapshot.instrument_id == instrument_id,
-        PositionSnapshot.reporting_currency == CANONICAL_CURRENCY,
     ).order_by(PositionSnapshot.date)))
     if not rows:
         return []
@@ -189,13 +238,13 @@ def position_series(session, portfolio_id, instrument_id, *, include_state=False
     rates.update(historical_valuation_factors(session, currencies, portfolio.display_currency,
                                               [row.date for row in rows]))
     price_gaps = stored_price_gaps(session, asset, rows[0].date, rows[-1].date)
-    projected = project_position_history(rows, transactions, events, prices,
-                                         portfolio.display_currency, rates, price_gaps,
-                                         include_state=include_state)
     dirty_from = session.scalar(select(PositionInvalidation.dirty_from).where(
         PositionInvalidation.portfolio_id == portfolio_id,
         PositionInvalidation.instrument_id == instrument_id,
     ))
+    projected = project_position_history(rows, transactions, events, prices,
+                                         portfolio.display_currency, rates, price_gaps,
+                                         include_state=include_state, dirty_from=dirty_from)
     result = []
     for canonical, item in zip(rows, projected):
         values = {key: value for key, value in item.items()
@@ -205,7 +254,7 @@ def position_series(session, portfolio_id, instrument_id, *, include_state=False
         if dirty_from is not None and canonical.date >= dirty_from:
             # The changed source activity has not entered canonical history.
             # Keep previously consolidated accounting and flag the boundary.
-            if portfolio.display_currency == CANONICAL_CURRENCY:
+            if portfolio.display_currency == canonical.reporting_currency:
                 values.update(_position_values(canonical))
             else:
                 values.update({field: None for field in POSITION_FIELDS if field != 'quantity'})
@@ -221,14 +270,18 @@ def portfolio_series(session, portfolio_id):
     from src.services import get_portfolio
     from src.fixed_income import daily_position_rows, list_lots
     portfolio = get_portfolio(session, portfolio_id)
-    first_lot_day = min((lot.start_date for lot in list_lots(session, portfolio_id)), default=None)
-    first_pending_day = (max(first_lot_day, portfolio.dirty_from)
-                         if first_lot_day is not None and portfolio.dirty_from is not None else None)
+    lots = list_lots(session, portfolio_id)
+    first_lot_day = min((lot.start_date for lot in lots), default=None)
+    fixed_dirty_from = session.scalar(select(func.min(PositionInvalidation.dirty_from)).where(
+        PositionInvalidation.portfolio_id == portfolio_id,
+        PositionInvalidation.instrument_id.in_({lot.asset.instrument_id for lot in lots}),
+    ))
+    first_pending_day = (max(first_lot_day, fixed_dirty_from)
+                         if first_lot_day is not None and fixed_dirty_from is not None else None)
     if portfolio.history_built_through is None:
         return []
     instruments = list(session.scalars(select(PositionSnapshot.instrument_id).where(
         PositionSnapshot.portfolio_id == portfolio_id,
-        PositionSnapshot.reporting_currency == CANONICAL_CURRENCY,
     ).distinct()))
     by_day = defaultdict(list)
     for instrument_id in instruments:
@@ -237,7 +290,6 @@ def portfolio_series(session, portfolio_id):
     first = min([*by_day.keys(), *([first_lot_day] if first_lot_day else [])], default=None)
     if first is None:
         return []
-    lots = list_lots(session, portfolio_id)
     result = []
     previous_value = ZERO
     factor = Decimal('1')
@@ -280,13 +332,50 @@ def consolidate(session, portfolio_id):
     portfolio = get_portfolio(session, portfolio_id, lock=True)
     all_lots = list_lots(session, portfolio_id)
     _, transactions, assets = sources(session, portfolio_id)
+    by_instrument = defaultdict(list)
+    for row in transactions:
+        by_instrument[row.instrument_id].append(row)
+    valuation_date = date.today()
+    through = valuation_date - timedelta(days=1)
+    # An explicit update also refreshes current quotes and action coverage for
+    # clean positions. Neither operation needs a historical ledger replay.
+    current_gaps = {}
+    current_quotes = {}
+    if portfolio.history_built_through == through:
+        for asset in assets:
+            rows = by_instrument.get(asset.instrument_id, [])
+            if asset.instrument.asset_type == 'FIXED_INCOME' or not rows:
+                continue
+            current_gaps[asset.instrument_id] = get_actions(
+                session, asset, valuation_date, valuation_date).missing_ranges
+            if position_now(rows, get_stored_actions(session, asset), None,
+                            portfolio.display_currency, {},
+                            valuation_date=valuation_date)['quantity'] > 0:
+                try:
+                    current_quotes[asset.instrument_id] = get_latest(session, asset)
+                except (ValueError, RuntimeError, OSError):
+                    current_quotes[asset.instrument_id] = None
+        session.flush()
     invalidations = list(session.scalars(select(PositionInvalidation).where(
         PositionInvalidation.portfolio_id == portfolio_id)))
     dirty_by_instrument = {row.instrument_id: row.dirty_from for row in invalidations}
+    retry_from = dict(session.execute(select(
+        PositionSnapshot.instrument_id, func.min(PositionSnapshot.date),
+    ).where(
+        PositionSnapshot.portfolio_id == portfolio_id,
+        PositionSnapshot.status.in_(
+            ('missing_price_history', 'missing_actions', 'missing_fx', 'missing_price_and_fx')),
+    ).group_by(PositionSnapshot.instrument_id)).all())
+    for instrument_id, day in retry_from.items():
+        dirty_by_instrument[instrument_id] = min(dirty_by_instrument.get(instrument_id, day), day)
     # A new calendar day requires a suffix for every existing position.
     extend = portfolio.history_built_through is None or portfolio.history_built_through < date.today() - timedelta(days=1)
     selected_ids = ({asset.instrument_id for asset in assets} if extend else set(dirty_by_instrument))
     selected_assets = [asset for asset in assets if asset.instrument_id in selected_ids]
+    accounting_by_instrument = {
+        asset.instrument_id: accounting_currency(session, asset)
+        for asset in selected_assets if asset.instrument.asset_type != 'FIXED_INCOME'
+    }
     pending_lots = [lot for lot in all_lots if lot.asset.instrument_id in selected_ids]
     if not transactions and not all_lots:
         session.execute(delete(PositionSnapshot).where(PositionSnapshot.portfolio_id == portfolio_id))
@@ -312,8 +401,6 @@ def consolidate(session, portfolio_id):
         PortfolioSnapshot.portfolio_id == portfolio_id,
         PortfolioSnapshot.date < first_day,
     ))
-    valuation_date = date.today()
-    through = valuation_date - timedelta(days=1)
     # Valuation reads stored canonical observations; populate them with the
     # shared benchmark service before replaying portfolio history.
     for lot in pending_lots:
@@ -338,12 +425,20 @@ def consolidate(session, portfolio_id):
     incomplete = []
     history_incomplete = []
     problems = defaultdict(list)
+    for asset in assets:
+        instrument_id = asset.instrument_id
+        if instrument_id in selected_ids:
+            continue
+        if current_gaps.get(instrument_id):
+            incomplete.append(asset.instrument.symbol)
+            problems[asset.instrument.symbol].append('cobertura de eventos corporativos incompleta')
+        quote = current_quotes.get(instrument_id)
+        if instrument_id in current_quotes and (quote is None or quote.price is None or quote.stale):
+            incomplete.append(asset.instrument.symbol)
+            problems[asset.instrument.symbol].append('cotação atual indisponível ou desatualizada')
     latest_by_instrument = {}
     action_gaps_by_instrument = {}
     price_gaps_by_instrument = {}
-    by_instrument = defaultdict(list)
-    for row in transactions:
-        by_instrument[row.instrument_id].append(row)
     # Fetch all inputs first: provider inserts can move dirty_from backwards.
     # The replay boundary must be decided only after those inserts have flushed.
     fx_dates = defaultdict(set)
@@ -376,8 +471,9 @@ def consolidate(session, portfolio_id):
         if not action_result.complete:
             incomplete.append(asset.instrument.symbol)
             problems[asset.instrument.symbol].append('cobertura de eventos corporativos incompleta')
+        accounting = accounting_by_instrument[asset.instrument_id]
         if position_now(rows, get_stored_actions(session, asset), None,
-                        CANONICAL_CURRENCY, {}, valuation_date=valuation_date)['quantity'] > 0:
+                        accounting, {}, valuation_date=valuation_date)['quantity'] > 0:
             try:
                 latest_by_instrument[asset.instrument_id] = get_latest(session, asset)
             except (ValueError, RuntimeError, OSError):
@@ -387,11 +483,11 @@ def consolidate(session, portfolio_id):
         for price in prices:
             if fetch_start <= price.date <= date.today():
                 fx_dates[price.currency].add(price.date)
-                fx_dates[CANONICAL_CURRENCY].add(price.date)
+                fx_dates[accounting].add(price.date)
                 fx_assets[price.currency].add(asset.instrument.symbol)
-                fx_assets[CANONICAL_CURRENCY].add(asset.instrument.symbol)
+                fx_assets[accounting].add(asset.instrument.symbol)
         # A carried price still needs valuation-day FX on every calendar day.
-        valuation_currencies = {price.currency for price in prices} | {CANONICAL_CURRENCY}
+        valuation_currencies = {price.currency for price in prices} | {accounting}
         for currency in valuation_currencies:
             fx_dates[currency].update(fetch_start + timedelta(days=offset)
                                       for offset in range((valuation_date - fetch_start).days + 1))
@@ -399,13 +495,19 @@ def consolidate(session, portfolio_id):
         for event in events:
             if event.currency and event.effective_date <= date.today():
                 fx_dates[event.currency].add(event.effective_date)
-                fx_dates[CANONICAL_CURRENCY].add(event.effective_date)
+                fx_dates[accounting].add(event.effective_date)
                 fx_assets[event.currency].add(asset.instrument.symbol)
-                fx_assets[CANONICAL_CURRENCY].add(asset.instrument.symbol)
+                fx_assets[accounting].add(asset.instrument.symbol)
+        for row in rows:
+            if row.settlement_date <= valuation_date:
+                fx_dates[row.transaction_currency].add(row.settlement_date)
+                fx_dates[accounting].add(row.settlement_date)
+                fx_assets[row.transaction_currency].add(asset.instrument.symbol)
+                fx_assets[accounting].add(asset.instrument.symbol)
     for lot in pending_lots:
         if lot.start_date > valuation_date:
             continue
-        for currency in {lot.currency, CANONICAL_CURRENCY, portfolio.display_currency}:
+        for currency in {lot.currency, portfolio.display_currency}:
             fx_dates[currency].update(lot.start_date + timedelta(days=offset)
                                       for offset in range((valuation_date - lot.start_date).days + 1))
             fx_assets[currency].add(lot.asset.instrument.symbol)
@@ -430,6 +532,8 @@ def consolidate(session, portfolio_id):
     session.flush()
     dirty_by_instrument = {row.instrument_id: row.dirty_from for row in session.scalars(
         select(PositionInvalidation).where(PositionInvalidation.portfolio_id == portfolio_id))}
+    for instrument_id, day in retry_from.items():
+        dirty_by_instrument[instrument_id] = min(dirty_by_instrument.get(instrument_id, day), day)
     if portfolio.dirty_from is not None:
         start = min(start, max(first_day, portfolio.dirty_from))
     for asset in selected_assets:
@@ -442,7 +546,8 @@ def consolidate(session, portfolio_id):
                 PositionSnapshot.instrument_id == asset.instrument_id))
             continue
         events = get_stored_actions(session, asset)
-        if position_now(rows, events, None, CANONICAL_CURRENCY, {},
+        accounting = accounting_by_instrument[asset.instrument_id]
+        if position_now(rows, events, None, accounting, {},
                         valuation_date=valuation_date)['quantity'] > 0:
             try:
                 # The shared quote service handles TTL and provider errors. One
@@ -456,10 +561,10 @@ def consolidate(session, portfolio_id):
                 incomplete.append(asset.instrument.symbol)
                 problems[asset.instrument.symbol].append('falha ao consultar a cotação atual')
         prices = history_for_reporting(session, asset)
-        if prices and prices[-1].currency != CANONICAL_CURRENCY:
+        if prices and prices[-1].currency != accounting:
             try:
                 convert_amount(session, Decimal('1'), prices[-1].currency,
-                               CANONICAL_CURRENCY, valuation_date)
+                               accounting, valuation_date)
             except RateUnavailable:
                 if asset.instrument.symbol not in incomplete:
                     incomplete.append(asset.instrument.symbol)
@@ -469,11 +574,11 @@ def consolidate(session, portfolio_id):
         current_prices = [price for price in prices if price.date <= valuation_date]
         current_quote = current_prices[-1] if current_prices else None
         current_rates = reporting_factors(
-            session, CANONICAL_CURRENCY, rows, events,
+            session, accounting, rows, events,
             [current_quote] if current_quote else [], valuation_date=valuation_date,
         )
         current = position_now(
-            rows, events, current_quote, CANONICAL_CURRENCY, current_rates,
+            rows, events, current_quote, accounting, current_rates,
             valuation_date=valuation_date,
             actions_complete=not action_gaps_by_instrument.get(asset.instrument_id),
         )
@@ -487,6 +592,20 @@ def consolidate(session, portfolio_id):
             }.get(current['status'], 'dados incompletos')
             problems[asset.instrument.symbol].append(
                 'posição atual incompleta: ' + current_reason)
+        if portfolio.display_currency != accounting:
+            display_rates = reporting_factors(
+                session, portfolio.display_currency, rows, events,
+                [current_quote] if current_quote else [], valuation_date=valuation_date,
+            )
+            display_current = position_now(
+                rows, events, current_quote, portfolio.display_currency, display_rates,
+                valuation_date=valuation_date,
+                actions_complete=not action_gaps_by_instrument.get(asset.instrument_id),
+            )
+            if display_current['status'] != 'complete':
+                incomplete.append(asset.instrument.symbol)
+                problems[asset.instrument.symbol].append(
+                    'posição na moeda de exibição incompleta: ' + display_current['status'])
         next_day = (portfolio.history_built_through + timedelta(days=1)
                     if portfolio.history_built_through else min(row.trade_date for row in rows))
         instrument_start = min(next_day, dirty_by_instrument[asset.instrument_id]) \
@@ -497,14 +616,14 @@ def consolidate(session, portfolio_id):
             PositionSnapshot.portfolio_id == portfolio_id,
             PositionSnapshot.instrument_id == asset.instrument_id,
             PositionSnapshot.date == instrument_start - timedelta(days=1),
-            PositionSnapshot.reporting_currency == CANONICAL_CURRENCY,
+            PositionSnapshot.reporting_currency == accounting,
         ))
         asset_start = instrument_start if previous else min(row.trade_date for row in rows)
         activity_rows = [row for row in rows if row.trade_date >= asset_start]
         activity_events = [event for event in events if event.effective_date >= asset_start]
         # Intraday/latest quotes are not final daily closes.
         active_prices = [price for price in get_quote_history(session, asset) if price.date <= through]
-        factors = reporting_factors(session, CANONICAL_CURRENCY,
+        factors = reporting_factors(session, accounting,
                                     activity_rows, activity_events, active_prices)
         # Every carried observation uses valuation-day FX, not quote-day FX.
         currencies = {price.currency for price in active_prices}
@@ -515,13 +634,13 @@ def consolidate(session, portfolio_id):
                 if key not in factors:
                     try:
                         factors[key] = convert_amount(session, Decimal('1'), currency,
-                                                      CANONICAL_CURRENCY, day,
+                                                      accounting, day,
                                                       fetcher=lambda *_: [])
                     except RateUnavailable:
                         pass
             day += timedelta(days=1)
         series = position_history(
-            activity_rows, activity_events, active_prices, CANONICAL_CURRENCY,
+            activity_rows, activity_events, active_prices, accounting,
             factors, start=asset_start, end=through,
             initial_state=previous.ledger_state if previous else None,
             missing_action_ranges=action_gaps_by_instrument.get(asset.instrument_id, ()),
@@ -535,7 +654,7 @@ def consolidate(session, portfolio_id):
         for item in series:
             session.add(PositionSnapshot(
                 portfolio_id=portfolio_id, instrument_id=asset.instrument_id,
-                date=item['date'], reporting_currency=CANONICAL_CURRENCY,
+                date=item['date'], reporting_currency=accounting,
                 status=item['status'], ledger_state=item['ledger_state'],
                 quote_date=item['quote_date'],
                 **{field: item[field] for field in POSITION_FIELDS},
@@ -545,46 +664,16 @@ def consolidate(session, portfolio_id):
             if asset.instrument.symbol not in incomplete:
                 incomplete.append(asset.instrument.symbol)
     session.flush()
+    # Portfolio totals have no accounting currency: reporting projects each
+    # position into the selected display currency before aggregation.
+    session.execute(delete(PortfolioSnapshot).where(PortfolioSnapshot.portfolio_id == portfolio_id))
     if start <= through:
-        previous_portfolio = session.scalar(select(PortfolioSnapshot).where(
-            PortfolioSnapshot.portfolio_id == portfolio_id,
-            PortfolioSnapshot.date == start - timedelta(days=1),
-            PortfolioSnapshot.reporting_currency == CANONICAL_CURRENCY,
-        ))
-        previous_value = previous_portfolio.market_value if previous_portfolio else ZERO
-        factor = previous_portfolio.return_factor if previous_portfolio else Decimal('1')
-        session.execute(delete(PortfolioSnapshot).where(
-            PortfolioSnapshot.portfolio_id == portfolio_id,
-            PortfolioSnapshot.date >= start,
-        ))
-        day = start
-        while day <= through:
-            daily_rows = list(session.scalars(select(PositionSnapshot).where(
-                PositionSnapshot.portfolio_id == portfolio_id,
-                PositionSnapshot.date == day,
-            )))
-            fixed_rows = daily_position_rows(session, all_lots, day,
-                                             CANONICAL_CURRENCY)
-            daily_rows.extend(fixed_rows)
-            values = portfolio_day(daily_rows, previous_value, factor)
-            if (fixed_rows and values['status'] == 'complete'
-                    and values['cumulative_return_pct'] is None):
-                values['status'] = 'incomplete_history'
-            session.add(PortfolioSnapshot(
-                portfolio_id=portfolio_id, date=day,
-                reporting_currency=CANONICAL_CURRENCY,
-                **values,
-            ))
-            previous_value = values['market_value']
-            factor = values['return_factor']
-            day += timedelta(days=1)
         portfolio.history_built_through = through
     # A suffix replay or a quote-only refresh must retain earlier gaps in the
     # result, even when no snapshot was rebuilt in this request.
     symbols = {asset.instrument_id: asset.instrument.symbol for asset in assets}
     incomplete_rows = session.scalars(select(PositionSnapshot).where(
         PositionSnapshot.portfolio_id == portfolio_id,
-        PositionSnapshot.reporting_currency == CANONICAL_CURRENCY,
         PositionSnapshot.status != 'complete',
     ).order_by(PositionSnapshot.date))
     status_reasons = {
@@ -615,13 +704,19 @@ def consolidate(session, portfolio_id):
         PositionInvalidation.portfolio_id == portfolio_id).order_by(PositionInvalidation.dirty_from).limit(1))
     session.flush()
     for position in position_valuations(session, all_lots, valuation_date,
-                                        CANONICAL_CURRENCY):
+                                        portfolio.display_currency):
         if position['status'] != 'complete':
             problems[position['asset']].append('Fixed-income valuation incomplete')
             incomplete.append(position['asset'])
-    historical_gap = session.scalar(select(PortfolioSnapshot.id).where(
-            PortfolioSnapshot.portfolio_id == portfolio_id,
-            PortfolioSnapshot.status != 'complete').limit(1)) is not None
+    historical_gap = bool(history_incomplete)
+    if all_lots and not historical_gap:
+        day = min(lot.start_date for lot in all_lots)
+        while day <= through:
+            if any(row.status != 'complete' for row in daily_position_rows(
+                    session, all_lots, day, portfolio.display_currency)):
+                historical_gap = True
+                break
+            day += timedelta(days=1)
     if historical_gap:
         history_incomplete.append('portfolio')
         if not incomplete and all_lots:

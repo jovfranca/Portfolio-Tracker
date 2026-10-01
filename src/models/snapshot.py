@@ -1,4 +1,4 @@
-"""Canonical BRL checkpoints; source activity, quotes and FX remain authoritative."""
+"""Per-position accounting checkpoints; source activity, quotes and FX remain authoritative."""
 from datetime import date
 from decimal import Decimal
 
@@ -17,6 +17,7 @@ class PositionSnapshot(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))
     date: Mapped[date] = mapped_column(Date)
     quote_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # For this canonical series, reporting_currency is the position's accounting currency.
     reporting_currency: Mapped[str] = mapped_column(String(3))
     quantity: Mapped[Decimal] = mapped_column(Numeric(38, 12))
     remaining_acquisition_cost: Mapped[Decimal | None] = mapped_column(Numeric(38, 12))
@@ -36,6 +37,7 @@ class PositionSnapshot(Base):
 
 
 class PortfolioSnapshot(Base):
+    """Legacy derived reporting cache, no longer written by consolidation."""
     __tablename__ = 'portfolio_snapshots'
     __table_args__ = (UniqueConstraint('portfolio_id', 'date'),)
 

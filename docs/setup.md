@@ -74,8 +74,9 @@ relógio dentro do cálculo. A convenção segue o intervalo inicial inclusivo/f
 exclusivo da [metodologia DI da B3](https://b3.com.br/main.jsp?lumA=1&lumII=2C9FBE63638CFE2501638D373B435E37&lumPageId=2C9FBE63638CFE2501638D3464C8577B).
 
 Após atualizar, aplique `python -m alembic upgrade head` e use **Atualizar posições** nas carteiras.
-A migração `0023` cria invalidações por instrumento e agenda a reconstrução explícita
-das posições em BRL, independentemente da moeda de exibição.
+As migrações `0023` e `0024` descartam os históricos derivados antigos e agendam
+a reconstrução explícita de cada posição na sua moeda contábil, independentemente
+da moeda de exibição. BRL continua disponível como moeda pivô para câmbio.
 A migração `0022` marca o histórico das carteiras com CDI para reconstrução desde
 a primeira aplicação afetada, preservando contratos, movimentos e observações.
 Resgates totais gravados com valores calculados pela regra anterior podem exigir
@@ -202,8 +203,8 @@ no mesmo shell React, sem dependência de roteamento ou configuração adicional
 4. Corrija os erros indicados por linha/coluna e selecione o arquivo novamente.
 5. Clique em **Confirmar importação** quando todas as linhas forem válidas.
 
-Nenhuma transação é salva durante a prévia. Confirmar recalcula as posições pelo
-mesmo fluxo existente. A proteção de duplicatas usa o conteúdo exato do arquivo
+Nenhuma transação é salva durante a prévia. Confirmar salva as operações e deixa
+a atualização das posições pendente até usar **Atualizar posições**. A proteção de duplicatas usa o conteúdo exato do arquivo
 por carteira; um arquivo alterado ou reexportado não é necessariamente reconhecido.
 
 ### Estrutura e colunas aceitas
@@ -400,9 +401,10 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 - Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
   cotações históricas continuam no formato legado.
 - Cotações ausentes aparecem como ausentes, e não como preço zero.
-- O histórico derivado é consolidado sob demanda; alterações de transações,
-  eventos, preços e FX marcam `dirty_from`. A consolidação recalcula desde essa
-  data e preserva os snapshots anteriores.
+- O histórico derivado é consolidado sob demanda; transações e eventos marcam
+  a posição afetada como pendente desde a primeira data alterada. Correções de
+  preços e FX atualizam a projeção sem invalidar a quantidade canônica. Alterações
+  da moeda contábil exigem reconstrução dos checkpoints da posição.
 - Não há redesenho para titularidade, alocação ideal, aposentadoria ou múltiplos usuários.
 - Mensagens UTF-8 devem ser lidas com `Get-Content -Encoding UTF8` no Windows PowerShell
   antigo. A exibição incorreta nesse terminal não significa corrupção no navegador.
@@ -418,9 +420,9 @@ Preços privados de origem `legacy`/`yfinance` permanecem armazenados para audit
 mas deixam de substituir preços verificados: sua base de ajuste é desconhecida.
 Ativos sem provedor precisam de preços manuais confiáveis.
 
-A troca de moeda na interface consolida automaticamente o histórico e mostra
-eventuais falhas parciais. A API de alteração da carteira mantém a invalidação
-explícita; clientes próprios devem chamar o endpoint de consolidação.
+A troca de moeda na interface altera apenas a preferência de exibição e a
+projeção dos valores. Ela não invalida nem consolida o histórico canônico.
+Use **Atualizar posições** para processar alterações pendentes das fontes.
 
 O gráfico de desempenho mostra ganho monetário, com unidade identificada;
 retorno percentual aparece na tabela. O retorno pode ter sinal diferente do

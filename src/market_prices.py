@@ -4,7 +4,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import null, select
 
 from src.api import market_data
 from src.corporate_actions import actions_from_history_rows, store_actions_from_history
@@ -12,7 +12,7 @@ from src.config import market_data_provider, quote_ttl
 from src.instruments import provider_mapping
 from src.models import (
     LatestMarketQuote, MarketPrice, MarketPriceCoverage, UserDefinedPrice,
-    ProviderInstrument, Transaction,
+    FixedIncomeLot, ProviderInstrument,
 )
 
 
@@ -86,21 +86,12 @@ def _missing_ranges(start, end, coverage):
 
 
 def valuation_currency(session, asset):
-    """Portfolio accounting currency; quote pairs never determine it."""
-    currencies = set(session.scalars(select(Transaction.transaction_currency).where(
-        Transaction.portfolio_id == asset.portfolio_id,
-        Transaction.instrument_id == asset.instrument_id,
-    ).distinct()))
-    if currencies:
-        if len(currencies) == 1:
-            return next(iter(currencies))
-        return asset.instrument.currency
-    if asset.instrument.currency:
-        return asset.instrument.currency
-    manual_currencies = set(session.scalars(select(UserDefinedPrice.currency).where(
-        UserDefinedPrice.asset_id == asset.id,
-    ).distinct()))
-    return next(iter(manual_currencies)) if len(manual_currencies) == 1 else None
+    """Use the stable pricing currency, never a trade's settlement currency."""
+    try:
+        return accounting_currency(session, asset)
+    except ValueError:
+        # A first manual price may establish a previously unspecified currency.
+        return None
 
 
 def _stored_mapping(session, asset):
@@ -112,6 +103,37 @@ def _stored_mapping(session, asset):
             return provider_mapping(session, asset.instrument, include_inactive=True)
         except ValueError:
             return None
+
+
+def accounting_currency(session, asset):
+    """Resolve the stable ledger currency from the position's pricing model."""
+    if asset.instrument.asset_type == 'FIXED_INCOME':
+        currencies = set(session.scalars(select(FixedIncomeLot.currency).where(
+            FixedIncomeLot.asset_id == asset.id).distinct()))
+        if len(currencies) == 1:
+            return next(iter(currencies))
+        raise ValueError(f'No single accounting currency for fixed-income position {asset.ticker}.')
+    mapping = _stored_mapping(session, asset)
+    if mapping is not None:
+        return mapping.quote_currency
+    mappings = list(session.scalars(select(ProviderInstrument).where(
+            ProviderInstrument.instrument_id == asset.instrument_id,
+            ProviderInstrument.provider == market_data_provider())))
+    if mappings:
+        currencies = {row.quote_currency for row in mappings}
+        if not any(row.active for row in mappings) and len(currencies) == 1:
+            return next(iter(currencies))
+        raise ValueError(f'Ambiguous primary quote mapping for accounting currency of {asset.ticker}.')
+    if asset.instrument.asset_type == 'CRYPTO':
+        raise ValueError(f'No primary quote mapping to resolve accounting currency for {asset.ticker}.')
+    manual_currencies = set(session.scalars(select(UserDefinedPrice.currency).where(
+        UserDefinedPrice.asset_id == asset.id,
+        UserDefinedPrice.source.not_in(('legacy', 'yfinance'))).distinct()))
+    if len(manual_currencies) == 1:
+        return next(iter(manual_currencies))
+    if not manual_currencies and asset.instrument.currency:
+        return asset.instrument.currency
+    raise ValueError(f'No unambiguous accounting currency for {asset.ticker}.')
 
 
 def _stored_history(session, asset, start=None, end=None, *, currency=None):
@@ -126,7 +148,7 @@ def _stored_history(session, asset, start=None, end=None, *, currency=None):
         MarketPrice.interval == '1d',
     )
     manual_query = select(UserDefinedPrice).where(UserDefinedPrice.asset_id == asset.id)
-    if target_currency is not None:
+    if target_currency is not None and mapping is None:
         manual_query = manual_query.where(UserDefinedPrice.currency == target_currency)
     if start is not None:
         shared_query = shared_query.where(MarketPrice.reference_at >= _daily_reference(start))
@@ -179,15 +201,23 @@ def get_stored_history(session, asset, start=None, end=None, *, currency=None):
 
 
 def get_quote_history(session, asset, start=None, end=None):
-    """Expose quote currency for display, never as an accounting-price input."""
+    """Expose stored valuation quotes with their original quote currencies."""
     accounting_prices = _stored_history(session, asset, start, end)
     mapping = _stored_mapping(session, asset)
-    if mapping is None or mapping.quote_currency == valuation_currency(session, asset):
+    if mapping is None:
         return accounting_prices
-    by_date = {row.date: row for row in accounting_prices}
-    by_date.update({row.date: row for row in _stored_history(
-        session, asset, start, end, currency=mapping.quote_currency,
-    )})
+    old_currencies = sorted(set(session.scalars(select(ProviderInstrument.quote_currency).where(
+        ProviderInstrument.instrument_id == asset.instrument_id,
+        ProviderInstrument.provider == mapping.provider,
+        ProviderInstrument.active.is_(False),
+        ProviderInstrument.quote_currency != mapping.quote_currency,
+    ))))
+    by_date = {}
+    for currency in old_currencies:
+        by_date.update({row.date: row for row in _stored_history(
+            session, asset, start, end, currency=currency,
+        )})
+    by_date.update({row.date: row for row in accounting_prices})
     # Private accounting-currency overrides still win over provider quotes.
     by_date.update({row.date: row for row in accounting_prices if row.origin == 'user-defined'})
     return [by_date[day] for day in sorted(by_date)]
@@ -195,12 +225,14 @@ def get_quote_history(session, asset, start=None, end=None):
 
 def stored_price_gaps(session, asset, start, end, *, mapping=None, target_currency=None):
     """Check stored daily coverage without fetching provider history."""
-    target_currency = target_currency or valuation_currency(session, asset)
+    target_currency = target_currency or accounting_currency(session, asset)
     if mapping is None:
         try:
             mapping = provider_mapping(session, asset.instrument, provider=market_data_provider())
         except ValueError:
-            return [(start, end)]
+            # Manual positions have no provider coverage to wait for. Their
+            # valuation reports a missing quote until the first stored price.
+            return []
     coverage = list(session.scalars(select(MarketPriceCoverage).where(
         MarketPriceCoverage.provider_instrument_id == mapping.id,
         MarketPriceCoverage.interval == '1d',
@@ -228,13 +260,16 @@ def stored_price_gaps(session, asset, start, end, *, mapping=None, target_curren
 
 def save_user_price(
     session, asset, reference_date, price, currency=None,
-    dividends=None, stock_splits=None,
+    dividends=None, stock_splits=None, *, source='manual',
 ):
+    if source not in {'manual', 'legacy'}:
+        raise ValueError('Unsupported private price source.')
     target = valuation_currency(session, asset)
     currency = (currency or target or '').upper()
     if not currency:
         raise ValueError('Select a transaction currency before entering a manual price.')
-    if target and currency != target:
+    if (source == 'manual' and target and currency != target and
+            (_stored_mapping(session, asset) is None or asset.instrument.currency is not None)):
         raise ValueError(
             f'A cotação de {asset.ticker} deve usar {target}; '
             'conversão de moedas não é aplicada automaticamente.'
@@ -243,18 +278,18 @@ def save_user_price(
         UserDefinedPrice.asset_id == asset.id,
         UserDefinedPrice.reference_date == reference_date,
     ))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) if source == 'manual' else null()
     if existing is None:
         existing = UserDefinedPrice(
             asset_id=asset.id, reference_date=reference_date, price=price,
-            currency=currency, source='manual', retrieved_at=now,
+            currency=currency, source=source, retrieved_at=now,
             dividends=dividends if dividends is not None else Decimal('0'),
             stock_splits=stock_splits if stock_splits is not None else Decimal('0'),
         )
         session.add(existing)
     else:
         existing.price = price
-        existing.source = 'manual'
+        existing.source = source
         existing.currency = currency
         existing.retrieved_at = now
         if dividends is not None:
@@ -315,7 +350,6 @@ def _usable_provider_price(values):
 
 def get_history(session, asset, start, end, fetcher=None):
     """Return local history and fetch only provider ranges not queried before."""
-    target_currency = valuation_currency(session, asset)
     if end < start:
         raise ValueError('A data final deve ser igual ou posterior à data inicial.')
     if end >= date.today():
@@ -324,11 +358,12 @@ def get_history(session, asset, start, end, fetcher=None):
     try:
         mapping = provider_mapping(session, asset.instrument, provider=source)
     except ValueError:
+        prices = get_quote_history(session, asset, start, end)
         return HistoricalPriceResult(
-            get_quote_history(session, asset, start, end), [(start, end)],
+            prices, [] if prices else [(start, end)],
         )
     gaps = stored_price_gaps(session, asset, start, end, mapping=mapping,
-                             target_currency=target_currency)
+                             target_currency=mapping.quote_currency)
     fetcher = fetcher or market_data.fetch_history
     missing = []
     for gap_start, gap_end in gaps:
@@ -439,13 +474,17 @@ def history_for_domain(session, asset, *, currency=None):
     """Provide the small quote shape expected by the pure calculation layer."""
     target_currency = currency or valuation_currency(session, asset)
     mapping = _stored_mapping(session, asset)
-    prices = _stored_history(session, asset, currency=target_currency)
-    cached_quotes = session.scalars(select(LatestMarketQuote).join(ProviderInstrument).where(
+    prices = (_stored_history(session, asset, currency=currency) if currency else
+              get_quote_history(session, asset))
+    query = select(LatestMarketQuote).join(ProviderInstrument).where(
         ProviderInstrument.instrument_id == asset.instrument_id,
         _stored_mapping_filter(mapping),
-        ProviderInstrument.quote_currency == target_currency,
-        LatestMarketQuote.currency == target_currency,
-    ).order_by(ProviderInstrument.active.desc(), LatestMarketQuote.retrieved_at.desc()))
+    )
+    if currency is not None:
+        query = query.where(ProviderInstrument.quote_currency == target_currency,
+                            LatestMarketQuote.currency == target_currency)
+    cached_quotes = session.scalars(query.order_by(
+        ProviderInstrument.active.desc(), LatestMarketQuote.retrieved_at.desc()))
     for cached in cached_quotes:
         quote = _as_resolved(cached)
         by_date = {row.date: row for row in prices}

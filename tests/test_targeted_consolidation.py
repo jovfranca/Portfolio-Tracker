@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import CheckConstraint, MetaData, create_engine, select
 from sqlalchemy.orm import Session
+import pytest
 
 from src.database import Base
 from src.models import (Asset, Instrument, Portfolio, PositionInvalidation,
@@ -132,3 +133,121 @@ def test_dirty_trade_replays_only_its_instrument_and_currency_switch_keeps_check
                      if row['asset'] == 'PETR4')
         assert stale['quantity'] == 2
         assert stale['status'] == 'pending'
+
+
+def test_pending_reads_do_not_replay_changed_activity(monkeypatch):
+    """A provider correction can make pending activity invalid until reviewed."""
+    from src.models import UserCorporateEvent
+    engine = sqlite_engine()
+    first = date.today() - timedelta(days=3)
+    monkeypatch.setattr(consolidation, 'get_history', lambda *args: SimpleNamespace(missing_ranges=[]))
+    monkeypatch.setattr(consolidation, 'get_actions', lambda *args: SimpleNamespace(
+        complete=True, missing_ranges=[]))
+    monkeypatch.setattr(consolidation, 'get_latest', lambda *args: SimpleNamespace(
+        price=SimpleNamespace(close=Decimal('10')), stale=False))
+    with Session(engine) as session:
+        portfolio = Portfolio(name='Pending')
+        instrument = Instrument(symbol='PENDING', currency='BRL', asset_type='OTHER')
+        session.add_all([portfolio, instrument])
+        session.flush()
+        asset = Asset(portfolio_id=portfolio.id, instrument_id=instrument.id, ticker='PENDING')
+        session.add(asset)
+        session.flush()
+        for offset, kind, quantity in ((0, 'Buy', 10), (2, 'Sell', 5)):
+            day = first + timedelta(days=offset)
+            session.add(Transaction(
+                portfolio_id=portfolio.id, instrument_id=instrument.id,
+                date_time=datetime.combine(day, time.min), trade_date=day,
+                settlement_date=day, type=kind, asset='PENDING', broker='A',
+                allocation_class='Other', transaction_currency='BRL', fx_rate=1,
+                quantity=quantity, price=10, brokerage_fee=0, other_fees=0))
+        session.add(UserDefinedPrice(asset_id=asset.id, reference_date=first,
+                                     price=10, currency='BRL', source='manual'))
+        session.flush()
+        assert consolidation.consolidate(session, portfolio.id)['complete']
+        session.add(UserCorporateEvent(asset_id=asset.id, event_type='REVERSE_SPLIT',
+            effective_date=first + timedelta(days=1), conversion_factor=Decimal('0.1'), source='manual'))
+        session.flush()
+        # Source replay would now oversell. Ordinary reads must retain the saved state.
+        history = consolidation.position_series(session, portfolio.id, instrument.id)
+        assert history[0]['status'] == 'complete'
+        assert history[-1]['status'] == 'pending'
+        assert history[-1]['quantity'] == 5
+        assert history[-1]['market_value'] == 50
+        overview = get_overview(session, portfolio.id)
+        assert overview['positions'][0]['quantity'] == 5
+        assert overview['positions'][0]['status'] == 'pending'
+
+
+def test_equity_invalidation_does_not_hide_clean_fixed_income_history(monkeypatch):
+    import src.fixed_income as fixed_income
+    first = date.today() - timedelta(days=2)
+    with Session(sqlite_engine()) as session:
+        portfolio = Portfolio(name='Mixed', history_built_through=first)
+        equity = Instrument(symbol='EQ', asset_type='STOCK', currency='BRL')
+        bond = Instrument(symbol='FI', asset_type='FIXED_INCOME', currency='BRL')
+        session.add_all([portfolio, equity, bond])
+        session.flush()
+        asset = Asset(portfolio_id=portfolio.id, instrument_id=equity.id, ticker='EQ')
+        session.add(asset)
+        session.flush()
+        from src.domain import PositionLedger
+        ledger = PositionLedger('BRL', {})
+        ledger.brokers = {'A': {'quantity': Decimal('1'), 'cost': Decimal('10')}}
+        session.add(PositionSnapshot(
+            portfolio_id=portfolio.id, instrument_id=equity.id, date=first,
+            reporting_currency='BRL', quantity=1, remaining_acquisition_cost=10, average_cost=10,
+            market_value=10, realized_gain=0, unrealized_gain=0, gross_income=0, total_gain=0,
+            net_flow=10, purchases=10, daily_income=0, status='complete', ledger_state=ledger.state()))
+        session.add(UserDefinedPrice(asset_id=asset.id, reference_date=first, price=10,
+                                     currency='BRL', source='manual'))
+        consolidation.mark_dirty(session, portfolio.id, first, equity.id)
+        session.flush()
+        monkeypatch.setattr(fixed_income, 'list_lots', lambda *args: [SimpleNamespace(
+            start_date=first, asset=SimpleNamespace(instrument_id=bond.id))])
+        monkeypatch.setattr(fixed_income, 'daily_position_rows', lambda *args: [SimpleNamespace(
+            status='complete', remaining_acquisition_cost=Decimal('100'), market_value=Decimal('100'),
+            realized_gain=Decimal('0'), unrealized_gain=Decimal('0'), gross_income=Decimal('0'),
+            total_gain=Decimal('0'), net_flow=Decimal('100'), purchases=Decimal('100'), daily_income=Decimal('0'))])
+        history = consolidation.portfolio_series(session, portfolio.id)
+        assert history[-1]['market_value'] == 110
+        assert history[-1]['status'] == 'incomplete'
+
+
+def test_legacy_import_keeps_foreign_catalog_prices_as_audit_only(monkeypatch):
+    from src import import_legacy
+    from src.instruments import create_instrument
+    from src.market_prices import get_quote_history
+    from src.schemas import QuoteInput
+    with Session(sqlite_engine()) as session:
+        portfolio = Portfolio(name='Legacy audit')
+        session.add(portfolio)
+        session.flush()
+        instrument = create_instrument(session, symbol='FOREIGN', currency='USD',
+            asset_type='STOCK', provider_symbol='FOREIGN', quote_currency='USD')
+        monkeypatch.setattr(import_legacy, 'read_transactions', lambda _: ('a' * 64, []))
+        monkeypatch.setattr(import_legacy, 'read_assets', lambda _: [
+            (SimpleNamespace(ticker='FOREIGN'), [QuoteInput(date=date(2024, 1, 2), close=12, currency='BRL')])])
+        monkeypatch.setattr(import_legacy, 'get_overview', lambda *args: (_ for _ in ()).throw(
+            AssertionError('legacy write calculated overview')), raising=False)
+        import_legacy.import_transactions(session, 'synthetic', portfolio.id, 'synthetic')
+        price = session.scalar(select(UserDefinedPrice))
+        assert price.source == 'legacy'
+        assert price.currency == 'BRL'
+        assert price.retrieved_at is None
+        asset = session.scalar(select(Asset).where(Asset.instrument_id == instrument.id))
+        assert get_quote_history(session, asset) == []
+
+
+def test_legacy_import_still_rejects_oversells_without_overview(monkeypatch):
+    from src import import_legacy
+    from src.schemas import TransactionInput
+    with Session(sqlite_engine()) as session:
+        portfolio = Portfolio(name='Invalid legacy')
+        session.add(portfolio)
+        session.flush()
+        monkeypatch.setattr(import_legacy, 'read_transactions', lambda _: ('b' * 64, [
+            TransactionInput(asset='SELL', trade_date=date(2024, 1, 2), settlement_date=date(2024, 1, 2),
+                type='Sell', quantity=1, price=10, broker='A', transaction_currency='BRL')]))
+        with pytest.raises(ValueError, match='excede'):
+            import_legacy.import_transactions(session, 'synthetic', portfolio.id)

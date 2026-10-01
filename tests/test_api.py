@@ -682,7 +682,7 @@ def test_reconsolidation_preserves_snapshots_before_dirty_date(client):
     assert c.put(base + f'/transactions/{later["id"]}', json=common | {
         'trade_date': second.isoformat(), 'settlement_date': second.isoformat(), 'price': 12,
     }).status_code == 200
-    assert c.get('/api/portfolios').json()[-1]['dirty_from'] is None
+    assert c.get('/api/portfolios').json()[-1]['dirty_from'] == second.isoformat()
     result = c.post(base + '/consolidate').json()
     assert result['recalculated_from'] == second.isoformat()
     assert connection.scalar(select(PositionSnapshot.id).where(

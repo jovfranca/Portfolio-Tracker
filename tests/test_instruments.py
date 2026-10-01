@@ -785,7 +785,8 @@ def test_btc_brl_transaction_fetches_primary_usd_mapping_and_stores_usd(session)
         'date': day, 'close': Decimal('86000'), 'currency': 'USD',
     }])
     assert [(p.close, p.currency) for p in history.prices] == [(Decimal('86000'), 'USD')]
-    assert history_for_domain(session, asset) == []
+    assert [(p.close, p.currency) for p in history_for_domain(session, asset)] == [
+        (Decimal('86000'), 'USD')]
     save_user_price(session, asset, day, Decimal('430000'), 'BRL')
     history = get_history(session, asset, day, day, lambda *args: pytest.fail('Covered history fetched'))
     assert [(p.close, p.currency) for p in history.prices] == [(Decimal('430000'), 'BRL')]

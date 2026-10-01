@@ -105,6 +105,43 @@ def historical_valuation_factors(session, quote_currencies, display_currency, da
     return factors
 
 
+def _pending_position(session, portfolio, asset, snapshot, valuation_date):
+    from src.domain import saved_position_value
+    prices = [price for price in history_for_reporting(session, asset) if price.date <= valuation_date]
+    latest = prices[-1] if prices else None
+
+    def project(currency):
+        factors = reporting_factors(session, currency, [], [], [latest], valuation_date=valuation_date)
+        return saved_position_value(snapshot, latest, currency, factors, day=valuation_date)
+
+    current = project(portfolio.display_currency)
+    native_currency = asset.instrument.currency
+    native = project(native_currency) if native_currency else None
+    return {
+        'asset_id': asset.id, 'asset': asset.instrument.symbol,
+        'native_currency': native_currency, 'quote_currency': latest.currency if latest else None,
+        'transaction_currency': None, 'display_currency': portfolio.display_currency,
+        'broker': ', '.join(sorted(snapshot.ledger_state['brokers'])), 'allocation_class': '',
+        'broker_breakdown': current['broker_breakdown'], 'quantity': snapshot.quantity,
+        'average_cost': current['average_cost'], 'acquisition_cost': current['remaining_acquisition_cost'],
+        'display_average_cost': current['average_cost'],
+        'display_acquisition_cost': current['remaining_acquisition_cost'],
+        'native_average_cost': native['average_cost'] if native else None,
+        'native_acquisition_cost': native['remaining_acquisition_cost'] if native else None,
+        'current_price': native['current_price'] if native else (latest.close if latest else None),
+        'total_value': native['market_value'] if native else None,
+        'display_price': current['current_price'], 'display_value': current['market_value'],
+        'realized_gain': current['realized_gain'], 'unrealized_gain': current['unrealized_gain'],
+        'gross_income': current['gross_income'], 'current_total_gain': current['total_gain'],
+        'native_gross_income': native['gross_income'] if native else None,
+        'current_accumulated_profitability': None, 'return_date': snapshot.date,
+        'income_by_currency': current['income_by_currency'], 'corporate_action_count': 0,
+        'price_date': current['quote_date'], 'gain_date': valuation_date, 'valuation_date': valuation_date,
+        'action_coverage_through': snapshot.date, 'quote_refresh_required': False,
+        'history_behind_transactions': False, 'status': 'pending',
+    }
+
+
 def get_overview(session, portfolio_id):
     portfolio, transactions, assets = sources(session, portfolio_id)
     fixed_income_lots = list_lots(session, portfolio_id)
@@ -120,84 +157,32 @@ def get_overview(session, portfolio_id):
         PositionInvalidation.portfolio_id == portfolio_id)))
     for asset in assets:
         rows = [row for row in transactions if row.instrument_id == asset.instrument_id]
-        if not rows:
-            if asset.instrument_id not in dirty_instruments or portfolio.history_built_through is None:
-                continue
-            snapshot = session.scalar(select(PositionSnapshot).where(
+        pending_snapshot = None
+        if asset.instrument_id in dirty_instruments and portfolio.history_built_through is not None:
+            pending_snapshot = session.scalar(select(PositionSnapshot).where(
                 PositionSnapshot.portfolio_id == portfolio_id,
                 PositionSnapshot.instrument_id == asset.instrument_id,
                 PositionSnapshot.date == portfolio.history_built_through,
-                PositionSnapshot.reporting_currency == 'BRL',
             ))
-            if snapshot is None:
-                continue
-            prices = [price for price in history_for_reporting(session, asset)
-                      if price.date <= valuation_date]
-            latest = prices[-1] if prices else None
-            display_price = None
-            native_price = None
-            if latest is not None:
-                try:
-                    display_price = convert_amount(session, latest.close, latest.currency,
-                                                   portfolio.display_currency, valuation_date,
-                                                   fetcher=lambda *_: [])
-                except RateUnavailable:
-                    pass
-                try:
-                    native_price = convert_amount(session, latest.close, latest.currency,
-                                                  asset.instrument.currency or latest.currency,
-                                                  valuation_date, fetcher=lambda *_: [])
-                except RateUnavailable:
-                    pass
-            value = (snapshot.quantity * display_price if display_price is not None else
-                     ZERO if snapshot.quantity == 0 else None)
-            cost = snapshot.remaining_acquisition_cost if portfolio.display_currency == 'BRL' else None
-            realized = snapshot.realized_gain if portfolio.display_currency == 'BRL' else None
-            income = snapshot.gross_income if portfolio.display_currency == 'BRL' else None
-            unrealized = value - cost if value is not None and cost is not None else None
-            gain = (realized + unrealized + income if all(
-                item is not None for item in (realized, unrealized, income)) else None)
-            brokers = snapshot.ledger_state.get('brokers', {})
-            position = {
-                'asset_id': asset.id, 'asset': asset.instrument.symbol,
-                'native_currency': asset.instrument.currency,
-                'quote_currency': latest.currency if latest else None,
-                'transaction_currency': None, 'display_currency': portfolio.display_currency,
-                'broker': ', '.join(sorted(brokers)), 'allocation_class': '',
-                'broker_breakdown': [], 'quantity': snapshot.quantity,
-                'average_cost': snapshot.average_cost if cost is not None else None,
-                'acquisition_cost': cost, 'display_average_cost': snapshot.average_cost if cost is not None else None,
-                'display_acquisition_cost': cost, 'native_average_cost': None,
-                'native_acquisition_cost': None, 'current_price': native_price,
-                'total_value': snapshot.quantity * native_price if native_price is not None else None,
-                'display_price': display_price, 'display_value': value,
-                'realized_gain': realized, 'unrealized_gain': unrealized,
-                'gross_income': income, 'current_total_gain': gain,
-                'native_gross_income': None, 'current_accumulated_profitability': None,
-                'return_date': snapshot.date,
-                'income_by_currency': {key: decimal(amount) for key, amount in
-                                       snapshot.ledger_state.get('income_by_currency', {}).items()},
-                'corporate_action_count': 0, 'price_date': latest.date if latest else None,
-                'gain_date': valuation_date, 'valuation_date': valuation_date,
-                'action_coverage_through': snapshot.date,
-                'quote_refresh_required': False, 'history_behind_transactions': False,
-                'status': 'pending',
-            }
-            if latest is None and snapshot.quantity:
-                missing_prices.append(asset.instrument.symbol)
-            elif display_price is None and snapshot.quantity:
-                missing_fx.append(asset.instrument.symbol)
-            positions.append(position)
+        if pending_snapshot is not None:
+            state = _pending_position(session, portfolio, asset, pending_snapshot, valuation_date)
+            positions.append(state)
             asset_rows.append({
                 'id': asset.id, 'ticker': asset.instrument.symbol,
-                'transaction_currency': None, 'quantity': snapshot.quantity,
-                'average_cost': position['average_cost'], 'current_price': native_price,
-                'total_value': position['total_value'], 'price_date': position['price_date'],
-                'income_by_currency': position['income_by_currency'],
-                'corporate_action_count': 0, 'acquisition_cost': cost,
-                'display_acquisition_cost': cost, 'display_average_cost': position['display_average_cost'],
-                'display_value': value,
+                'transaction_currency': None, 'quantity': state['quantity'],
+                'average_cost': state['average_cost'], 'current_price': state['current_price'],
+                'total_value': state['total_value'], 'price_date': state['price_date'],
+                'income_by_currency': state['income_by_currency'], 'corporate_action_count': 0,
+                'acquisition_cost': state['acquisition_cost'],
+                'display_acquisition_cost': state['acquisition_cost'],
+                'display_average_cost': state['average_cost'], 'display_value': state['display_value'],
             })
+            if state['price_date'] is None and pending_snapshot.quantity:
+                missing_prices.append(asset.instrument.symbol)
+            elif state['display_price'] is None and pending_snapshot.quantity:
+                missing_fx.append(asset.instrument.symbol)
+            continue
+        if not rows:
             continue
         events = get_stored_actions(session, asset, end=valuation_date)
         action_gaps = missing_action_ranges(session, asset, min(row.trade_date for row in rows), valuation_date)
@@ -214,7 +199,6 @@ def get_overview(session, portfolio_id):
                 PositionSnapshot.portfolio_id == portfolio_id,
                 PositionSnapshot.instrument_id == asset.instrument_id,
                 PositionSnapshot.date == portfolio.history_built_through,
-                PositionSnapshot.reporting_currency == 'BRL',
             ))
             if snapshot is not None and asset.instrument_id not in dirty_instruments:
                 from src.consolidation import position_series
@@ -290,61 +274,17 @@ def get_overview(session, portfolio_id):
             'quote_refresh_required': quote_refresh_required(latest) if current['quantity'] else False,
             'history_behind_transactions': bool(latest and latest.date < max(
                 [transaction_date(row) for row in rows] + [event.effective_date for event in events]
-            )), 'status': current['status'],
+            )), 'status': ('complete' if current['status'] == 'incomplete_history'
+                           else current['status']),
         }
         if snapshot is not None:
-            if asset.instrument_id in dirty_instruments:
-                state['quantity'] = snapshot.quantity
-                brokers = snapshot.ledger_state.get('brokers', {})
-                state['broker_breakdown'] = [{
-                    'broker': broker,
-                    'quantity': decimal(holding['quantity']),
-                    'acquisition_cost': (decimal(holding['cost'])
-                                         if holding['cost'] is not None and portfolio.display_currency == 'BRL'
-                                         else None),
-                    'average_cost': (decimal(holding['cost']) / decimal(holding['quantity'])
-                                     if holding['cost'] is not None and decimal(holding['quantity'])
-                                     and portfolio.display_currency == 'BRL' else None),
-                } for broker, holding in sorted(brokers.items())]
-                state['income_by_currency'] = {
-                    currency: decimal(value)
-                    for currency, value in snapshot.ledger_state.get('income_by_currency', {}).items()
-                }
-                state['display_value'] = (snapshot.quantity * state['display_price']
-                                          if state['display_price'] is not None else
-                                          ZERO if snapshot.quantity == 0 else None)
-                state['total_value'] = (snapshot.quantity * state['current_price']
-                                        if state['current_price'] is not None else
-                                        ZERO if snapshot.quantity == 0 else None)
-                state['acquisition_cost'] = state['display_acquisition_cost'] = (
-                    snapshot.remaining_acquisition_cost
-                    if portfolio.display_currency == 'BRL' else None)
-                state['average_cost'] = state['display_average_cost'] = (
-                    snapshot.average_cost if portfolio.display_currency == 'BRL' else None)
-                for name in ('realized_gain', 'gross_income'):
-                    state[name] = getattr(snapshot, name) if portfolio.display_currency == 'BRL' else None
-                state['native_acquisition_cost'] = (
-                    snapshot.remaining_acquisition_cost if native_currency == 'BRL' else None)
-                state['native_average_cost'] = (
-                    snapshot.average_cost if native_currency == 'BRL' else None)
-                state['native_gross_income'] = (
-                    snapshot.gross_income if native_currency == 'BRL' else None)
-                cost = state['acquisition_cost']
-                value = state['display_value']
-                state['unrealized_gain'] = value - cost if value is not None and cost is not None else None
-                state['current_total_gain'] = (
-                    state['realized_gain'] + state['unrealized_gain'] + state['gross_income']
-                    if all(state[name] is not None for name in
-                           ('realized_gain', 'unrealized_gain', 'gross_income')) else None)
-                state['status'] = 'pending'
-            else:
-                if projected:
-                    history_states.append(projected[-1]['status'])
-                state['current_accumulated_profitability'] = (
-                    projected[-1]['cumulative_return_pct'] if projected else None)
-                if projected and snapshot.date == valuation_date - timedelta(days=1):
-                    state['current_accumulated_profitability'] = current['cumulative_return_pct']
-                    state['return_date'] = valuation_date
+            if projected:
+                history_states.append(projected[-1]['status'])
+            state['current_accumulated_profitability'] = (
+                projected[-1]['cumulative_return_pct'] if projected else None)
+            if projected and snapshot.date == valuation_date - timedelta(days=1):
+                state['current_accumulated_profitability'] = current['cumulative_return_pct']
+                state['return_date'] = valuation_date
             if state['return_date'] is None:
                 state['return_date'] = snapshot.date
             if action_gaps:

@@ -678,8 +678,24 @@ def position_history(transactions, corporate_events, prices, reporting_currency,
     return result
 
 
+def saved_position_value(canonical, quote, reporting_currency, rates, *, day=None):
+    """Revalue a saved holding without applying unprocessed source edits."""
+    state = canonical.ledger_state
+    if reporting_currency != canonical.reporting_currency:
+        # Historical cost/income cannot be translated using valuation-day FX.
+        state = {**state, 'brokers': {
+            broker: {**holding, 'cost': None} for broker, holding in state['brokers'].items()
+        }, 'realized': None, 'income': None}
+    ledger = PositionLedger(reporting_currency, rates, state)
+    value = ledger.snapshot(day or canonical.date, quote, canonical_quantity=canonical.quantity)
+    value.update(status='pending', daily_return_pct=None, cumulative_return_pct=None,
+                 net_flow=None, purchases=None, daily_income=None)
+    return value
+
+
 def project_position_history(canonical_rows, transactions, corporate_events, prices,
-                             reporting_currency, rates, missing_price_ranges=(), *, include_state=False):
+                             reporting_currency, rates, missing_price_ranges=(), *, include_state=False,
+                             dirty_from=None):
     """Value canonical daily quantities using stored quotes and dated activity FX."""
     activity = ordered_activity(transactions, corporate_events)
     quotes = sorted(prices, key=lambda quote: quote.date)
@@ -690,6 +706,12 @@ def project_position_history(canonical_rows, transactions, corporate_events, pri
     result = []
     for index, canonical in enumerate(canonical_rows):
         day = canonical.date
+        while quote_cursor < len(quotes) and quotes[quote_cursor].date <= day:
+            last_quote = quotes[quote_cursor]
+            quote_cursor += 1
+        if dirty_from is not None and day >= dirty_from:
+            result.append(saved_position_value(canonical, last_quote, reporting_currency, rates))
+            continue
         flow = daily_income = purchases = ZERO
         while cursor < len(activity) and activity[cursor][0] <= day:
             activity_day, _, _, _, kind, item = activity[cursor]
@@ -702,9 +724,6 @@ def project_position_history(canonical_rows, transactions, corporate_events, pri
                 daily_income = (daily_income + item_income
                                 if daily_income is not None and item_income is not None else None)
             cursor += 1
-        while quote_cursor < len(quotes) and quotes[quote_cursor].date <= day:
-            last_quote = quotes[quote_cursor]
-            quote_cursor += 1
         projected = ledger.snapshot(
             day, last_quote, flow, daily_income, purchases=purchases,
             canonical_quantity=canonical.quantity,
