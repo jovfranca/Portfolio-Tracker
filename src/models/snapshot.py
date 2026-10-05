@@ -67,3 +67,35 @@ class PositionInvalidation(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))
     dirty_from: Mapped[date] = mapped_column(Date)
     reason: Mapped[str] = mapped_column(String(32))
+
+
+class FixedIncomeSnapshot(Base):
+    """Canonical contractual lot state, retained through pending source deletion."""
+    __tablename__ = 'fixed_income_snapshots'
+    __table_args__ = (UniqueConstraint('portfolio_id', 'lot_id', 'date'),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
+    instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))
+    # No source-lot FK: deleting a lot must preserve its last consolidated values.
+    lot_id: Mapped[int] = mapped_column(index=True)
+    date: Mapped[date] = mapped_column(Date)
+    accounting_currency: Mapped[str] = mapped_column(String(3))
+    status: Mapped[str] = mapped_column(String(32))
+    valuation: Mapped[dict] = mapped_column(JSON)
+    ledger_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    lot_metadata: Mapped[dict] = mapped_column(JSON)
+    net_flow: Mapped[Decimal] = mapped_column(Numeric(38, 12))
+    purchases: Mapped[Decimal] = mapped_column(Numeric(38, 12))
+
+
+class FixedIncomeInvalidation(Base):
+    """Lot-specific dirty boundary, including a deleted lot's tombstone."""
+    __tablename__ = 'fixed_income_invalidations'
+    __table_args__ = (UniqueConstraint('portfolio_id', 'lot_id'),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(ForeignKey('portfolios.id', ondelete='CASCADE'))
+    instrument_id: Mapped[int] = mapped_column(ForeignKey('instruments.id', ondelete='RESTRICT'))
+    lot_id: Mapped[int] = mapped_column(index=True)
+    dirty_from: Mapped[date] = mapped_column(Date)

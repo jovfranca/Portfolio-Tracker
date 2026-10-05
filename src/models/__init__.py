@@ -9,7 +9,8 @@ from .broker import Broker
 from .imports import LegacyImport, TransactionImport
 from .exchange_rate import ExchangeRate
 from .corporate_action import CorporateAction, CorporateActionCoverage, UserCorporateEvent
-from .snapshot import PositionSnapshot, PortfolioSnapshot, PositionInvalidation
+from .snapshot import (PositionSnapshot, PortfolioSnapshot, PositionInvalidation,
+                       FixedIncomeSnapshot, FixedIncomeInvalidation)
 from .benchmark import Benchmark, BenchmarkProviderMapping, BenchmarkObservation, BenchmarkCoverage
 from .fixed_income import FixedIncomeLot, FixedIncomeMovement, FixedIncomeProduct
 
@@ -19,6 +20,7 @@ __all__ = [
     'MarketPrice', 'MarketPriceCoverage', 'LatestMarketQuote', 'UserDefinedPrice',
     'CorporateAction', 'CorporateActionCoverage', 'UserCorporateEvent',
     'PositionSnapshot', 'PortfolioSnapshot', 'PositionInvalidation',
+    'FixedIncomeSnapshot', 'FixedIncomeInvalidation',
     'Benchmark', 'BenchmarkProviderMapping', 'BenchmarkObservation', 'BenchmarkCoverage',
     'FixedIncomeLot', 'FixedIncomeMovement', 'FixedIncomeProduct',
 ]

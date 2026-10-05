@@ -22,6 +22,10 @@ def client(monkeypatch):
     # Synthetic instruments have no provider events unless a test supplies them.
     # A successful empty response certifies coverage only when actually fetched.
     monkeypatch.setattr('src.api.market_data.fetch_history', lambda *args, **kwargs: [])
+    monkeypatch.setattr('src.api.market_data.fetch_rates', lambda *args, **kwargs: [])
+    def offline_latest(*args, **kwargs):
+        raise OSError('Synthetic test has no provider quote.')
+    monkeypatch.setattr('src.api.market_data.fetch_latest', offline_latest)
     with engine.connect() as connection:
         outer = connection.begin()
         def override():
@@ -172,7 +176,7 @@ def test_today_split_is_applied_before_current_quote_and_return(client, monkeypa
         assert session.scalar(select(func.count()).select_from(MarketPrice).where(
             MarketPrice.reference_at >= datetime.combine(date.today(), datetime.min.time(), timezone.utc))) == 0
         assert session.scalar(select(func.count()).select_from(PositionSnapshot).where(
-            PositionSnapshot.portfolio_id == pid, PositionSnapshot.date == date.today())) == 0
+            PositionSnapshot.portfolio_id == pid, PositionSnapshot.date == date.today())) == 1
     # Refreshing/reconsolidating must neither double-apply the split nor rebuild yesterday.
     assert c.post(base + '/consolidate').json()['snapshot_days'] == 0
     assert c.get(base + '/overview').json()['positions'][0]['quantity'] == 20
@@ -365,6 +369,7 @@ def test_portfolio_display_currency_changes_without_editing_transactions(client)
     assert c.put(base, json={'name': 'Currencies', 'display_currency': 'USD'}).status_code == 200
     assert c.put(base, json={'name': 'Renamed'}).json()['display_currency'] == 'USD'
     certify_no_additional_actions(c, pid, aid, date(2024, 1, 2))
+    assert c.post(base + '/consolidate').status_code == 200
     overview = c.get(base + '/overview').json()
     assert overview['summary']['total_value'] == 24
     assert overview['positions'][0]['acquisition_cost'] == 20
@@ -531,6 +536,7 @@ def test_mixed_currency_btc_sale_is_one_lifetime_position(client):
     }).status_code == 201
     aid = c.get(base + '/overview').json()['assets'][0]['id']
     certify_no_additional_actions(c, pid, aid, date.fromisoformat(first))
+    assert c.post(base + '/consolidate').status_code == 200
     overview = c.get(base + '/overview').json()
     assert len(overview['positions']) == 1
     position = overview['positions'][0]
@@ -576,6 +582,7 @@ def test_reporting_fx_and_dividend_change_history_without_source_mutation(client
     original = c.get(base + '/transactions').json()
     original_events = c.get(event_path).json()
     certify_no_additional_actions(c, pid, asset_id, first)
+    assert c.post(base + '/consolidate').status_code == 200
     brl_overview = c.get(base + '/overview').json()
     brl_current = brl_overview['positions'][0]
     assert Decimal(str(brl_current['display_price'])) == 60
@@ -649,6 +656,7 @@ def test_native_valuation_uses_native_currency_when_quote_differs(client):
         session.commit()
     aid = c.get(base + '/overview').json()['assets'][0]['id']
     certify_no_additional_actions(c, pid, aid, day)
+    assert c.post(base + '/consolidate').status_code == 200
     position = c.get(base + '/overview').json()['positions'][0]
     assert position['quote_currency'] == 'BRL'
     assert position['native_currency'] == 'USD'
@@ -882,16 +890,21 @@ def test_crud_prices_isolation_and_rollback(client, monkeypatch):
     assert response.json()['instrument_id'] == instrument_id
     tid = response.json()['id']
     result = c.get(base + '/overview').json()
-    assert result['positions'][0]['average_cost'] == 20.3
+    assert result['positions'][0]['average_cost'] is None
+    assert result['positions'][0]['status'] == 'pending'
     aid = result['assets'][0]['id']
     certify_no_additional_actions(c, pid, aid, date(2024, 1, 2))
     assert c.put(base + f'/assets/{aid}/quote', json={'date': '2024-01-03', 'close': 30}).status_code == 200
+    assert c.post(base + '/consolidate').status_code == 200
     result = c.get(base + '/overview').json()
+    assert result['positions'][0]['average_cost'] == 20.3
     assert result['summary']['total_value'] == 300
     assert result['positions'][0]['current_total_gain'] == 97
     assert c.get(f'/api/portfolios/{other}/assets/{aid}/history').status_code == 404
     assert c.delete(f'/api/portfolios/{other}/transactions/{tid}').status_code == 404
     assert c.put(base + f'/transactions/{tid}', json=payload | {'quantity': 5}).status_code == 200
+    assert c.get(base + '/overview').json()['summary']['total_value'] == 300
+    assert c.post(base + '/consolidate').status_code == 200
     assert c.get(base + '/overview').json()['summary']['total_value'] == 150
     assert c.post(base + '/transactions', json=payload | {'quantity': -1}).status_code == 422
     assert len(c.get(base + '/transactions').json()) == 1
@@ -901,7 +914,12 @@ def test_crud_prices_isolation_and_rollback(client, monkeypatch):
     assert c.get(base + f'/assets/{aid}/history').json()[0]['close'] == 30
     assert c.post('/api/portfolios', json={'name':'forbidden'}, headers={'Origin':'https://example.com'}).status_code == 403
     assert c.delete(base + f'/transactions/{tid}').status_code == 204
-    assert c.get(base + '/overview').json()['positions'] == []
+    assert c.get(base + '/overview').json()['positions'][0]['status'] == 'pending'
+    assert c.post(base + '/consolidate').status_code == 200
+    cleared = c.get(base + '/overview').json()
+    assert cleared['positions'] == []
+    assert cleared['summary']['history_status'] == 'complete'
+    assert cleared['summary']['total_value'] == 0
 
 
 def test_quote_endpoint_keeps_manual_prices_private_and_checks_currency(client, monkeypatch):
@@ -1195,7 +1213,10 @@ def test_import_explicit_resolution_and_alias_reuse(client):
     assert c.post(base, json=row | {'asset': raw_identifier}).status_code == 201
     overview = c.get(f'/api/portfolios/{pid}/overview').json()
     assert len(overview['assets']) == 1
-    assert overview['positions'][0]['quantity'] == 2
+    assert overview['positions'][0]['quantity'] is None
+    assert overview['positions'][0]['status'] == 'pending'
+    assert c.post(f'/api/portfolios/{pid}/consolidate').status_code == 200
+    assert c.get(f'/api/portfolios/{pid}/overview').json()['positions'][0]['quantity'] == 2
 
 
 @pytest.mark.parametrize('asset_type', ['STOCK', 'ETF'])
@@ -1259,6 +1280,7 @@ def test_crypto_accounting_currency_is_separate_from_provider_quotes(client, mon
     monkeypatch.setattr('src.api.market_data.fetch_history', lambda *a, **kwargs: history_calls.append(a) or [])
     aid = c.get(f'/api/portfolios/{pid}/overview').json()['assets'][0]['id']
     certify_no_additional_actions(c, pid, aid, date(2024, 1, 2))
+    assert c.post(f'/api/portfolios/{pid}/consolidate').status_code == 200
     overview = c.get(f'/api/portfolios/{pid}/overview').json()
     assert len(overview['positions']) == 1
     position = overview['positions'][0]
@@ -1333,6 +1355,7 @@ def test_manual_corporate_event_crud_recalculates_and_feeds_activity(client):
         'amount_per_unit': '9', 'currency': 'USD',
     }).status_code == 409
 
+    assert c.post(base + '/consolidate').status_code == 200
     overview = c.get(base + '/overview').json()
     assert Decimal(str(overview['positions'][0]['quantity'])) == 20
     assert Decimal(str(overview['positions'][0]['average_cost'])) == 50
@@ -1352,9 +1375,13 @@ def test_manual_corporate_event_crud_recalculates_and_feeds_activity(client):
         'currency': 'USD', 'notes': 'corrected',
     })
     assert edited.status_code == 200, edited.text
+    assert Decimal(str(c.get(base + '/overview').json()['positions'][0]['income_by_currency']['USD'])) == 30
+    assert c.post(base + '/consolidate').status_code == 200
     assert Decimal(str(c.get(base + '/overview').json()['positions'][0]['income_by_currency']['USD'])) == 40
 
     assert c.delete(events_url + f"/{split.json()['id']}").status_code == 204
+    assert c.get(base + '/overview').json()['positions'][0]['quantity'] == 20
+    assert c.post(base + '/consolidate').status_code == 200
     final = c.get(base + '/overview').json()['positions'][0]
     assert Decimal(str(final['quantity'])) == 10
     assert Decimal(str(final['average_cost'])) == 100

@@ -77,6 +77,13 @@ Após atualizar, aplique `python -m alembic upgrade head` e use **Atualizar posi
 As migrações `0023` e `0024` descartam os históricos derivados antigos e agendam
 a reconstrução explícita de cada posição na sua moeda contábil, independentemente
 da moeda de exibição. BRL continua disponível como moeda pivô para câmbio.
+A migração `0025` adiciona snapshots e checkpoints por lote de renda fixa,
+preserva os contratos e movimentos e agenda a primeira consolidação desses lotes.
+Até usar **Atualizar posições**, os valores ainda não consolidados ficam
+desconhecidos; edições e exclusões mantêm os últimos valores consolidados com
+aviso de atualização pendente. Consultas de posições, lotes e histórico não
+reconstroem avaliações contratuais. A consolidação também salva o estado atual
+de mercado; o histórico de fechamentos continua terminando em ontem.
 A migração `0022` marca o histórico das carteiras com CDI para reconstrução desde
 a primeira aplicação afetada, preservando contratos, movimentos e observações.
 Resgates totais gravados com valores calculados pela regra anterior podem exigir
@@ -110,10 +117,10 @@ Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.
    com data de negociação de ontem.
 3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 para ontem e
    para a data atual.
-4. Confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
-5. Clique em **Atualizar posições** e abra **Desempenho** para ver o resultado de
+4. Clique em **Atualizar posições** e confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
+5. Abra **Desempenho** para ver o resultado de
    100 e o retorno diário ponderado no tempo.
-6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2 e confira
+6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2, use **Atualizar posições** e confira
    quantidade 20 e preço médio 10 em **Posições**.
 7. Adicione um dividendo manual e confira seu valor bruto e a linha correspondente
    em **Atividade do ativo**.

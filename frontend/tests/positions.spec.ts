@@ -1,5 +1,43 @@
 import { test, expect } from '@playwright/test'
 
+test('unbuilt positions remain visible with unknown values until explicit update', async ({ page }) => {
+  let consolidated = false
+  let updates = 0
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/consolidate')) {
+      consolidated = true
+      updates++
+      return route.fulfill({ json: { complete: true } })
+    }
+    if (path.endsWith('/portfolios')) return route.fulfill({ json: [
+      { id: 1, name: 'Unbuilt', display_currency: 'BRL' },
+    ] })
+    if (path.endsWith('/transactions') || path.endsWith('/fixed-income/lots')) return route.fulfill({ json: [] })
+    return route.fulfill({ json: {
+      positions: [{ asset_id: 1, asset: 'NEW', allocation_class: '', display_currency: 'BRL',
+        quantity: consolidated ? 2 : null, display_value: consolidated ? 20 : null,
+        status: consolidated ? 'complete' : 'pending', current_accumulated_profitability: null }],
+      assets: [], methodology: 'Synthetic fixture',
+      summary: { display_currency: 'BRL', total_value: consolidated ? 20 : null,
+        transactions: 1, assets: 1, positions: 1, missing_fx: [], missing_prices: [],
+        missing_cost_fx: [], income_by_currency: {},
+        history_status: consolidated ? 'complete' : 'pending', history_built_through: null },
+    } })
+  })
+  await page.goto('/')
+  const row = page.getByRole('row').filter({ has: page.getByText('NEW', { exact: true }) })
+  await expect(row).toBeVisible()
+  await expect(row.getByRole('cell').nth(1)).toHaveText('—')
+  await expect(row.getByRole('cell').nth(4)).toHaveText('BRL —')
+  await expect(row).toContainText('atualização pendente: use Atualizar posições')
+  expect(updates).toBe(0)
+  await page.getByRole('button', { name: 'Atualizar posições' }).click()
+  await expect(row.getByRole('cell').nth(1)).toHaveText('2,000000')
+  await expect(row.getByRole('cell').nth(4)).toHaveText('BRL 20,00')
+  expect(updates).toBe(1)
+})
+
 test('reporting values are primary, native values conditional, and closed positions optional', async ({ page }) => {
   let currencyUpdates = 0
   let savedCurrency = ''

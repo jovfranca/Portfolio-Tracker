@@ -1,95 +1,96 @@
-Review of issue #38 — 2026-10-01
+﻿Review of issue #38 — 2026-10-05
 
-**Not ready for PR as a completed implementation of #38.** The corrective changes
-below pass verification, but two acceptance gaps remain in the reporting model.
+**Ready for PR with the reviewed working-tree changes included.** No unresolved
+blockers were found in this review.
 
 Compared `feat/38-consolidation-optimization` at
-`f67b0067ffc7a1a62b74785950ab294b796ac310`, including the existing uncommitted
-accounting-currency work, against `develop` at
-`b48b4f4785798aeb567717b67697ab5958a693b4`. GitHub's develop SHA matches the local
-branch. Read [issue #38](https://github.com/jovfranca/Portfolio-Tracker/issues/38)
-and the attached accounting-currency follow-up. Initial GitHub access failed
-because of the sandbox proxy; access succeeded outside the sandbox before edits.
+`14b0cb859b4c049b87c9947db76ee8d90b6acdeb`, including the existing uncommitted
+changes and new fixed-income files, against `develop` at
+`b48b4f4785798aeb567717b67697ab5958a693b4`.
+Read [issue #38](https://github.com/jovfranca/Portfolio-Tracker/issues/38), both
+GitHub follow-up comments, and the supplied attachments. GitHub initially failed
+because the sandbox proxy refused connections; `gh` access succeeded outside
+the sandbox before code changes.
 
-Remaining blockers:
+Verified findings and fixes from this review:
 
-- **P1 — Fixed-income history is still reconstructed on reads, without canonical
-  lot snapshots.** `src/consolidation.py:190` and `src/consolidation.py:299` call
-  `daily_position_rows` for every reporting day. That calls the contractual
-  valuation from the lot's inception. The consolidation loops explicitly skip
-  fixed-income snapshot persistence (`src/consolidation.py:540`). A synthetic
-  zero-rate, 30-day lot produced 30 full lot valuations on a single history GET,
-  with zero persisted position snapshots after consolidation. Its overview also
-  reads live movements (`src/position_reporting.py:303`): editing the opening
-  amount from 1,000 to 1,500 immediately changed the displayed value to 1,500 while
-  history was still pending. Thus explicit consolidation does not control the
-  fixed-income state being displayed; checkpoint reuse and lightweight historical
-  projection are absent for these positions. Completion requires persisted lot
-  state in contractual currency, targeted rebuilding of affected ranges, and
-  reporting from that state. Add regression tests prohibiting contractual replay
-  on history GET and preserving displayed consolidated values through pending
-  movement edits/deletions. The currency-resolver test for fixed income alone
-  does not establish those properties.
+- **P2 — Fresh benchmark observations left rebuilt lots pending.** During a
+  next-day checkpoint extension, fetching a benchmark period creates a new
+  `FixedIncomeInvalidation` after the consolidation function has loaded its
+  invalidation map. The replay incorporated that observation but failed to clear
+  the newly created invalidation, reporting an incomplete update and stale lot.
+  `src/fixed_income_history.py` now consumes the new invalidation when the rebuilt
+  suffix covers its boundary. The regression reproduces two successive explicit
+  updates with provider observations fetched during each update.
+- **P2 — Deleting the last market trade left a permanent unbuilt position.**
+  After explicit consolidation removed obsolete snapshots and invalidations,
+  retained asset metadata still produced an unknown/pending position. An empty
+  portfolio consequently remained pending indefinitely. Overview now omits
+  metadata-only assets when they have neither activity, snapshots, nor pending
+  invalidation. Pending deletions still retain saved values until the explicit
+  update. Regression coverage includes the unbuilt deletion case, PostgreSQL
+  CRUD of a previously consolidated position, and the real browser workflow.
+- **P2 — Updating one instrument replayed unrelated clean activity.** The
+  quote-refresh pass called `position_now` on every clean market position simply
+  to obtain its quantity. It now reads the latest saved quantity instead.
+  The targeted-consolidation regression explicitly fails if the unrelated ARKK
+  activity is replayed while PETR4 is being updated; its snapshots also remain
+  unchanged.
+- **Missing/stale browser coverage.** The real-API market and XLSX-import tests
+  still expected automatic live calculations, and one database assertion expected
+  the permanent pending state after deletion. Updated tests assert unknown values
+  before the first update, saved values through pending edits/deletions, explicit
+  update request counts, and the final empty portfolio after consolidation.
 
-- **P2 — Market positions without a saved snapshot still use live activity on
-  overview GET.** The pending-state guard at `src/position_reporting.py:167` only
-  handles an existing snapshot. Otherwise the read falls through to
-  `position_now` at line 217. A synthetic position with `history_built_through =
-  None` showed quantity 2, then quantity 3 after an edit, without any consolidation.
-  This includes new positions and histories cleared by migrations. Completion
-  requires an explicit unbuilt/pending response instead of reconstructing the
-  position on reads, with matching first-consolidation and new-instrument tests.
+Each behavioral finding was reproduced with a failing regression before the fix.
+No financial formula changes were required for these corrections.
 
-These are implementation blockers, not unavailable PostgreSQL or dependencies.
-They were reproduced but are not resolved by the fixes in this review.
+The two blockers from the previous review are resolved by the existing
+working-tree implementation and verified here:
 
-Verified and fixed:
+- Fixed-income consolidation persists contractual-currency lot snapshots and
+  resumable checkpoints. Reporting reads saved state; pending movement edits and
+  deletions preserve consolidated values. Tests prohibit contractual replay from
+  overview, history, performance and lot reads, and cover targeted lot suffixes,
+  benchmark revisions, first consolidation, and display-currency projection.
+- Market positions with activity but no canonical snapshots report explicit
+  pending/unbuilt values. Tests cover new positions, previously built portfolios,
+  pending edits/deletions and first consolidation, including same-day activity.
+  GET guards prohibit canonical `position_now`/`position_history` reconstruction.
+  Instrument metadata without any activity is not itself a holding.
 
-- **Pending market reads replayed edited activity before replacing its output
-  with saved values.** A pending reverse split followed by a previously valid
-  sale caused history/overview reads to raise an oversell error. Projection now
-  stops applying activity at the dirty boundary; overview uses the saved
-  checkpoint directly. Dated accounting amounts remain unknown when their saved
-  currency differs from display currency, rather than using valuation-day FX.
-- **Manual pricing-currency changes could leave canonical checkpoints in the
-  old currency.** Invalidation now compares the resulting manual pricing currency
-  with saved accounting currency and rebuilds from the first transaction when it
-  changes. Ordinary price corrections/deletions that retain the accounting
-  currency do not invalidate the ledger.
-- **Ambiguous primary pricing mappings silently fell back to native currency.**
-  Accounting-currency resolution now fails explicitly. Retired mappings sharing
-  one quote currency still retain their readable historical prices.
-- **An equity edit suppressed unrelated fixed-income portfolio values.** The
-  fixed-income pending boundary now uses invalidations of fixed-income
-  instruments, rather than the portfolio-wide dirty date. Known stale equity
-  values remain flagged incomplete without erasing clean fixed-income values.
-- **Legacy import failed against a seeded foreign-instrument catalog and still
-  calculated an overview during writes.** Archived prices now retain their
-  legacy currency and provenance without being validated as new manual quotes;
-  they remain excluded from valuation and accounting-currency selection. Import
-  performs quantity/oversell validation without constructing the overview.
-- Corrected setup instructions that still described automatic consolidation on
-  currency changes and canonical invalidation by ordinary price/FX corrections.
+The accounting-currency, dated-FX, ambiguity handling, per-position invalidation,
+checkpoint reuse and financial regression suites remain passing. The reviewed
+writes do not calculate overview or trigger consolidation, and display-currency
+changes do not alter canonical history.
 
-Regression tests were added before the behavioral fixes and demonstrated the
-failures. Coverage also now exercises a provider-backed foreign listed asset,
-alongside crypto, through canonical persistence and display-currency changes.
+Verification:
 
-Verification completed:
-
-- Full suite with `RUN_DB_TESTS=1`: **330 passed**, including relevant PostgreSQL
-  tests; two existing FastAPI/Starlette deprecation warnings.
+- Full Python suite with `RUN_DB_TESTS=1`: **351 passed**. Only the two existing
+  FastAPI/Starlette deprecation warnings remain.
 - Frontend `npm run build`: **passed**.
-- Edge/Playwright `positions.spec.ts` and `instruments.spec.ts`: **7 passed**,
-  including explicit update and currency switching without consolidation.
-- Fresh migrations through `0024`: **passed** on a new PostgreSQL cluster on
-  port 55438. A second synthetic database verified the populated
-  `0022 -> 0023 -> 0024` path: derived snapshots were removed, the source
-  transaction survived, and the earliest dirty date was retained for rebuilding.
+- Edge/Playwright: **all 17 tests passed across final runs**. The full run passed
+  16 tests; after correcting the market test's empty-state locator, its focused
+  rerun passed. Coverage includes real-API market CRUD, fixed-income movement
+  CRUD and imports, plus mocked reporting/currency-switching UI contracts.
+- Fresh Alembic migrations through **0025**: **passed**.
+- Populated **0022 -> 0023 -> 0024 -> 0025** upgrade: **passed** with synthetic
+  market activity and a fixed-income lot. Trades, contracts and movements were
+  preserved; old derived histories were removed and targeted rebuilds scheduled.
+- The PostgreSQL migration regression also verifies 0025 preserves market
+  snapshots and source movements while scheduling fixed-income histories.
 - `alembic check`: **no schema drift**. `git diff --check`: **passed**.
 
-The persistent development database was not used or modified. The isolated
-databases were `review38` and `review38_upgrade` in `.local/pg-review38`.
-Windows sandbox permissions initially blocked pytest temporary directories and
-Playwright worker creation; rerunning those checks outside the sandbox resolved
-the restrictions. No database-backed verification remains blocked.
+All database verification used a newly initialized PostgreSQL cluster at
+`.local/pg-review38-oct05`, bound to `127.0.0.1:55439`, with databases
+`review38_test`, `review38_upgrade`, and `review38_browser`. The persistent/local
+development database was not used or modified. The review API and cluster were
+stopped after verification; synthetic databases and logs remain under `.local`.
+Windows sandbox restrictions initially prevented PostgreSQL startup, pytest
+temporary-directory access, and Playwright worker creation. Rerunning those
+operations outside the sandbox resolved them. No verification remains blocked.
+
+This review includes uncommitted and untracked implementation files, notably
+migration 0025, `src/fixed_income_history.py`, and its migration test. Include
+those files when preparing the PR; the committed branch alone does not contain
+the full reviewed implementation.

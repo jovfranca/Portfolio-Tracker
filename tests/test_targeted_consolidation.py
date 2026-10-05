@@ -29,6 +29,64 @@ def sqlite_engine():
     return engine
 
 
+@pytest.mark.parametrize('already_built', [False, True])
+@pytest.mark.parametrize('days_ago', [0, 2])
+def test_unbuilt_market_position_never_replays_and_first_update_builds_state(monkeypatch, already_built, days_ago):
+    engine = sqlite_engine()
+    from src import position_reporting
+    from src import domain
+    monkeypatch.setattr(position_reporting, 'missing_action_ranges', lambda *_: [])
+    monkeypatch.setattr(consolidation, 'get_history', lambda *_: SimpleNamespace(missing_ranges=[]))
+    monkeypatch.setattr(consolidation, 'get_actions', lambda *_: SimpleNamespace(complete=True, missing_ranges=[]))
+    monkeypatch.setattr(consolidation, 'get_latest', lambda *_: SimpleNamespace(price=True, stale=False))
+    first = date.today() - timedelta(days=days_ago)
+    with Session(engine) as session:
+        portfolio = Portfolio(name='Unbuilt', history_built_through=
+                              date.today() - timedelta(days=1) if already_built else None)
+        instrument = Instrument(symbol='NEW', currency='BRL', asset_type='OTHER')
+        session.add_all([portfolio, instrument])
+        session.flush()
+        asset = Asset(portfolio_id=portfolio.id, instrument_id=instrument.id, ticker='NEW')
+        session.add(asset)
+        session.flush()
+        with monkeypatch.context() as guard:
+            guard.setattr(domain, 'position_now', lambda *_args, **_kwargs: pytest.fail('GET replayed market'))
+            # Instrument metadata alone is not a holding. Its first activity
+            # below must create an explicitly unbuilt position.
+            assert get_overview(session, portfolio.id)['positions'] == []
+        trade = Transaction(portfolio_id=portfolio.id, instrument_id=instrument.id,
+            date_time=datetime.combine(first, time.min), trade_date=first, settlement_date=first,
+            type='Buy', asset='NEW', broker='A', allocation_class='Other',
+            transaction_currency='BRL', fx_rate=1, quantity=2, price=10,
+            brokerage_fee=0, other_fees=0)
+        session.add(trade)
+        session.add(UserDefinedPrice(asset_id=asset.id, reference_date=first, price=10, currency='BRL', source='manual'))
+        session.flush()
+        with monkeypatch.context() as guard:
+            guard.setattr(domain, 'position_now', lambda *_args, **_kwargs: pytest.fail('GET replayed market'))
+            for quantity in (2, 3):
+                trade.quantity = quantity
+                session.flush()
+                state = get_overview(session, portfolio.id)['positions'][0]
+                assert state['quantity'] is None and state['display_value'] is None
+            session.delete(trade)
+            session.flush()
+            assert get_overview(session, portfolio.id)['positions'][0]['status'] == 'pending'
+        session.add(Transaction(portfolio_id=portfolio.id, instrument_id=instrument.id,
+            date_time=datetime.combine(first, time.min), trade_date=first, settlement_date=first,
+            type='Buy', asset='NEW', broker='A', allocation_class='Other',
+            transaction_currency='BRL', fx_rate=1, quantity=2, price=10,
+            brokerage_fee=0, other_fees=0))
+        session.flush()
+        consolidation.consolidate(session, portfolio.id)
+        with monkeypatch.context() as guard:
+            guard.setattr(domain, 'position_now', lambda *_args, **_kwargs: pytest.fail('GET rebuilt market'))
+            guard.setattr(domain, 'position_history', lambda *_args, **_kwargs: pytest.fail('GET rebuilt market'))
+            guard.setattr(consolidation, 'position_history', lambda *_args, **_kwargs: pytest.fail('GET rebuilt market'))
+            state = get_overview(session, portfolio.id)['positions'][0]
+            assert state['quantity'] == 2 and state['display_value'] == 20
+
+
 def test_transaction_writes_validate_one_position_without_building_overview(monkeypatch):
     engine = sqlite_engine()
     monkeypatch.setattr(routes, 'get_overview', lambda *_: (_ for _ in ()).throw(
@@ -56,6 +114,27 @@ def test_transaction_writes_validate_one_position_without_building_overview(monk
             PositionInvalidation.portfolio_id == portfolio.id))) == {instrument.id, other.id}
         routes.delete_transaction(portfolio.id, created.id, session)
         assert session.get(Portfolio, portfolio.id).dirty_from == date.today()
+
+
+def test_deleted_last_market_trade_stops_being_pending_after_explicit_update():
+    engine = sqlite_engine()
+    with Session(engine) as session:
+        portfolio = Portfolio(name='Deleted position')
+        instrument = Instrument(symbol='REMOVED', currency='BRL', asset_type='OTHER')
+        session.add_all([portfolio, instrument])
+        session.flush()
+        payload = TransactionSelectionInput(
+            instrument_id=instrument.id, asset='REMOVED', trade_date=date.today(),
+            settlement_date=date.today(), type='Buy', broker='A', quantity=2,
+            price=10, transaction_currency='BRL')
+        trade = routes.add_transaction(portfolio.id, payload, session)
+        routes.delete_transaction(portfolio.id, trade.id, session)
+        assert get_overview(session, portfolio.id)['summary']['history_status'] == 'pending'
+        assert consolidation.consolidate(session, portfolio.id)['complete']
+        overview = get_overview(session, portfolio.id)
+        assert overview['summary']['history_status'] == 'complete'
+        assert overview['summary']['total_value'] == 0
+        assert overview['positions'] == []
 
 
 def test_dirty_trade_replays_only_its_instrument_and_currency_switch_keeps_checkpoints(monkeypatch):
@@ -111,6 +190,12 @@ def test_dirty_trade_replays_only_its_instrument_and_currency_switch_keeps_check
             PositionInvalidation.portfolio_id == portfolio.id)))
         assert dirty == [trades['PETR4'].instrument_id]
         assert portfolio.dirty_from == first
+        original_now = consolidation.position_now
+        def targeted_now(rows, *args, **kwargs):
+            assert all(row.instrument_id != trades['ARKK'].instrument_id for row in rows), \
+                'replayed the unrelated clean position during quote refresh'
+            return original_now(rows, *args, **kwargs)
+        monkeypatch.setattr(consolidation, 'position_now', targeted_now)
         assert consolidation.consolidate(session, portfolio.id)['complete']
         session.flush()
         assert calls == ['PETR4']
@@ -203,15 +288,20 @@ def test_equity_invalidation_does_not_hide_clean_fixed_income_history(monkeypatc
                                      currency='BRL', source='manual'))
         consolidation.mark_dirty(session, portfolio.id, first, equity.id)
         session.flush()
-        monkeypatch.setattr(fixed_income, 'list_lots', lambda *args: [SimpleNamespace(
-            start_date=first, asset=SimpleNamespace(instrument_id=bond.id))])
-        monkeypatch.setattr(fixed_income, 'daily_position_rows', lambda *args: [SimpleNamespace(
-            status='complete', remaining_acquisition_cost=Decimal('100'), market_value=Decimal('100'),
-            realized_gain=Decimal('0'), unrealized_gain=Decimal('0'), gross_income=Decimal('0'),
-            total_gain=Decimal('0'), net_flow=Decimal('100'), purchases=Decimal('100'), daily_income=Decimal('0'))])
+        from src.models import FixedIncomeSnapshot
+        bond_asset = Asset(portfolio_id=portfolio.id, instrument_id=bond.id, ticker='FI')
+        session.add(bond_asset)
+        session.flush()
+        session.add(FixedIncomeSnapshot(portfolio_id=portfolio.id, instrument_id=bond.id,
+            lot_id=1, date=first, accounting_currency='BRL', status='complete',
+            valuation={'currency': 'BRL', 'status': 'complete', 'original_invested_amount': '100',
+                'outstanding_principal': '100', 'gross_accrued_value': '100',
+                'accrued_gain': '0', 'realized_gain': '0'},
+            ledger_state={}, lot_metadata={}, net_flow=100, purchases=100))
+        session.flush()
         history = consolidation.portfolio_series(session, portfolio.id)
         assert history[-1]['market_value'] == 110
-        assert history[-1]['status'] == 'incomplete'
+        assert history[-1]['status'] == 'pending'
 
 
 def test_legacy_import_keeps_foreign_catalog_prices_as_audit_only(monkeypatch):

@@ -68,7 +68,8 @@ export type FixedIncomeLot = {
   valuation: { original_invested_amount: Numeric | null; outstanding_principal: Numeric | null;
     gross_accrued_value: Numeric | null; accrued_gain: Numeric | null;
     display_currency: string; display_value: Numeric | null; status: string;
-    benchmark_start: string | null; benchmark_end: string | null } | null;
+    benchmark_start: string | null; benchmark_end: string | null;
+    pending?: boolean; unbuilt?: boolean; consolidated_through?: string | null } | null;
   movements: FixedIncomeMovement[]
 }
 export type FixedIncomeMovement = {

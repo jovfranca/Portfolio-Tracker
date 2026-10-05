@@ -10,28 +10,8 @@ from src.services import ensure_asset, get_portfolio
 
 
 def value_lot(session, lot, valuation_date, display_currency=None):
-    from src.rates import RateUnavailable, convert_amount
-
-    result = _lot_valuation(session, lot, lot.movements, valuation_date)
-    result['display_currency'] = display_currency or lot.currency
-    result['display_value'] = None
-    result['display_principal'] = None
-    result['display_accrued_gain'] = None
-    result['display_realized_gain'] = None
-    if result['status'] == 'complete':
-        try:
-            for source, target in (('gross_accrued_value', 'display_value'),
-                                   ('outstanding_principal', 'display_principal'),
-                                   ('accrued_gain', 'display_accrued_gain'),
-                                   ('realized_gain', 'display_realized_gain')):
-                result[target] = convert_amount(
-                    session, result[source], lot.currency, result['display_currency'],
-                    valuation_date, fetcher=lambda *_: [])
-        except (RateUnavailable, ValueError):
-            result['status'] = 'missing_fx'
-            result['display_value'] = result['display_principal'] = None
-            result['display_accrued_gain'] = result['display_realized_gain'] = None
-    return result
+    from src.fixed_income_history import saved_lot_value
+    return saved_lot_value(session, lot, valuation_date, display_currency or lot.currency)
 
 
 def _lot_valuation(session, lot, movements, valuation_date):
@@ -52,89 +32,11 @@ def _lot_valuation(session, lot, movements, valuation_date):
         return fixed_income_valuation(lot, movements, valuation_date, observations)
 
 
-def position_valuations(session, lots, valuation_date, display_currency):
-    """Aggregate a canonical instrument while retaining independent lot values."""
-    from collections import defaultdict
-
-    grouped = defaultdict(list)
-    for lot in lots:
-        if lot.start_date > valuation_date:
-            continue
-        grouped[lot.asset.instrument_id].append((lot, value_lot(session, lot, valuation_date, display_currency)))
-    positions = []
-    for entries in grouped.values():
-        lot, _ = entries[0]
-        valued = [value for _, value in entries]
-        complete = all(value['status'] == 'complete' for value in valued)
-        currencies = {row.currency for row, _ in entries}
-        def total(field):
-            return sum((value[field] for value in valued), Decimal('0')) if complete else None
-        positions.append({
-            'asset_id': lot.asset_id, 'instrument_id': lot.asset.instrument_id,
-            'asset': lot.asset.instrument.symbol,
-            'currency': next(iter(currencies)) if len(currencies) == 1 else None,
-            'display_currency': display_currency, 'valuation_date': valuation_date,
-            'status': 'complete' if complete else 'incomplete',
-            'valuation_status': 'complete' if complete else 'incomplete',
-            'lots': [{'id': row.id, 'asset_id': row.asset_id,
-                      'instrument_id': row.asset.instrument_id, **value} for row, value in entries],
-            'acquisition_cost': total('display_principal'),
-            'display_value': total('display_value'),
-            'realized_gain': total('display_realized_gain'),
-            'unrealized_gain': total('display_accrued_gain'),
-            'gross_income': Decimal('0') if complete else None,
-            'current_total_gain': (total('display_realized_gain') + total('display_accrued_gain')) if complete else None,
-            'broker_breakdown': [
-                {'broker': row.broker.name, 'lot_id': row.id,
-                 'acquisition_cost': value['display_principal'],
-                 'display_value': value['display_value'], 'valuation_status': value['status']}
-                for row, value in entries],
-        })
-    return positions
-
-
-def daily_position_rows(session, lots, valuation_date, display_currency):
-    """Dedicated monetary read model for portfolio-day aggregation."""
-    from types import SimpleNamespace
-    from src.rates import RateUnavailable, convert_amount
-
-    rows = []
-    active_lots = [lot for lot in lots if lot.start_date <= valuation_date]
-    for position in position_valuations(session, active_lots, valuation_date, display_currency):
-        relevant = [lot for lot in lots if lot.asset.instrument_id == position['instrument_id']]
-        flow = purchases = Decimal('0')
-        status = position['status']
-        for lot in relevant:
-            for movement in lot.movements:
-                if movement.effective_date != valuation_date:
-                    continue
-                try:
-                    amount = convert_amount(session, movement.amount, lot.currency, display_currency,
-                                            valuation_date, fetcher=lambda *_: [])
-                except (RateUnavailable, ValueError):
-                    status = 'incomplete'
-                    flow = purchases = None
-                    break
-                if flow is not None:
-                    if movement.movement_type in {'INITIAL_INVESTMENT', 'ADDITIONAL_INVESTMENT'}:
-                        flow += amount
-                        purchases += amount
-                    else:
-                        flow -= amount
-        complete = status == 'complete'
-        rows.append(SimpleNamespace(
-            status=status,
-            remaining_acquisition_cost=position['acquisition_cost'] if complete else None,
-            market_value=position['display_value'] if complete else None,
-            realized_gain=position['realized_gain'] if complete else None,
-            unrealized_gain=position['unrealized_gain'] if complete else None,
-            gross_income=Decimal('0') if complete else None,
-            total_gain=position['current_total_gain'] if complete else None,
-            net_flow=flow if complete else None,
-            purchases=purchases if complete else None,
-            daily_income=Decimal('0') if complete else None,
-        ))
-    return rows
+def position_valuations(session, lots, valuation_date, display_currency, *, portfolio_id=None):
+    from src.fixed_income_history import saved_position_valuations
+    if portfolio_id is None:
+        portfolio_id = lots[0].asset.portfolio_id if lots else None
+    return saved_position_valuations(session, portfolio_id, lots, valuation_date, display_currency)
 
 
 def get_lot(session, portfolio_id, lot_id):

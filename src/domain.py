@@ -799,7 +799,7 @@ def portfolio_day(rows, previous_value, previous_factor):
     }
 
 
-def fixed_income_valuation(lot, movements, valuation_date, observations=()):
+def fixed_income_valuation(lot, movements, valuation_date, observations=(), *, initial_state=None):
     """Value one contractual lot from immutable terms and dated cash movements.
 
     Observation values use the canonical catalog's percent-per-period units.
@@ -845,34 +845,45 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
     else:
         return incomplete('invalid_contract')
 
-    ordered = sorted((row for row in movements if row.effective_date <= valuation_date),
+    checkpoint_day = date.fromisoformat(initial_state['date']) if initial_state else None
+    ordered = sorted((row for row in movements if row.effective_date <= valuation_date
+                      and (checkpoint_day is None or row.effective_date > checkpoint_day)),
                      key=lambda row: (row.effective_date,
                                       row.id if row.id is not None else float('inf')))
-    if not ordered or ordered[0].movement_type != 'INITIAL_INVESTMENT' or ordered[0].effective_date != lot.start_date:
+    if not initial_state and (not ordered or ordered[0].movement_type != 'INITIAL_INVESTMENT'
+                              or ordered[0].effective_date != lot.start_date):
         return incomplete('invalid_movements')
-    original = decimal(ordered[0].amount)
+    original = decimal(initial_state['original'] if initial_state else ordered[0].amount)
     if original <= 0:
         return incomplete('invalid_movements')
     result['original_invested_amount'] = original
-    if lot.maturity_date and valuation_date > lot.maturity_date and not any(
+    if lot.maturity_date and valuation_date > lot.maturity_date and not (
+            initial_state and initial_state['terminated']) and not any(
             row.movement_type in {'FULL_REDEMPTION', 'MATURITY'} and
             row.effective_date <= lot.maturity_date for row in ordered):
         return incomplete('missing_maturity_movement')
     principal = gross = original
     realized = zero
     terminated = False
+    if initial_state:
+        principal = decimal(initial_state['principal'])
+        gross = decimal(initial_state['gross'])
+        realized = decimal(initial_state['realized'])
+        terminated = initial_state['terminated']
+        for field in ('benchmark_start', 'benchmark_end'):
+            result[field] = date.fromisoformat(initial_state[field]) if initial_state[field] else None
     movements_by_day = defaultdict(list)
     for index, row in enumerate(ordered):
         if row.currency != lot.currency or decimal(row.amount) <= 0 or row.effective_date < lot.start_date:
             return incomplete('invalid_movements')
         if row.movement_type == 'MATURITY' and row.effective_date != lot.maturity_date:
             return incomplete('invalid_movements')
-        if index and row.movement_type == 'INITIAL_INVESTMENT':
+        if (index or initial_state) and row.movement_type == 'INITIAL_INVESTMENT':
             return incomplete('invalid_movements')
-        if index:
+        if index or initial_state:
             movements_by_day[row.effective_date].append(row)
     observed = {row.reference_date: decimal(row.value) for row in observations}
-    day = lot.start_date
+    day = checkpoint_day + timedelta(days=1) if checkpoint_day else lot.start_date
     while day <= valuation_date:
         if day == lot.start_date:
             accrual_day = False
@@ -948,6 +959,13 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
         day += timedelta(days=1)
     result.update(outstanding_principal=principal, gross_accrued_value=gross,
                   accrued_gain=gross - principal, realized_gain=realized)
+    result['ledger_state'] = {
+        'date': valuation_date.isoformat(), 'original': str(original),
+        'principal': str(principal), 'gross': str(gross), 'realized': str(realized),
+        'terminated': terminated,
+        **{field: result[field].isoformat() if result[field] else None
+           for field in ('benchmark_start', 'benchmark_end')},
+    }
     return result
 
 

@@ -1,5 +1,28 @@
 import { test, expect } from '@playwright/test'
 
+test('fixed-income pending lot shows the saved value and update instruction', async ({ page }) => {
+  const valuation = { status: 'complete', pending: true, gross_accrued_value: '1000',
+    outstanding_principal: '1000', accrued_gain: '0', display_currency: 'BRL', display_value: '1000' }
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname
+    const body = path.endsWith('/portfolios') ? [{ id: 1, name: 'Pending lot', display_currency: 'BRL' }]
+      : path.endsWith('/transactions') ? []
+      : path.endsWith('/fixed-income/lots') ? [{ id: 1, instrument_symbol: 'PENDING-CDB',
+        instrument_name: 'Pending CDB', issuer: 'Bank', broker: 'Broker', currency: 'BRL',
+        start_date: '2024-01-02', maturity_date: null, opening_amount: '1500',
+        yield_structure: 'FIXED_RATE', fixed_rate: '0', valuation, movements: [] }]
+      : { positions: [], assets: [], fixed_income: { lot_count: 1, valuation_status: 'pending' },
+        summary: { display_currency: 'BRL', total_value: 1000, assets: 1, positions: 1,
+          transactions: 0, history_status: 'pending', missing_fx: [], missing_prices: [],
+          missing_cost_fx: [], income_by_currency: {} } }
+    return route.fulfill({ json: body })
+  })
+  await page.goto('/')
+  const row = page.getByRole('row').filter({ has: page.getByText('PENDING-CDB', { exact: true }) })
+  await expect(row.getByRole('cell').nth(5)).toContainText('1.000,00')
+  await expect(row.getByRole('cell').nth(5)).toContainText('Atualização pendente · use Atualizar posições')
+})
+
 test('fixed-income lots appear once while aggregates remain in portfolio totals', async ({ page }) => {
   const valuation = { status: 'complete', gross_accrued_value: '1100', outstanding_principal: '1000',
     accrued_gain: '100', display_currency: 'BRL', display_value: '1100' }
