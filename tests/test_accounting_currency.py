@@ -23,7 +23,7 @@ from tests.test_targeted_consolidation import sqlite_engine
 ])
 def test_provider_accounting_currency_follows_primary_quote(asset_type, native, quote, expected):
     with Session(sqlite_engine()) as session:
-        portfolio = Portfolio(name='Accounting', display_currency='EUR')
+        portfolio = Portfolio(household_id=1, name='Accounting', display_currency='EUR')
         instrument = Instrument(symbol='TEST', asset_type=asset_type, currency=native)
         session.add_all([portfolio, instrument])
         session.flush()
@@ -38,7 +38,7 @@ def test_provider_accounting_currency_follows_primary_quote(asset_type, native, 
 
 def test_manual_and_fixed_income_accounting_currencies_are_explicit():
     with Session(sqlite_engine()) as session:
-        portfolio = Portfolio(name='Manual')
+        portfolio = Portfolio(household_id=1, name='Manual')
         manual = Instrument(symbol='MANUAL', asset_type='OTHER', currency='EUR')
         unknown = Instrument(symbol='UNKNOWN', asset_type='OTHER')
         session.add_all([portfolio, manual, unknown])
@@ -70,7 +70,7 @@ def test_manual_and_fixed_income_accounting_currencies_are_explicit():
 
 def test_ambiguous_provider_mapping_cannot_fall_back_to_native_currency():
     with Session(sqlite_engine()) as session:
-        portfolio = Portfolio(name='Ambiguous')
+        portfolio = Portfolio(household_id=1, name='Ambiguous')
         instrument = Instrument(symbol='DUAL', asset_type='STOCK', currency='EUR')
         session.add_all([portfolio, instrument])
         session.flush()
@@ -96,7 +96,7 @@ def test_manual_priced_position_persists_its_price_currency(monkeypatch, trade_c
     monkeypatch.setattr(consolidation, 'get_actions', lambda *args: SimpleNamespace(
         complete=True, missing_ranges=[]))
     with Session(engine) as session:
-        portfolio = Portfolio(name='Private', display_currency='BRL')
+        portfolio = Portfolio(household_id=1, name='Private', display_currency='BRL')
         instrument = Instrument(symbol='PRIVATE', asset_type='OTHER', currency='USD')
         session.add_all([portfolio, instrument])
         session.flush()
@@ -162,7 +162,7 @@ def test_foreign_canonical_snapshot_uses_settlement_fx_and_survives_display_swit
     monkeypatch.setattr(consolidation, 'get_latest', lambda *args: SimpleNamespace(
         price=SimpleNamespace(close=Decimal('20')), stale=False))
     with Session(engine) as session:
-        portfolio = Portfolio(name='Mixed', display_currency='BRL')
+        portfolio = Portfolio(household_id=1, name='Mixed', display_currency='BRL')
         instrument = Instrument(symbol='COIN', asset_type=asset_type, currency=native_currency)
         session.add_all([portfolio, instrument])
         session.flush()
@@ -262,7 +262,7 @@ def test_accounting_currency_migration_invalidates_old_brl_history(monkeypatch):
     engine = sqlite_engine()
     first = date.today() - timedelta(days=2)
     with Session(engine) as session:
-        portfolio = Portfolio(name='Old', display_currency='BRL', history_built_through=first)
+        portfolio = Portfolio(household_id=1, name='Old', display_currency='BRL', history_built_through=first)
         instrument = Instrument(symbol='FOREIGN', asset_type='STOCK', currency='USD')
         session.add_all([portfolio, instrument])
         session.flush()

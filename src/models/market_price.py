@@ -15,11 +15,17 @@ class Instrument(Base):
     __tablename__ = 'instruments'
     __table_args__ = (Index(
         'uq_instruments_crypto_symbol', 'symbol', unique=True,
-        postgresql_where=text("asset_type = 'CRYPTO'"),
-        sqlite_where=text("asset_type = 'CRYPTO'"),
-    ),)
+        postgresql_where=text("asset_type = 'CRYPTO' AND household_id IS NULL"),
+        sqlite_where=text("asset_type = 'CRYPTO' AND household_id IS NULL"),
+    ), Index(
+        'uq_instruments_private_crypto_symbol', 'household_id', 'symbol', unique=True,
+        postgresql_where=text("asset_type = 'CRYPTO' AND household_id IS NOT NULL"),
+        sqlite_where=text("asset_type = 'CRYPTO' AND household_id IS NOT NULL"),
+    ))
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    household_id: Mapped[int | None] = mapped_column(
+        ForeignKey('households.id', ondelete='RESTRICT'), nullable=True, index=True)
     symbol: Mapped[str] = mapped_column(String(40))
     name: Mapped[str] = mapped_column(String(200), default='')
     asset_type: Mapped[str] = mapped_column(String(40), default='OTHER')

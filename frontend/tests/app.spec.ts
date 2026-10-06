@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './auth-fixture'
 
 test('create, price, edit and delete a position through the real API', async ({ page }) => {
   const errors: string[] = []

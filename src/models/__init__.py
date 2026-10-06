@@ -1,4 +1,5 @@
 from .portfolio import Portfolio
+from .identity import User, AuthIdentity, Household, Membership, AuthSession, AuthChallenge, HouseholdInvitation
 from .transaction import Transaction
 from .market_price import (
     Instrument, InstrumentAlias, ProviderInstrument, LatestMarketQuote, MarketPrice,
@@ -15,6 +16,7 @@ from .benchmark import Benchmark, BenchmarkProviderMapping, BenchmarkObservation
 from .fixed_income import FixedIncomeLot, FixedIncomeMovement, FixedIncomeProduct
 
 __all__ = [
+    'User', 'AuthIdentity', 'Household', 'Membership', 'AuthSession', 'AuthChallenge', 'HouseholdInvitation',
     'Portfolio', 'Transaction', 'Asset', 'Broker', 'LegacyImport', 'ExchangeRate',
     'TransactionImport', 'Instrument', 'InstrumentAlias', 'ProviderInstrument',
     'MarketPrice', 'MarketPriceCoverage', 'LatestMarketQuote', 'UserDefinedPrice',

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './auth-fixture'
 
 test('waits for product defaults before allowing fixed-income selection', async ({ page, request }) => {
   const portfolioId = (await (await request.post('/api/portfolios', {

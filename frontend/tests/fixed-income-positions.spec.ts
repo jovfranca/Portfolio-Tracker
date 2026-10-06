@@ -1,10 +1,11 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './auth-fixture'
 
 test('fixed-income pending lot shows the saved value and update instruction', async ({ page }) => {
   const valuation = { status: 'complete', pending: true, gross_accrued_value: '1000',
     outstanding_principal: '1000', accrued_gain: '0', display_currency: 'BRL', display_value: '1000' }
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
+    if (path.startsWith('/api/auth/')) return route.fallback()
     const body = path.endsWith('/portfolios') ? [{ id: 1, name: 'Pending lot', display_currency: 'BRL' }]
       : path.endsWith('/transactions') ? []
       : path.endsWith('/fixed-income/lots') ? [{ id: 1, instrument_symbol: 'PENDING-CDB',
@@ -34,6 +35,7 @@ test('fixed-income lots appear once while aggregates remain in portfolio totals'
     allocation_class: 'Stocks', display_currency: 'BRL', display_value: 100, status: 'complete' }
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
+    if (path.startsWith('/api/auth/')) return route.fallback()
     const body = path.endsWith('/portfolios') ? [{ id: 1, name: 'Test', display_currency: 'BRL' }]
       : path.endsWith('/transactions') ? []
       : path.endsWith('/fixed-income/lots') ? [lot, { ...lot, id: 2, instrument_symbol: 'CLOSED-CDB',

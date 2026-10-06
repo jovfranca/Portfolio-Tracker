@@ -35,7 +35,7 @@ def client():
     app.dependency_overrides[get_session] = override
     with Session(engine) as session:
         session.add_all([
-            Portfolio(name='Savings'),
+            Portfolio(household_id=1, name='Savings'),
             Instrument(symbol='CDB-ISSUER', name='Issuer CDB', asset_type='FIXED_INCOME', currency='BRL', portfolio_id=1),
             Benchmark(code='CDI', name='CDI', kind='INTEREST_RATE', frequency='DAILY',
                       value_type='RATE', unit='PERCENT_PER_DAY', status='ACTIVE'),
@@ -43,6 +43,12 @@ def client():
         session.commit()
     try:
         with TestClient(app) as value:
+            from tests.auth_helpers import authenticate
+            with Session(engine) as session:
+                authenticate(value, session)
+                instrument = session.scalar(select(Instrument).where(Instrument.symbol == 'CDB-ISSUER'))
+                instrument.household_id = 1
+                session.commit()
             yield value, engine
     finally:
         app.dependency_overrides.clear()
@@ -978,7 +984,7 @@ def test_fixed_income_api_persists_lots_and_movements_in_postgres():
         app.dependency_overrides[get_session] = override
         try:
             with Session(connection, join_transaction_mode='create_savepoint') as session:
-                portfolio = Portfolio(name='Fixed-income PostgreSQL test')
+                portfolio = Portfolio(household_id=1, name='Fixed-income PostgreSQL test')
                 session.add(portfolio)
                 session.flush()
                 instrument = Instrument(symbol='FI-POSTGRES-TEST', name='Test CDB',
@@ -989,6 +995,11 @@ def test_fixed_income_api_persists_lots_and_movements_in_postgres():
                 portfolio_id, instrument_id = portfolio.id, instrument.id
 
             with TestClient(app) as c:
+                from tests.auth_helpers import authenticate
+                with Session(connection, join_transaction_mode='create_savepoint') as session:
+                    authenticate(c, session)
+                    session.get(Instrument, instrument_id).household_id = 1
+                    session.commit()
                 base = f'/api/portfolios/{portfolio_id}/fixed-income/lots'
                 response = c.post(base, json=lot_payload(instrument_id=instrument_id))
                 assert response.status_code == 201, response.text

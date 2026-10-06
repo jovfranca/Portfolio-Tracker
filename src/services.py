@@ -31,6 +31,8 @@ def require_instrument(session, identifier, instrument_id=None):
     if resolution.status == 'ambiguous':
         raise HTTPException(422, f'O identificador {identifier} corresponde a mais de um instrumento.')
     if resolution.status == 'unresolved':
+        if instrument_id is not None:
+            raise HTTPException(404, 'Instrument not found.')
         raise HTTPException(
             422,
             f'O instrumento {identifier} não foi resolvido. Pesquise e selecione um instrumento antes de salvar.',

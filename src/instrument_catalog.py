@@ -201,6 +201,7 @@ def _seed_rows(session, rows):
             instrument.currency = row.currency
             instrument.status = row.status
             instrument.origin = 'CATALOG'
+            instrument.household_id = None
             add_alias(session, instrument, row.symbol, 'catalog')
         for alias in row.aliases:
             add_alias(session, instrument, alias, 'catalog')

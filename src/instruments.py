@@ -11,6 +11,21 @@ def normalize_identifier(value):
     return ''.join(str(value).strip().upper().split())
 
 
+def visible_instruments(session):
+    """Private identities are visible only inside the authorized financial boundary.
+
+    Trusted catalog/import CLI jobs and pure service tests have no HTTP access context.
+    """
+    if 'household_id' in session.info:
+        ids = [session.info['household_id']]
+    elif 'household_ids' in session.info:
+        ids = session.info['household_ids']
+    else:
+        from sqlalchemy import true
+        return true()
+    return (Instrument.origin == 'CATALOG') | Instrument.household_id.in_(ids)
+
+
 @dataclass(frozen=True)
 class InstrumentResolution:
     status: str
@@ -21,7 +36,8 @@ class InstrumentResolution:
 def resolve_instrument(session, raw_identifier, *, currency=None, instrument_id=None):
     """Resolve locally; transaction currency never disambiguates identity."""
     if instrument_id is not None:
-        instrument = session.get(Instrument, instrument_id)
+        instrument = session.scalar(select(Instrument).where(
+            Instrument.id == instrument_id, visible_instruments(session)))
         if instrument is None:
             return InstrumentResolution('unresolved')
         return InstrumentResolution('resolved', instrument, (instrument,))
@@ -39,7 +55,7 @@ def resolve_instrument(session, raw_identifier, *, currency=None, instrument_id=
     if not candidate_ids:
         return InstrumentResolution('unresolved')
     candidates = tuple(session.scalars(
-        select(Instrument).where(Instrument.id.in_(candidate_ids)).order_by(Instrument.id)
+        select(Instrument).where(Instrument.id.in_(candidate_ids), visible_instruments(session)).order_by(Instrument.id)
     ))
     if len(candidates) == 1:
         return InstrumentResolution('resolved', candidates[0], candidates)
@@ -74,6 +90,10 @@ def provider_mapping(session, instrument, provider=None, currency=None, *, inclu
 
 
 def add_alias(session, instrument, alias, source='manual'):
+    # Ordinary users cannot change the shared catalog's identifier namespace.
+    if source in {'manual-entry', 'import'} and instrument.origin == 'CATALOG' and (
+            'household_id' in session.info or 'household_ids' in session.info):
+        return None
     normalized = normalize_identifier(alias)
     if source in {'manual-entry', 'import'}:
         resolution = resolve_instrument(session, normalized)
@@ -100,7 +120,7 @@ def create_instrument(
     session, *, symbol, currency=None, name='', asset_type='OTHER', exchange=None,
     status='ACTIVE', isin=None, provider=None, provider_symbol=None,
     provider_exchange=None, quote_currency=None, aliases=(), alias_source='manual', instrument_id=None,
-    origin='CUSTOM', is_primary=None, portfolio_id=None,
+    origin='CUSTOM', is_primary=None, portfolio_id=None, household_id=None,
 ):
     """Persist a user-selected provider result or explicit manual instrument."""
     symbol = normalize_identifier(symbol)
@@ -138,6 +158,7 @@ def create_instrument(
     if instrument is None and asset_type == 'CRYPTO':
         candidates = list(session.scalars(select(Instrument).where(
             Instrument.symbol == symbol, Instrument.asset_type == 'CRYPTO',
+            Instrument.household_id == household_id,
         )))
         if len(candidates) > 1:
             raise ValueError('Ambiguous crypto identity; select a canonical instrument.')
@@ -149,6 +170,7 @@ def create_instrument(
             currency=(currency or quote_currency) if asset_type in ('STOCK', 'ETF')
             else currency if asset_type in ('OTHER', 'FIXED_INCOME') else None,
             status=status.upper(), isin=isin, origin=origin.upper(), portfolio_id=portfolio_id,
+            household_id=household_id,
         )
         session.add(instrument)
         session.flush()
@@ -180,8 +202,11 @@ def search_instruments(session, query, category="ALL", portfolio_id=None):
     """Search the trusted local catalog used by ordinary portfolio users."""
     normalized = normalize_identifier(query)
     local_query = select(Instrument).where(
+        visible_instruments(session),
         ((Instrument.origin == 'CATALOG') | ((Instrument.origin == 'CUSTOM') &
           (Instrument.portfolio_id == portfolio_id))) if category == 'FIXED_INCOME' and portfolio_id is not None
+        else Instrument.origin.in_(['CATALOG', 'CUSTOM', 'MIGRATED'])
+        if ('household_id' in session.info or 'household_ids' in session.info)
         else Instrument.origin == 'CATALOG',
         (func.upper(Instrument.symbol).contains(normalized, autoescape=True))
         | (func.upper(Instrument.name).contains(query.strip().upper(), autoescape=True))

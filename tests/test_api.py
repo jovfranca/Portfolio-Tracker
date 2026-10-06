@@ -34,6 +34,9 @@ def client(monkeypatch):
         app.dependency_overrides[get_session] = override
         try:
             with TestClient(app) as c:
+                from tests.auth_helpers import authenticate
+                with Session(connection, join_transaction_mode='create_savepoint') as session:
+                    authenticate(c, session)
                 yield c, connection
         finally:
             app.dependency_overrides.clear()
@@ -56,6 +59,7 @@ def register_instrument(client, symbol, currency, **extra):
             session, symbol=symbol, currency=currency, quote_currency=currency,
             asset_type=extra.pop('asset_type', 'STOCK'),
             provider_symbol=extra.pop('provider_symbol', symbol), **extra,
+            household_id=1,
         )
         session.commit()
         return instrument.id

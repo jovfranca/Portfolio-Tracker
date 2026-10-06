@@ -30,8 +30,8 @@ def action_session():
         table.create(engine)
     with Session(engine) as session:
         instrument = Instrument(symbol='TEST', currency='USD', asset_type='STOCK')
-        first = Portfolio(name='First')
-        second = Portfolio(name='Second')
+        first = Portfolio(household_id=1, name='First')
+        second = Portfolio(household_id=1, name='Second')
         session.add_all([instrument, first, second])
         session.flush()
         session.add(ProviderInstrument(
