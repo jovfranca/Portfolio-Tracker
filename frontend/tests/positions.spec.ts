@@ -1,10 +1,11 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './auth-fixture'
 
 test('unbuilt positions remain visible with unknown values until explicit update', async ({ page }) => {
   let consolidated = false
   let updates = 0
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
+    if (path.startsWith('/api/auth/')) return route.fallback()
     if (path.endsWith('/consolidate')) {
       consolidated = true
       updates++
@@ -56,6 +57,7 @@ test('reporting values are primary, native values conditional, and closed positi
   }
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
+    if (path.startsWith('/api/auth/')) return route.fallback()
     if (route.request().method() === 'PUT' && path.endsWith('/portfolios/1')) {
       currencyUpdates++
       savedCurrency = route.request().postDataJSON().display_currency
@@ -120,6 +122,7 @@ test('partial history is shown as data gaps with visible performance dates', asy
   let consolidated = false
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
+    if (path.startsWith('/api/auth/')) return route.fallback()
     if (path.endsWith('/portfolios')) return route.fulfill({ json: [
       { id: 1, name: 'Test', display_currency: 'USD', dirty_from: consolidated ? null : '2024-05-06', history_built_through: consolidated ? '2024-05-07' : null },
     ] })

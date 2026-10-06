@@ -158,8 +158,8 @@ def market_session():
         connection.execute(text('CREATE TABLE transactions (id integer, instrument_id integer, transaction_currency text, portfolio_id integer)'))
     with Session(engine) as session:
         instrument = Instrument(symbol='TEST', currency='USD')
-        first = Portfolio(name='First')
-        second = Portfolio(name='Second')
+        first = Portfolio(household_id=1, name='First')
+        second = Portfolio(household_id=1, name='Second')
         session.add_all([instrument, first, second])
         session.flush()
         session.add(ProviderInstrument(

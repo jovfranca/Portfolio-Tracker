@@ -41,7 +41,7 @@ def test_unbuilt_market_position_never_replays_and_first_update_builds_state(mon
     monkeypatch.setattr(consolidation, 'get_latest', lambda *_: SimpleNamespace(price=True, stale=False))
     first = date.today() - timedelta(days=days_ago)
     with Session(engine) as session:
-        portfolio = Portfolio(name='Unbuilt', history_built_through=
+        portfolio = Portfolio(household_id=1, name='Unbuilt', history_built_through=
                               date.today() - timedelta(days=1) if already_built else None)
         instrument = Instrument(symbol='NEW', currency='BRL', asset_type='OTHER')
         session.add_all([portfolio, instrument])
@@ -92,7 +92,7 @@ def test_transaction_writes_validate_one_position_without_building_overview(monk
     monkeypatch.setattr(routes, 'get_overview', lambda *_: (_ for _ in ()).throw(
         AssertionError('write built overview')))
     with Session(engine) as session:
-        portfolio = Portfolio(name='Writes')
+        portfolio = Portfolio(household_id=1, name='Writes')
         instrument = Instrument(symbol='PETR4', currency='BRL', asset_type='STOCK')
         other = Instrument(symbol='ARKK', currency='BRL', asset_type='STOCK')
         session.add_all([portfolio, instrument, other])
@@ -119,7 +119,7 @@ def test_transaction_writes_validate_one_position_without_building_overview(monk
 def test_deleted_last_market_trade_stops_being_pending_after_explicit_update():
     engine = sqlite_engine()
     with Session(engine) as session:
-        portfolio = Portfolio(name='Deleted position')
+        portfolio = Portfolio(household_id=1, name='Deleted position')
         instrument = Instrument(symbol='REMOVED', currency='BRL', asset_type='OTHER')
         session.add_all([portfolio, instrument])
         session.flush()
@@ -152,7 +152,7 @@ def test_dirty_trade_replays_only_its_instrument_and_currency_switch_keeps_check
         price=SimpleNamespace(close=Decimal('10')), stale=False))
     first = date.today() - timedelta(days=2)
     with Session(engine) as session:
-        portfolio = Portfolio(name='Targeted', display_currency='BRL')
+        portfolio = Portfolio(household_id=1, name='Targeted', display_currency='BRL')
         session.add(portfolio)
         session.flush()
         trades = {}
@@ -231,7 +231,7 @@ def test_pending_reads_do_not_replay_changed_activity(monkeypatch):
     monkeypatch.setattr(consolidation, 'get_latest', lambda *args: SimpleNamespace(
         price=SimpleNamespace(close=Decimal('10')), stale=False))
     with Session(engine) as session:
-        portfolio = Portfolio(name='Pending')
+        portfolio = Portfolio(household_id=1, name='Pending')
         instrument = Instrument(symbol='PENDING', currency='BRL', asset_type='OTHER')
         session.add_all([portfolio, instrument])
         session.flush()
@@ -268,7 +268,7 @@ def test_equity_invalidation_does_not_hide_clean_fixed_income_history(monkeypatc
     import src.fixed_income as fixed_income
     first = date.today() - timedelta(days=2)
     with Session(sqlite_engine()) as session:
-        portfolio = Portfolio(name='Mixed', history_built_through=first)
+        portfolio = Portfolio(household_id=1, name='Mixed', history_built_through=first)
         equity = Instrument(symbol='EQ', asset_type='STOCK', currency='BRL')
         bond = Instrument(symbol='FI', asset_type='FIXED_INCOME', currency='BRL')
         session.add_all([portfolio, equity, bond])
@@ -310,11 +310,11 @@ def test_legacy_import_keeps_foreign_catalog_prices_as_audit_only(monkeypatch):
     from src.market_prices import get_quote_history
     from src.schemas import QuoteInput
     with Session(sqlite_engine()) as session:
-        portfolio = Portfolio(name='Legacy audit')
+        portfolio = Portfolio(household_id=1, name='Legacy audit')
         session.add(portfolio)
         session.flush()
         instrument = create_instrument(session, symbol='FOREIGN', currency='USD',
-            asset_type='STOCK', provider_symbol='FOREIGN', quote_currency='USD')
+            asset_type='STOCK', provider_symbol='FOREIGN', quote_currency='USD', origin='CATALOG')
         monkeypatch.setattr(import_legacy, 'read_transactions', lambda _: ('a' * 64, []))
         monkeypatch.setattr(import_legacy, 'read_assets', lambda _: [
             (SimpleNamespace(ticker='FOREIGN'), [QuoteInput(date=date(2024, 1, 2), close=12, currency='BRL')])])
@@ -333,7 +333,7 @@ def test_legacy_import_still_rejects_oversells_without_overview(monkeypatch):
     from src import import_legacy
     from src.schemas import TransactionInput
     with Session(sqlite_engine()) as session:
-        portfolio = Portfolio(name='Invalid legacy')
+        portfolio = Portfolio(household_id=1, name='Invalid legacy')
         session.add(portfolio)
         session.flush()
         monkeypatch.setattr(import_legacy, 'read_transactions', lambda _: ('b' * 64, [

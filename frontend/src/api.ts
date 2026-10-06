@@ -1,4 +1,11 @@
-export type Portfolio = { id: number; name: string; display_currency: string; dirty_from: string | null; history_built_through: string | null }
+export type Portfolio = { id: number; household_id: number; name: string; display_currency: string; dirty_from: string | null; history_built_through: string | null }
+export type Role = 'OWNER' | 'EDITOR' | 'VIEWER'
+export type Space = { id: number; name: string; role: Role }
+export type AuthState = { user: { id: number; display_name: string;
+  identities: { provider: string; email: string | null; email_verified: boolean }[] }; households: Space[] }
+export type AuthConfig = { google_client_id: string | null; google_nonce: string | null; dev_enabled: boolean }
+export type Member = { id: number; user_id: number; display_name: string; role: Role }
+export type Invitation = { id: number; email: string; role: Role; expires_at: string }
 export type Numeric = number | string
 export type Transaction = {
   id: number; portfolio_id: number; trade_date: string; settlement_date: string;
@@ -102,11 +109,26 @@ export type CorporateEvent = {
 export type Activity = ({ kind: 'TRANSACTION'; id: number; date: string; type: 'Buy' | 'Sell';
   quantity: Numeric; price: Numeric; currency: string; broker: string; allocation_class: string }
   | (CorporateEvent & { kind: 'CORPORATE_ACTION'; date: string }))
+let householdId: number | null = null
+export function selectHousehold(id: number | null) { householdId = id }
+function requestHeaders(contentType?: string) {
+  const headers: Record<string, string> = { 'X-Aurion-Request': '1' }
+  if (contentType) headers['Content-Type'] = contentType
+  if (householdId !== null) headers['X-Household-ID'] = String(householdId)
+  return headers
+}
+export class AuthenticationRequired extends Error {}
+function checkAuthentication(response: Response, path: string) {
+  if (response.status === 401) {
+    if (path === '/auth/me' || !path.startsWith('/auth/')) window.dispatchEvent(new Event('aurion-session-expired'))
+    throw new AuthenticationRequired('Sua sessão expirou. Entre novamente.')
+  }
+}
 export async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {
     response = await fetch('/api' + path, {
-      method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      method, credentials: 'include', headers: requestHeaders(body === undefined ? undefined : 'application/json'),
       body: body === undefined ? undefined : JSON.stringify(body), signal,
     })
   } catch (error) {
@@ -114,6 +136,7 @@ export async function api<T>(path: string, method = 'GET', body?: unknown, signa
     throw new Error('Não foi possível conectar à API. Verifique se o backend está em execução.')
   }
   if (!response.ok) {
+    checkAuthentication(response, path)
     const data = await response.json().catch(() => ({}))
     const message = Array.isArray(data.detail)
       ? data.detail.map((x: { loc: string[]; msg: string }) => x.loc.slice(1).join('.') + ': ' + x.msg).join('; ')
@@ -127,12 +150,13 @@ export async function apiFile<T>(path: string, file: File): Promise<T> {
   let response: Response
   try {
     response = await fetch('/api' + path, {
-      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
+      method: 'POST', credentials: 'include', headers: requestHeaders('application/octet-stream'), body: file,
     })
   } catch {
     throw new Error('Não foi possível conectar à API. Verifique se o backend está em execução.')
   }
   if (!response.ok) {
+    checkAuthentication(response, path)
     const data = await response.json().catch(() => ({}))
     const message = Array.isArray(data.detail)
       ? data.detail.map((x: { loc: string[]; msg: string }) => x.loc.slice(1).join('.') + ': ' + x.msg).join('; ')

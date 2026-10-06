@@ -13,6 +13,12 @@ em `.local`, verifica o banco, aplica migrações pendentes, carrega idempotente
 `data/instruments.csv` e `data/benchmarks.csv` e serve a API e a interface React compilada no mesmo endereço.
 Não limpa nem reinicializa o banco.
 
+Se nenhum login estiver configurado, o terminal solicita uma **chave de
+desenvolvimento com entrada oculta**. Escolha uma chave, abra a aplicação e entre
+com o usuário **local** e essa mesma chave para acessar os dados migrados.
+A chave vale somente para essa execução e não é gravada em `.env` nem exibida
+nos logs. O script preserva o login Google ou local já configurado.
+
 Se a política do PowerShell impedir a execução do script, use somente para essa execução:
 
 ```powershell
@@ -27,6 +33,11 @@ Use `Ctrl+C` para parar a aplicação. O PostgreSQL continua ativo. Para encerr�
 
 Para recompilar a interface após mudanças, execute o script sem `-SkipBuild`.
 Não inicie duas instâncias da API na mesma porta.
+
+Após uma atualização, se aparecer `404` para arquivos antigos em `/assets/`,
+recarregue a página com `Ctrl+F5` para buscar o HTML atual. O HTML passa a ser
+servido com `Cache-Control: no-store`; arquivos de builds anteriores não são
+referenciados por novas respostas HTML. `401` em `/api/auth/me` antes de entrar é esperado.
 
 ## Reinicializar o banco local de desenvolvimento
 
@@ -111,6 +122,12 @@ Abra **http://127.0.0.1:5173**. O Vite encaminha `/api` para a API na porta 8000
 Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.ps1`.
 
 ## Primeiro teste manual
+
+Após a migração `0026`, entre na aplicação antes de selecionar uma carteira.
+O script local solicita uma chave quando necessário. Para configurar um login
+persistente ou Google, siga [Autenticação](authentication.md).
+O usuário local **local** acessa os registros migrados; outros usuários recebem
+seu próprio espaço financeiro.
 
 1. Selecione a carteira migrada ou crie uma carteira separada para testes.
 2. Clique em **Nova transação** e registre uma compra fictícia de 10 unidades a 20

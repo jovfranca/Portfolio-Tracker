@@ -32,13 +32,15 @@ from src.services import (
 from src.transaction_import import MAX_IMPORT_BYTES, preview_import
 from src.import_template import transaction_template
 from src.consolidation import consolidate, portfolio_series, position_series
+from src.auth.dependencies import financial_access
 
 
-router = APIRouter(prefix='/api')
+router = APIRouter(prefix='/api', dependencies=[Depends(financial_access)])
+public_router = APIRouter(prefix='/api')
 DB = Annotated[Session, Depends(get_session)]
 
 
-@router.get('/health')
+@public_router.get('/health')
 def health(session: DB):
     # Verify mapped columns as well as connectivity, without reading user data.
     for table in Base.metadata.sorted_tables:
@@ -48,19 +50,22 @@ def health(session: DB):
 
 @router.get('/portfolios')
 def portfolios(session: DB):
+    query = select(Portfolio).where(Portfolio.household_id.in_(session.info['household_ids']))
+    if 'household_id' in session.info:
+        query = query.where(Portfolio.household_id == session.info['household_id'])
     return [
-        {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
+        {'id': portfolio.id, 'household_id': portfolio.household_id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
          'dirty_from': portfolio.dirty_from, 'history_built_through': portfolio.history_built_through}
-        for portfolio in session.scalars(select(Portfolio).order_by(Portfolio.id))
+        for portfolio in session.scalars(query.order_by(Portfolio.id))
     ]
 
 
 @router.post('/portfolios', status_code=201)
 def create_portfolio(payload: PortfolioInput, session: DB):
-    portfolio = Portfolio(**payload.model_dump())
+    portfolio = Portfolio(household_id=session.info['household_id'], **payload.model_dump())
     session.add(portfolio)
     session.commit()
-    return {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
+    return {'id': portfolio.id, 'household_id': portfolio.household_id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
             'dirty_from': portfolio.dirty_from, 'history_built_through': portfolio.history_built_through}
 
 
@@ -71,7 +76,7 @@ def rename_portfolio(portfolio_id: int, payload: PortfolioInput, session: DB):
     if 'display_currency' in payload.model_fields_set:
         portfolio.display_currency = payload.display_currency
     session.commit()
-    return {'id': portfolio.id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
+    return {'id': portfolio.id, 'household_id': portfolio.household_id, 'name': portfolio.name, 'display_currency': portfolio.display_currency,
             'dirty_from': portfolio.dirty_from, 'history_built_through': portfolio.history_built_through}
 
 
@@ -151,6 +156,7 @@ def create_custom_instrument(payload: CustomInstrumentInput, session: DB):
     instrument = create_instrument(
         session, **payload.model_dump(), aliases=[payload.symbol],
         alias_source='custom', origin='CUSTOM',
+        household_id=session.info['household_id'],
     )
     session.commit()
     return {
@@ -179,7 +185,8 @@ def create_private_fixed_income_instrument(portfolio_id: int, payload: CustomIns
     else:
         instrument = create_instrument(
             session, **payload.model_dump(), aliases=[payload.symbol],
-            alias_source='custom', origin='CUSTOM', portfolio_id=portfolio_id)
+            alias_source='custom', origin='CUSTOM', portfolio_id=portfolio_id,
+            household_id=session.info['household_id'])
         session.commit()
     return {'id': instrument.id, 'symbol': instrument.symbol, 'name': instrument.name,
             'currency': instrument.currency, 'asset_type': instrument.asset_type,
@@ -370,7 +377,7 @@ def delete_transaction(portfolio_id: int, transaction_id: int, session: DB):
     session.commit()
 
 
-@router.get('/transactions/import-template.xlsx')
+@public_router.get('/transactions/import-template.xlsx')
 def download_transaction_template():
     return Response(
         transaction_template(),

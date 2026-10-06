@@ -32,4 +32,5 @@ if (!$SkipBuild) {
 }
 if (!(Test-Path 'frontend/dist/index.html')) { throw 'Compile o frontend antes de usar -SkipBuild.' }
 Write-Host 'Abra http://127.0.0.1:8000. Ctrl+C encerra a aplicacao; o banco continua ativo.'
-& $pythonExe -m uvicorn src.main:app --host 127.0.0.1 --port 8000
+& $pythonExe -m scripts.start_local_api
+if ($LASTEXITCODE -ne 0) { throw 'Falha ao iniciar API local. Verifique a configuracao de login.' }

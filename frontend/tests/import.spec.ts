@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './auth-fixture'
 import { readFile } from 'node:fs/promises'
 
 test.beforeEach(async ({ page, request }) => {

@@ -56,7 +56,9 @@ def list_lots(session, portfolio_id):
 
 def create_lot(session, portfolio_id, payload):
     get_portfolio(session, portfolio_id, lock=True)
-    instrument = session.get(Instrument, payload.instrument_id)
+    from src.instruments import visible_instruments
+    instrument = session.scalar(select(Instrument).where(
+        Instrument.id == payload.instrument_id, visible_instruments(session)))
     if instrument is None or instrument.asset_type != 'FIXED_INCOME':
         raise HTTPException(422, 'Select a canonical fixed-income instrument.')
     if instrument.origin == 'CUSTOM' and instrument.portfolio_id != portfolio_id:

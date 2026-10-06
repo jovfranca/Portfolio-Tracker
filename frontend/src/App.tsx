@@ -26,7 +26,7 @@ const emptyDraft = (): Draft => ({ trade_date: localDate().slice(0, 10), settlem
   type: 'Buy', asset: '', instrument_id: null, broker: '', allocation_class: '', transaction_currency: 'BRL', fx_rate: '',
   quantity: 1, price: 0, brokerage_fee: 0, other_fees: 0, notes: '' })
 
-export default function App() {
+export default function App({ readOnly = false }: { readOnly?: boolean }) {
   const [portfolios, setPortfolios] = useState<Portfolio[]>([])
   const [selected, setSelected] = useState<number | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
@@ -97,6 +97,7 @@ export default function App() {
   }, [selected, reload])
 
   async function mutate(task: () => Promise<unknown>, success: string) {
+    if (readOnly) { setError('Este espaço permite somente leitura.'); return false }
     setBusy(true); setError(''); setNotice(''); setNoticePartial(false)
     try {
       const result = await task()
@@ -113,9 +114,10 @@ export default function App() {
 
   async function createPortfolio(e: FormEvent) {
     e.preventDefault(); setBusy(true); setError('')
+    if (readOnly) { setBusy(false); return }
     try {
       const created = await api<Portfolio>('/portfolios', 'POST', { name: portfolioName })
-      setPortfolios([...portfolios, created]); setSelected(created.id); setPortfolioName(''); setNewPortfolio(false)
+      setLoading(true); setPortfolios([...portfolios, created]); setSelected(created.id); setPortfolioName(''); setNewPortfolio(false)
     } catch (e) { setError(message(e)) } finally { setBusy(false) }
   }
 
@@ -178,19 +180,19 @@ export default function App() {
           {!portfolios.length && <option value="">Nenhuma carteira</option>}
           {portfolios.map(p => <option value={p.id} key={p.id}>{p.name}</option>)}
         </select>
-        <button className="button quiet" disabled={busy} onClick={() => setNewPortfolio(!newPortfolio)}>+ Carteira</button>
+        <button className="button quiet" disabled={busy || readOnly} onClick={() => setNewPortfolio(!newPortfolio)}>+ Carteira</button>
       </div></header>
       <div className="content">
         <div className="page-heading"><div><div className="eyebrow">SEU PORTFOLIO, EM PERSPECTIVA</div><h1>{importing ? 'Importar transações' : tab}</h1>
           <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
-          {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && <div className="page-actions">
+          {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && !readOnly && <div className="page-actions">
             {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
             <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setEditingFixed(null); setFixedIncomeLotId(undefined); setFixedIncomeMode('LOT'); setOperationType(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
           </div>}
         </div>
         {error && <div role="alert" className="alert error">{error} <button className="button quiet" disabled={busy} onClick={() => void loadPortfolios().then(() => reload()).catch(e => setError(message(e)))}>Tentar novamente</button></div>}
         {notice && <div role="status" className={'alert ' + (noticePartial ? 'warning' : 'success')}>{notice}</div>}
-        {(newPortfolio || (!loading && !portfolios.length && !error)) && <form className="panel inline-form" onSubmit={createPortfolio}>
+        {!readOnly && (newPortfolio || (!loading && !portfolios.length && !error)) && <form className="panel inline-form" onSubmit={createPortfolio}>
           <div><h2>Comece pela sua carteira</h2><p>Crie um espaço para organizar suas transações e posições.</p></div>
           <label>Nome da carteira<input required maxLength={120} value={portfolioName} onChange={e => setPortfolioName(e.target.value)} placeholder="Ex.: Investimentos pessoais" /></label>
           <button className="button primary" disabled={busy}>Criar carteira</button>
@@ -233,15 +235,15 @@ export default function App() {
           </fieldset>
         </form>}
         {loading && <div className="panel empty" role="status">Carregando sua carteira…</div>}
-        {importing && <TransactionImportPage key={selected} portfolioId={selected} portfolioName={portfolios.find(p => p.id === selected)?.name ?? ''} busy={busy || loading} mutate={mutate} />}
+        {importing && (readOnly ? <p>Este espaço permite somente leitura.</p> : <TransactionImportPage key={selected} portfolioId={selected} portfolioName={portfolios.find(p => p.id === selected)?.name ?? ''} busy={busy || loading} mutate={mutate} />)}
         {cataloging && <CatalogPage />}
         {!importing && !cataloging && !loading && overview && <>
           <form className="panel inline-form" onSubmit={saveDisplayCurrency}>
             <label>Moeda de exibição<select value={['BRL', 'USD', 'EUR'].includes(currencyDraft) ? currencyDraft : 'OTHER'} onChange={e => setCurrencyDraft(e.target.value === 'OTHER' ? '' : e.target.value)}><option value="BRL">BRL</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="OTHER">Outra moeda…</option></select></label>
             {!['BRL', 'USD', 'EUR'].includes(currencyDraft) && <label>Código da moeda<input aria-label="Código da moeda" value={currencyDraft} onChange={e => setCurrencyDraft(e.target.value.toUpperCase())} minLength={3} maxLength={3} pattern="[A-Za-z]{3}" placeholder="Ex.: GBP" required /></label>}
-            <button className="button outline" disabled={busy || currencyDraft === selectedPortfolio?.display_currency}>Aplicar moeda</button>
+            <button className="button outline" disabled={busy || readOnly || currencyDraft === selectedPortfolio?.display_currency}>Aplicar moeda</button>
           </form>
-          <div className="method-note">Posições atualizadas até: {overview.summary.history_built_through ? dateLabel(overview.summary.history_built_through) : 'nunca'}. Histórico: {overview.summary.history_status === 'pending' ? 'atualização pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'dados incompletos'}{overview.summary.dirty_from && overview.summary.history_status === 'pending' ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. {overview.summary.history_status === 'incomplete' && !overview.fixed_income?.lot_count ? 'Confira cotações e câmbio nas datas marcadas como incompletas. ' : ''}<button className="button outline" disabled={busy} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Posições atualizadas.')}>{busy ? 'Atualizando…' : 'Atualizar posições'}</button></div>
+          <div className="method-note">Posições atualizadas até: {overview.summary.history_built_through ? dateLabel(overview.summary.history_built_through) : 'nunca'}. Histórico: {overview.summary.history_status === 'pending' ? 'atualização pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'dados incompletos'}{overview.summary.dirty_from && overview.summary.history_status === 'pending' ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. {overview.summary.history_status === 'incomplete' && !overview.fixed_income?.lot_count ? 'Confira cotações e câmbio nas datas marcadas como incompletas. ' : ''}<button className="button outline" disabled={busy || readOnly} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Posições atualizadas.')}>{busy ? 'Atualizando…' : 'Atualizar posições'}</button></div>
           {overview.fixed_income?.lot_count ? <div className="method-note">{overview.fixed_income.lot_count} lote(s) de renda fixa. {overview.fixed_income.valuation_status === 'pending' ? 'Atualização pendente; use Atualizar posições.' : overview.fixed_income.valuation_status === 'complete' ? 'Valor bruto contratual incluído no total.' : 'Há avaliações incompletas; confira os lotes abaixo.'}</div> : null}
           <div className="metrics">
             <article className="metric featured"><span>Valor das posições · {overview.summary.display_currency}</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.fixed_income?.valuation_status === 'incomplete' ? 'Avaliação de renda fixa incompleta' : overview.summary.missing_actions?.length ? 'Eventos não verificados: ' + overview.summary.missing_actions.join(', ') : overview.summary.missing_fx.length ? 'FX indisponível: ' + overview.summary.missing_fx.join(', ') : overview.summary.missing_prices.length ? 'Sem cotação: ' + overview.summary.missing_prices.join(', ') : 'Total convertido na data da avaliação'}</small></article>
@@ -259,14 +261,14 @@ export default function App() {
                 <td className={Number(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{p.display_currency} {fmt(p.current_total_gain)}<small>{p.current_accumulated_profitability === null ? 'Retorno histórico indisponível' : fmt(p.current_accumulated_profitability) + '%' + (p.return_date ? ' até ' + dateLabel(p.return_date) : '')}{p.status === 'pending' ? ' · atualização pendente: use Atualizar posições' : p.status !== 'complete' ? ' · valores incompletos' : ''}{p.history_behind_transactions ? ' · cotação anterior à última atividade' : ''}</small></td>
               </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
           </section>}
-          {tab === 'Posições' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="positions" query={query} showClosed={showClosed} busy={busy} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
+          {tab === 'Posições' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="positions" query={query} showClosed={showClosed} busy={busy || readOnly} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
           {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar deixa a atualização das posições pendente.</p></div></div>
-            {!transactions.length ? <div className="empty">{overview.fixed_income?.lot_count ? 'Não há compras ou vendas de mercado. Os movimentos de renda fixa estão abaixo.' : 'Nenhuma transação registrada.'}</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
+            {!transactions.length ? <div className="empty">{overview.fixed_income?.lot_count ? 'Não há compras ou vendas de mercado. Os movimentos de renda fixa estão abaixo.' : 'Nenhuma transação registrada.'}</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy || readOnly} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy || readOnly} onClick={() => {
               if (window.confirm('Excluir esta transação? A atualização das posições ficará pendente.')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída. Atualização das posições pendente.')
             }}>Excluir</button></div></td></tr>)}</tbody></table></div>}
           </section>}
-          {tab === 'Transações' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="movements" busy={busy} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
-          {tab === 'Cotações' && <><Quotes key={selected} portfolioId={selected!} assets={overview.assets} busy={busy} mutate={mutate} /><BenchmarkInspection key={fixedIncomeVersion} /></>}
+          {tab === 'Transações' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="movements" busy={busy || readOnly} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
+          {tab === 'Cotações' && <><Quotes key={selected} portfolioId={selected!} assets={overview.assets} busy={busy} readOnly={readOnly} mutate={mutate} /><BenchmarkInspection key={fixedIncomeVersion} /></>}
           {tab === 'Desempenho' && <PerformancePanel key={selected} portfolioId={selected!} overview={overview} />}
           <footer className="footnote">Portfolio Tracker · Cálculos executados no backend Python · Uso local individual</footer>
         </>}
@@ -292,7 +294,7 @@ function CatalogPage() {
 }
 
 type Mutate = (task: () => Promise<unknown>, success: string) => Promise<boolean>
-function Quotes({ portfolioId, assets, busy, mutate }: { portfolioId: number; assets: Asset[]; busy: boolean; mutate: Mutate }) {
+function Quotes({ portfolioId, assets, busy, readOnly, mutate }: { portfolioId: number; assets: Asset[]; busy: boolean; readOnly: boolean; mutate: Mutate }) {
   const quoteAssets = assets.filter((asset, index) => assets.findIndex(item => item.id === asset.id) === index)
   const [id, setId] = useState(quoteAssets[0]?.id ?? 0)
   const [rows, setRows] = useState<Quote[]>([])
@@ -314,15 +316,15 @@ function Quotes({ portfolioId, assets, busy, mutate }: { portfolioId: number; as
     <div className="quote-controls"><form onSubmit={async e => {
       e.preventDefault()
       if (await mutate(() => api(base + '/quote', 'PUT', { date: draft.date, close: Number(draft.close) }), 'Cotação salva.')) setVersion(version + 1)
-    }}><fieldset disabled={busy}><div className="form-grid quote-grid"><label>Data da cotação<input required type="date" max={localDate().slice(0, 10)} value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} /></label>
+    }}><fieldset disabled={busy || readOnly}><div className="form-grid quote-grid"><label>Data da cotação<input required type="date" max={localDate().slice(0, 10)} value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} /></label>
       <label>Fechamento<input required type="number" min="0" step="any" value={draft.close} onChange={e => setDraft({ ...draft, close: e.target.value })} /></label>
     </div><div className="form-footer"><span>Dividendos e desdobramentos são cadastrados separadamente abaixo.</span><button className="button primary">Salvar cotação</button></div></fieldset></form>
-    <button className="button outline" disabled={busy} onClick={async () => {
+    <button className="button outline" disabled={busy || readOnly} onClick={async () => {
       if (await mutate(() => api(base + '/refresh', 'POST'), 'Histórico atualizado; preços manuais preservados.')) setVersion(version + 1)
     }}>{busy ? 'Processando…' : 'Atualizar pelo Yahoo Finance'}</button></div>
     {error && <div role="alert" className="alert error">{error}</div>}
     {!rows.length ? <div className="empty">Ainda não há cotações para este ativo.</div> : <div className="table-wrap"><table><thead><tr><th>Data</th><th>Fechamento / moeda</th><th>Dividendos</th><th>Desdobramento</th><th>Fonte</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(q => <tr key={q.date}><td>{dateLabel(q.date)}</td><td>{fmt(q.close, 4)}<small>{q.currency}</small></td><td>{fmt(q.dividends, 4)}</td><td>{fmt(q.stock_splits)}</td><td>{q.source}</td></tr>)}</tbody></table><p className="table-caption">Mostrando as {Math.min(rows.length, 100)} cotações mais recentes de {rows.length}.</p></div>}
-    <CorporateActionsPanel key={base} base={base} currency={quoteAssets.find(asset => asset.id === id)?.transaction_currency ?? 'BRL'} busy={busy} mutate={mutate} refreshVersion={version} />
+    <CorporateActionsPanel key={base} base={base} currency={quoteAssets.find(asset => asset.id === id)?.transaction_currency ?? 'BRL'} busy={busy || readOnly} mutate={mutate} refreshVersion={version} />
   </section>
 }
 

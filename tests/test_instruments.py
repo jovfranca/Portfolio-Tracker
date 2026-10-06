@@ -39,7 +39,7 @@ def test_petr4_is_canonical_while_fetch_uses_provider_symbol(session):
         exchange='B3', currency='BRL', provider='yfinance',
         provider_symbol='PETR4.SA', aliases=['PETR4.SA'],
     )
-    portfolio = Portfolio(name='Brazil')
+    portfolio = Portfolio(household_id=1, name='Brazil')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -74,7 +74,7 @@ def test_aapl_compatible_mapping_and_aliases_share_one_portfolio_asset(session):
         currency='USD', provider='yfinance', provider_symbol='AAPL',
         aliases=['APPLE'],
     )
-    portfolio = Portfolio(name='US')
+    portfolio = Portfolio(household_id=1, name='US')
     session.add(portfolio)
     session.flush()
     first = ensure_asset(session, portfolio.id, resolve_instrument(session, 'AAPL').instrument)
@@ -144,7 +144,7 @@ def test_inactive_instrument_keeps_manual_history(session):
     instrument = create_instrument(session, quote_currency='NOK', symbol='SHLF', name='Shelf Drilling', currency='NOK',
         asset_type='STOCK', status='DELISTED', provider='yfinance', provider_symbol='SHLF.OL',
     )
-    portfolio = Portfolio(name='Historical')
+    portfolio = Portfolio(household_id=1, name='Historical')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -157,7 +157,7 @@ def test_inactive_mapping_keeps_shared_history_and_cached_quote(session):
     from src.market_prices import history_for_domain
     instrument = create_instrument(session, quote_currency='USD', symbol='OLD', currency='USD', asset_type='STOCK',
                                    provider_symbol='OLD.X', status='DELISTED')
-    portfolio = Portfolio(name='History')
+    portfolio = Portfolio(household_id=1, name='History')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -184,7 +184,7 @@ def test_replacement_mapping_preserves_old_history_and_cached_quote(session):
     from src.market_prices import history_for_domain
     instrument = create_instrument(session, symbol='LISTING', currency='USD',
         asset_type='STOCK', provider_symbol='OLD.X', quote_currency='USD')
-    portfolio = Portfolio(name='Replacement history')
+    portfolio = Portfolio(household_id=1, name='Replacement history')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -274,7 +274,7 @@ def test_unresolved_import_preserves_row_for_explicit_selection(session):
 
 def test_import_defaults_listed_currency_and_requires_crypto_currency(session):
     from src.transaction_import import preview_import
-    portfolio = Portfolio(name='Currency import')
+    portfolio = Portfolio(household_id=1, name='Currency import')
     listed = create_instrument(
         session, symbol='AAPL', asset_type='STOCK', currency='USD',
         provider_symbol='AAPL', quote_currency='USD',
@@ -330,7 +330,7 @@ def test_crypto_pairs_reuse_identity_and_allow_brl(session):
 def test_manual_instrument_never_fetches(session):
     from src.market_prices import get_history
     instrument = create_instrument(session, symbol='PRIVATE', currency=None, asset_type='OTHER')
-    portfolio = Portfolio(name='Manual')
+    portfolio = Portfolio(household_id=1, name='Manual')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -453,7 +453,7 @@ def test_primary_mapping_prevents_cached_quote_ambiguity(session):
                                    provider_symbol='PETR4.SA', quote_currency='BRL')
     create_instrument(session, instrument_id=instrument.id, symbol='PETR4', asset_type='STOCK',
                       provider_symbol='PETR4F.SA', quote_currency='BRL')
-    portfolio = Portfolio(name='Ambiguous quotes')
+    portfolio = Portfolio(household_id=1, name='Ambiguous quotes')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -560,7 +560,7 @@ def test_catalog_replacement_retires_mapping_without_hiding_its_history(session,
     instrument_catalog.seed_catalog(session)
     instrument = resolve_instrument(session, 'AAPL').instrument
     old = provider_mapping(session, instrument)
-    portfolio = Portfolio(name='Catalog replacement')
+    portfolio = Portfolio(household_id=1, name='Catalog replacement')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -578,7 +578,7 @@ def test_catalog_replacement_retires_mapping_without_hiding_its_history(session,
 
 def test_catalog_repairs_malformed_migrated_arkx_in_place(session):
     from src.instrument_catalog import seed_catalog
-    legacy = Instrument(symbol='ARKX', name='', asset_type='OTHER', origin='MIGRATED')
+    legacy = Instrument(symbol='ARKX', name='', asset_type='OTHER', origin='MIGRATED', household_id=1)
     session.add(legacy)
     session.flush()
     guessed = ProviderInstrument(
@@ -596,6 +596,7 @@ def test_catalog_repairs_malformed_migrated_arkx_in_place(session):
         'ARK Space & Defense Innovation ETF', 'ETF', 'CBOE', 'CATALOG',
     )
     assert provider_mapping(session, arkx).id == guessed.id
+    assert arkx.household_id is None
 
 
 def test_catalog_fails_when_provider_symbol_has_another_owner(session):
@@ -705,7 +706,7 @@ def test_cached_accounting_quote_survives_primary_currency_change(session):
     from src.market_prices import history_for_domain
     seed_catalog(session)
     btc = resolve_instrument(session, 'BTC').instrument
-    portfolio = Portfolio(name='Retained cache')
+    portfolio = Portfolio(household_id=1, name='Retained cache')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, btc)
@@ -726,7 +727,7 @@ def test_history_survives_when_all_mapping_candidates_are_retired(session):
                                    provider_symbol='OLD.A', quote_currency='USD')
     create_instrument(session, instrument_id=instrument.id, symbol='OLD', asset_type='STOCK',
                       provider_symbol='OLD.B', quote_currency='USD')
-    portfolio = Portfolio(name='Retired mappings')
+    portfolio = Portfolio(household_id=1, name='Retired mappings')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, instrument)
@@ -759,7 +760,7 @@ def test_btc_brl_transaction_fetches_primary_usd_mapping_and_stores_usd(session)
     from src.instrument_catalog import seed_catalog
     seed_catalog(session)
     btc = session.scalar(select(Instrument).where(Instrument.symbol == 'BTC'))
-    portfolio = Portfolio(name='BTC in BRL')
+    portfolio = Portfolio(household_id=1, name='BTC in BRL')
     session.add(portfolio)
     session.flush()
     asset = ensure_asset(session, portfolio.id, btc)

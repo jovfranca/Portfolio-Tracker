@@ -27,6 +27,7 @@ def _legacy_instrument(session, identifier, currency='BRL'):
     return create_instrument(
         session, symbol=identifier, currency=currency,
         aliases=[identifier], alias_source='legacy', origin='MIGRATED',
+        household_id=session.info.get('household_id'),
     )
 
 
@@ -135,7 +136,8 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
     # Register the shared source-data invalidation hook for command-line imports.
     from src import consolidation  # noqa: F401
     digest, records = read_transactions(path)
-    get_portfolio(session, portfolio_id, lock=True)
+    portfolio = get_portfolio(session, portfolio_id, lock=True)
+    session.info['household_id'] = portfolio.household_id
     previous = session.scalar(select(LegacyImport).where(
         LegacyImport.portfolio_id == portfolio_id, LegacyImport.digest == digest))
     if previous:
@@ -178,6 +180,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path', type=Path)
     parser.add_argument('--portfolio-id', type=int)
+    parser.add_argument('--household-id', type=int, help='Financial space for a newly created portfolio.')
     parser.add_argument('--name', default='Carteira migrada')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--assets', type=Path, help='Cache assets.pkl original, opcional.')
@@ -191,12 +194,18 @@ def main():
     with SessionLocal.begin() as session:
         portfolio_id = args.portfolio_id
         if portfolio_id is None:
+            if args.household_id is None:
+                parser.error('--household-id is required when creating a portfolio.')
+            from src.models import Household
+            if session.get(Household, args.household_id) is None:
+                parser.error('Financial space not found.')
             digest, _ = read_transactions(args.path)
-            previous = session.scalar(select(LegacyImport).where(LegacyImport.digest == digest))
+            previous = session.scalar(select(LegacyImport).join(Portfolio).where(
+                LegacyImport.digest == digest, Portfolio.household_id == args.household_id))
             if previous:
                 print(json.dumps({'imported': 0, 'already_imported': True, 'portfolio_id': previous.portfolio_id}))
                 return
-            p = Portfolio(name=args.name)
+            p = Portfolio(name=args.name, household_id=args.household_id)
             session.add(p)
             session.flush()
             portfolio_id = p.id

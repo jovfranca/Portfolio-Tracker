@@ -1,4 +1,5 @@
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
+import { test, expect } from './auth-fixture'
+import type { APIRequestContext, Page } from '@playwright/test'
 
 async function portfolio(request: APIRequestContext, name: string) {
   return (await (await request.post('/api/portfolios', { data: { name } })).json()).id as number
