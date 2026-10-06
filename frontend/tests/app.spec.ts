@@ -2,7 +2,11 @@ import { test, expect } from '@playwright/test'
 
 test('create, price, edit and delete a position through the real API', async ({ page }) => {
   const errors: string[] = []
+  let updates = 0
   page.on('pageerror', e => errors.push(e.message))
+  page.on('request', request => {
+    if (request.method() === 'POST' && request.url().endsWith('/consolidate')) updates++
+  })
   await page.goto('/')
   await page.getByRole('button', { name: '+ Carteira', exact: true }).click()
   await page.getByLabel('Nome da carteira', { exact: true }).fill('Browser test ' + Date.now())
@@ -45,18 +49,28 @@ test('create, price, edit and delete a position through the real API', async ({ 
   expect(savedEventAmount).toBe('12345.123456789012')
   await expect(page.getByRole('heading', { name: 'Atividade do ativo' })).toBeVisible()
   await page.getByRole('button', { name: 'Posições', exact: true }).click()
+  await expect(page.locator('tbody')).toContainText('Custo BRL —')
+  await expect(page.locator('tbody')).toContainText('atualização pendente')
+  expect(updates).toBe(0)
+  await page.getByRole('button', { name: 'Atualizar posições', exact: true }).click()
   // A manual quote does not certify missing corporate actions since the trade date.
   await expect(page.locator('tbody')).toContainText('Custo BRL 200,00')
+  expect(updates).toBe(1)
   await expect(page.locator('tbody')).toContainText('valores incompletos')
   await page.screenshot({ path: 'test-results/positions-desktop.png', fullPage: true })
   await page.getByRole('button', { name: 'Desempenho', exact: true }).click()
-  await expect(page.getByText(/Histórico com atualização pendente/)).toBeVisible()
+  await expect(page.getByText(/Histórico com dados incompletos/)).toBeVisible()
   await page.getByRole('button', { name: 'Transações', exact: true }).click()
   await page.getByRole('button', { name: 'Editar', exact: true }).click()
   await page.getByLabel('Quantidade', { exact: true }).fill('5')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
   await page.getByRole('button', { name: 'Posições', exact: true }).click()
+  await expect(page.locator('tbody')).toContainText('Custo BRL 200,00')
+  await expect(page.locator('tbody')).toContainText('atualização pendente')
+  expect(updates).toBe(1)
+  await page.getByRole('button', { name: 'Atualizar posições', exact: true }).click()
   await expect(page.locator('tbody')).toContainText('Custo BRL 100,00')
+  expect(updates).toBe(2)
   const selected = await page.getByLabel('Carteira', { exact: true }).inputValue()
   await page.reload()
   await page.getByLabel('Carteira', { exact: true }).selectOption(selected)
@@ -68,5 +82,11 @@ test('create, price, edit and delete a position through the real API', async ({ 
   page.once('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: 'Excluir', exact: true }).click()
   await expect(page.getByText('Nenhuma transação registrada.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Posições', exact: true }).click()
+  await expect(page.locator('tbody')).toContainText('Custo BRL 100,00')
+  expect(updates).toBe(2)
+  await page.getByRole('button', { name: 'Atualizar posições', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Sua carteira começa aqui' })).toBeVisible()
+  expect(updates).toBe(3)
   expect(errors).toEqual([])
 })

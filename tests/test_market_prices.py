@@ -11,7 +11,7 @@ from src.corporate_actions import get_actions, get_stored_actions
 from src.models import (
     Asset, Instrument, LatestMarketQuote, MarketPrice, MarketPriceCoverage, Portfolio,
     ProviderInstrument, UserDefinedPrice, CorporateAction, CorporateActionCoverage,
-    UserCorporateEvent,
+    UserCorporateEvent, PositionInvalidation,
 )
 
 
@@ -150,7 +150,7 @@ def market_session():
         Asset.__table__, MarketPrice.__table__,
         MarketPriceCoverage.__table__, LatestMarketQuote.__table__, UserDefinedPrice.__table__,
         CorporateAction.__table__, CorporateActionCoverage.__table__,
-        UserCorporateEvent.__table__,
+        UserCorporateEvent.__table__, PositionInvalidation.__table__,
     ]:
         table.create(engine)
     from sqlalchemy import text

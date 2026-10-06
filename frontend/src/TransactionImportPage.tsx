@@ -60,7 +60,7 @@ export default function TransactionImportPage(props: Props) {
         <p>Deixe <code>fx_rate</code> vazio em BRL: o valor salvo será 1. Um valor informado precisa passar pela validação numérica antes de ser substituído por 1. Para moeda estrangeira, a prévia busca a taxa FX histórica da liquidação, usando a taxa anterior dentro da janela configurada quando necessário. Se não houver taxa disponível, a linha apresenta erro. O FX resolvido fica salvo e não muda com cotações futuras.</p>
         <p>A moeda é validada pelo formato de três letras; isso não garante que o provedor tenha histórico para ela. Valores opcionais vazios usam os padrões descritos na tabela. Espaços nas extremidades dos textos são removidos.</p>
         <h3>Revise antes de confirmar</h3>
-        <p>Se houver erros, corrija as linhas indicadas no arquivo e selecione-o novamente. Todas as linhas precisam ser válidas. A confirmação recalcula as posições e impede repetir exatamente o mesmo arquivo na mesma carteira. Um arquivo alterado ou reexportado não tem garantia de detecção como duplicado.</p>
+        <p>Se houver erros, corrija as linhas indicadas no arquivo e selecione-o novamente. Todas as linhas precisam ser válidas. A confirmação deixa a atualização das posições pendente e impede repetir exatamente o mesmo arquivo na mesma carteira. Um arquivo alterado ou reexportado não tem garantia de detecção como duplicado.</p>
       </div>
     </section>
   </div>
@@ -113,7 +113,7 @@ function TransactionImporter({ portfolioId, busy, mutate }: Props) {
         const rows = preview.rows.map(row => row.data).filter((row): row is NonNullable<typeof row> => row !== undefined)
         if (await mutate(() => api('/portfolios/' + portfolioId + '/transactions/import', 'POST', {
           digest: preview.digest, filename: preview.filename, rows,
-        }), rows.length + ' transação(ões) importada(s).')) setPreview(null)
+        }), rows.length + ' transação(ões) importada(s). Atualização das posições pendente.')) setPreview(null)
       }}>{busy ? 'Importando…' : 'Confirmar importação'}</button></div>
     </div>}
   </div>

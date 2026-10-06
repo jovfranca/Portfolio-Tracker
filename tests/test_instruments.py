@@ -10,7 +10,7 @@ from src.market_prices import get_latest, get_stored_history, save_user_price
 from src.models import (
     Asset, Instrument, InstrumentAlias, LatestMarketQuote, MarketPrice,
     MarketPriceCoverage, Portfolio, ProviderInstrument, UserDefinedPrice,
-    CorporateAction, CorporateActionCoverage, FixedIncomeProduct,
+    CorporateAction, CorporateActionCoverage, FixedIncomeProduct, PositionInvalidation,
 )
 from src.services import ensure_asset
 
@@ -24,6 +24,7 @@ def session():
         MarketPriceCoverage.__table__, LatestMarketQuote.__table__,
         UserDefinedPrice.__table__,
         CorporateAction.__table__, CorporateActionCoverage.__table__, FixedIncomeProduct.__table__,
+        PositionInvalidation.__table__,
     ]:
         table.create(engine)
     from sqlalchemy import text
@@ -784,7 +785,8 @@ def test_btc_brl_transaction_fetches_primary_usd_mapping_and_stores_usd(session)
         'date': day, 'close': Decimal('86000'), 'currency': 'USD',
     }])
     assert [(p.close, p.currency) for p in history.prices] == [(Decimal('86000'), 'USD')]
-    assert history_for_domain(session, asset) == []
+    assert [(p.close, p.currency) for p in history_for_domain(session, asset)] == [
+        (Decimal('86000'), 'USD')]
     save_user_price(session, asset, day, Decimal('430000'), 'BRL')
     history = get_history(session, asset, day, day, lambda *args: pytest.fail('Covered history fetched'))
     assert [(p.close, p.currency) for p in history.prices] == [(Decimal('430000'), 'BRL')]

@@ -34,7 +34,7 @@ export default function FixedIncomeMovementForm({ portfolioId, busy, mutate, onC
       amount: kind === 'FULL_REDEMPTION' ? null : amount,
       currency: lot.currency, notes }
     if (await mutate(() => api(base + (editing ? `/${editing.id}` : ''), editing ? 'PUT' : 'POST', payload),
-      editing ? 'Movimento e histórico atualizados.' : 'Movimento registrado. Histórico pendente de consolidação.')) onClose()
+      editing ? 'Movimento salvo. Atualização das posições pendente.' : 'Movimento registrado. Atualização das posições pendente.')) onClose()
   }
 
   const redemption = mode === 'REDEMPTION' || (mode === 'EDIT' &&

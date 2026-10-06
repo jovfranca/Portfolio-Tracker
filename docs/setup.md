@@ -73,7 +73,17 @@ Essa regra vale também para avaliações históricas e resgates, sem depender d
 relógio dentro do cálculo. A convenção segue o intervalo inicial inclusivo/final
 exclusivo da [metodologia DI da B3](https://b3.com.br/main.jsp?lumA=1&lumII=2C9FBE63638CFE2501638D373B435E37&lumPageId=2C9FBE63638CFE2501638D3464C8577B).
 
-Após atualizar, aplique `python -m alembic upgrade head` e consolide as carteiras.
+Após atualizar, aplique `python -m alembic upgrade head` e use **Atualizar posições** nas carteiras.
+As migrações `0023` e `0024` descartam os históricos derivados antigos e agendam
+a reconstrução explícita de cada posição na sua moeda contábil, independentemente
+da moeda de exibição. BRL continua disponível como moeda pivô para câmbio.
+A migração `0025` adiciona snapshots e checkpoints por lote de renda fixa,
+preserva os contratos e movimentos e agenda a primeira consolidação desses lotes.
+Até usar **Atualizar posições**, os valores ainda não consolidados ficam
+desconhecidos; edições e exclusões mantêm os últimos valores consolidados com
+aviso de atualização pendente. Consultas de posições, lotes e histórico não
+reconstroem avaliações contratuais. A consolidação também salva o estado atual
+de mercado; o histórico de fechamentos continua terminando em ontem.
 A migração `0022` marca o histórico das carteiras com CDI para reconstrução desde
 a primeira aplicação afetada, preservando contratos, movimentos e observações.
 Resgates totais gravados com valores calculados pela regra anterior podem exigir
@@ -107,15 +117,15 @@ Se estiver usando esse modo, encerre antes o processo iniciado por `start-local.
    com data de negociação de ontem.
 3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 para ontem e
    para a data atual.
-4. Confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
-5. Clique em **Consolidar carteira** e abra **Desempenho** para ver o resultado de
+4. Clique em **Atualizar posições** e confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
+5. Abra **Desempenho** para ver o resultado de
    100 e o retorno diário ponderado no tempo.
-6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2 e confira
+6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2, use **Atualizar posições** e confira
    quantidade 20 e preço médio 10 em **Posições**.
 7. Adicione um dividendo manual e confira seu valor bruto e a linha correspondente
    em **Atividade do ativo**.
-8. Edite a quantidade da transação para 5, confira a posição atual, consolide
-   novamente para atualizar o histórico e recarregue a página para confirmar persistência.
+8. Edite a quantidade da transação para 5, confira o aviso de atualização pendente,
+   clique em **Atualizar posições** e recarregue a página para confirmar persistência.
 
 Não use os valores fictícios acima na carteira real. A conversão de valores atuais
 usa cotações FX datadas; se faltar FX, o total é identificado como incompleto.
@@ -200,8 +210,8 @@ no mesmo shell React, sem dependência de roteamento ou configuração adicional
 4. Corrija os erros indicados por linha/coluna e selecione o arquivo novamente.
 5. Clique em **Confirmar importação** quando todas as linhas forem válidas.
 
-Nenhuma transação é salva durante a prévia. Confirmar recalcula as posições pelo
-mesmo fluxo existente. A proteção de duplicatas usa o conteúdo exato do arquivo
+Nenhuma transação é salva durante a prévia. Confirmar salva as operações e deixa
+a atualização das posições pendente até usar **Atualizar posições**. A proteção de duplicatas usa o conteúdo exato do arquivo
 por carteira; um arquivo alterado ou reexportado não é necessariamente reconhecido.
 
 ### Estrutura e colunas aceitas
@@ -398,9 +408,10 @@ em `frontend/test-results`. `Ctrl+C` encerra a API de testes.
 - Quantidades, preços, taxas e câmbio das transações usam `Decimal`/`NUMERIC`;
   cotações históricas continuam no formato legado.
 - Cotações ausentes aparecem como ausentes, e não como preço zero.
-- O histórico derivado é consolidado sob demanda; alterações de transações,
-  eventos, preços e FX marcam `dirty_from`. A consolidação recalcula desde essa
-  data e preserva os snapshots anteriores.
+- O histórico derivado é consolidado sob demanda; transações e eventos marcam
+  a posição afetada como pendente desde a primeira data alterada. Correções de
+  preços e FX atualizam a projeção sem invalidar a quantidade canônica. Alterações
+  da moeda contábil exigem reconstrução dos checkpoints da posição.
 - Não há redesenho para titularidade, alocação ideal, aposentadoria ou múltiplos usuários.
 - Mensagens UTF-8 devem ser lidas com `Get-Content -Encoding UTF8` no Windows PowerShell
   antigo. A exibição incorreta nesse terminal não significa corrupção no navegador.
@@ -416,9 +427,9 @@ Preços privados de origem `legacy`/`yfinance` permanecem armazenados para audit
 mas deixam de substituir preços verificados: sua base de ajuste é desconhecida.
 Ativos sem provedor precisam de preços manuais confiáveis.
 
-A troca de moeda na interface consolida automaticamente o histórico e mostra
-eventuais falhas parciais. A API de alteração da carteira mantém a invalidação
-explícita; clientes próprios devem chamar o endpoint de consolidação.
+A troca de moeda na interface altera apenas a preferência de exibição e a
+projeção dos valores. Ela não invalida nem consolida o histórico canônico.
+Use **Atualizar posições** para processar alterações pendentes das fontes.
 
 O gráfico de desempenho mostra ganho monetário, com unidade identificada;
 retorno percentual aparece na tabela. O retorno pode ter sinal diferente do

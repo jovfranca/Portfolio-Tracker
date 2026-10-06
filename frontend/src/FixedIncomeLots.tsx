@@ -45,7 +45,7 @@ export default function FixedIncomeLots({ portfolioId, view, busy, mutate, onEdi
         <td>{yieldLabel(lot)}</td>
         <td>{dateLabel(lot.start_date)}<small>Vencimento {dateLabel(lot.maturity_date)}</small></td>
         <td>{lot.currency} {amountLabel(lot.opening_amount)}</td>
-        <td>{lot.valuation?.status === 'complete' ? <>{lot.currency} {amountLabel(String(lot.valuation.gross_accrued_value))}<small>Principal {amountLabel(String(lot.valuation.outstanding_principal))}</small>{lot.valuation.display_currency !== lot.currency && <small>{lot.valuation.display_currency} {amountLabel(String(lot.valuation.display_value))}</small>}</> : <span title={lot.valuation?.status}>Indisponível · {lot.valuation?.status ?? 'pendente'}</span>}</td>
+        <td>{lot.valuation?.status === 'complete' ? <>{lot.currency} {amountLabel(String(lot.valuation.gross_accrued_value))}<small>Principal {amountLabel(String(lot.valuation.outstanding_principal))}</small>{lot.valuation.pending && <small>Atualização pendente · use Atualizar posições</small>}{lot.valuation.display_currency !== lot.currency && <small>{lot.valuation.display_currency} {amountLabel(String(lot.valuation.display_value))}</small>}</> : <span title={lot.valuation?.status}>{lot.valuation?.unbuilt ? 'Atualização pendente · use Atualizar posições' : 'Indisponível · ' + (lot.valuation?.status ?? 'pendente')}</span>}</td>
         <td>{lot.valuation?.status === 'complete' ? <>{lot.currency} {amountLabel(String(lot.valuation.accrued_gain))}<small>Bruto, antes de impostos</small></> : '—'}</td>
         <td><button className="button quiet" disabled={busy || lot.valuation?.status === 'complete' && Number(lot.valuation.gross_accrued_value) === 0} onClick={() => onRedeem(lot.id)}>Resgatar</button></td>
       </tr>)}
@@ -58,10 +58,10 @@ export default function FixedIncomeLots({ portfolioId, view, busy, mutate, onEdi
         <td>{yieldLabel(lot)}</td>
         <td><div className="row-actions"><button className="button quiet" disabled={busy} onClick={() => onEdit(movement)}>Editar</button><button className="button danger" disabled={busy} onClick={() => {
           if (window.confirm(movement.movement_type === 'INITIAL_INVESTMENT'
-            ? 'Excluir a aplicação inicial e o lote? Esta ação recalculará o histórico.'
-            : 'Excluir este movimento de renda fixa? Esta ação recalculará o histórico.')) {
+            ? 'Excluir a aplicação inicial e o lote? A atualização das posições ficará pendente.'
+            : 'Excluir este movimento de renda fixa? A atualização das posições ficará pendente.')) {
             void mutate(() => api(`/portfolios/${portfolioId}/fixed-income/lots/${lot.id}/movements/${movement.id}`, 'DELETE'),
-              'Movimento excluído e histórico atualizado.')
+              'Movimento excluído. Atualização das posições pendente.')
           }
         }}>Excluir</button></div></td>
       </tr>))}

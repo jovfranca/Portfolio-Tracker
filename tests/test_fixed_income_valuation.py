@@ -27,6 +27,33 @@ def observation(day, value):
     return Row(reference_date=date(2024, 1, day), value=Decimal(str(value)))
 
 
+@pytest.mark.parametrize('compounding', ['SIMPLE', 'COMPOUND'])
+@pytest.mark.parametrize('structure', ['FIXED_RATE', 'BENCHMARK_MULTIPLE', 'BENCHMARK_SPREAD'])
+def test_lot_checkpoint_suffix_matches_full_valuation(compounding, structure):
+    terms = lot(compounding=compounding)
+    observations = []
+    if structure != 'FIXED_RATE':
+        terms.yield_structure = structure
+        terms.fixed_rate = None
+        terms.benchmark_id = 1
+        if structure == 'BENCHMARK_MULTIPLE':
+            terms.benchmark = Row(code='CDI', frequency='DAILY', unit='PERCENT_PER_DAY')
+            terms.benchmark_multiplier = Decimal('1.1')
+            observations = [observation(day, '.1') for day in range(2, 12)]
+        else:
+            terms.benchmark = Row(code='IPCA', frequency='MONTHLY', unit='PERCENT_PER_MONTH')
+            terms.benchmark_spread = Decimal('.06')
+            observations = [Row(reference_date=date(2023, 12, 1), value=Decimal('.4'))]
+    movements = [movement(1, 'INITIAL_INVESTMENT', 2, 1000),
+                 movement(2, 'PARTIAL_REDEMPTION', 4, 100),
+                 movement(3, 'ADDITIONAL_INVESTMENT', 7, 300)]
+    previous = fixed_income_valuation(terms, movements, date(2024, 1, 5), observations)
+    full = fixed_income_valuation(terms, movements, date(2024, 1, 10), observations)
+    suffix = fixed_income_valuation(terms, movements[2:], date(2024, 1, 10),
+                                   observations, initial_state=previous['ledger_state'])
+    assert suffix == full
+
+
 @pytest.mark.parametrize('basis', ['BUS_252', 'ACT_365', 'ACT_360'])
 def test_cdi_completed_business_periods_exclude_valuation_day(basis):
     terms = lot(start_date=date(2024, 2, 8), yield_structure='BENCHMARK_MULTIPLE',

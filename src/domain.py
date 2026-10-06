@@ -533,10 +533,12 @@ class PositionLedger:
         return cash, ZERO
 
     def snapshot(self, day, quote, flow=ZERO, daily_income=ZERO, *, purchases=ZERO, previous_value=None,
-                 actions_complete=True, prices_complete=True):
+                 actions_complete=True, prices_complete=True, canonical_quantity=None):
         if quote is not None and self.last_split_date and quote.date.isoformat() < self.last_split_date:
             quote = None
-        quantity = self.quantity
+        # A reporting projection takes quantity from the persisted canonical
+        # position; activity replay is needed only for dated accounting values.
+        quantity = self.quantity if canonical_quantity is None else decimal(canonical_quantity)
         cost = self.cost
         if quantity == 0:
             market_value, price = ZERO, None
@@ -676,6 +678,66 @@ def position_history(transactions, corporate_events, prices, reporting_currency,
     return result
 
 
+def saved_position_value(canonical, quote, reporting_currency, rates, *, day=None):
+    """Revalue a saved holding without applying unprocessed source edits."""
+    state = canonical.ledger_state
+    if reporting_currency != canonical.reporting_currency:
+        # Historical cost/income cannot be translated using valuation-day FX.
+        state = {**state, 'brokers': {
+            broker: {**holding, 'cost': None} for broker, holding in state['brokers'].items()
+        }, 'realized': None, 'income': None}
+    ledger = PositionLedger(reporting_currency, rates, state)
+    value = ledger.snapshot(day or canonical.date, quote, canonical_quantity=canonical.quantity)
+    value.update(status='pending', daily_return_pct=None, cumulative_return_pct=None,
+                 net_flow=None, purchases=None, daily_income=None)
+    return value
+
+
+def project_position_history(canonical_rows, transactions, corporate_events, prices,
+                             reporting_currency, rates, missing_price_ranges=(), *, include_state=False,
+                             dirty_from=None):
+    """Value canonical daily quantities using stored quotes and dated activity FX."""
+    activity = ordered_activity(transactions, corporate_events)
+    quotes = sorted(prices, key=lambda quote: quote.date)
+    last_quote = None
+    quote_cursor = 0
+    cursor = 0
+    ledger = PositionLedger(reporting_currency, rates)
+    result = []
+    for index, canonical in enumerate(canonical_rows):
+        day = canonical.date
+        while quote_cursor < len(quotes) and quotes[quote_cursor].date <= day:
+            last_quote = quotes[quote_cursor]
+            quote_cursor += 1
+        if dirty_from is not None and day >= dirty_from:
+            result.append(saved_position_value(canonical, last_quote, reporting_currency, rates))
+            continue
+        flow = daily_income = purchases = ZERO
+        while cursor < len(activity) and activity[cursor][0] <= day:
+            activity_day, _, _, _, kind, item = activity[cursor]
+            item_flow, item_income = ledger.apply(kind, item)
+            if activity_day == day:
+                if kind == 'transaction' and item.type == 'Buy':
+                    purchases = (purchases + item_flow
+                                 if purchases is not None and item_flow is not None else None)
+                flow = flow + item_flow if flow is not None and item_flow is not None else None
+                daily_income = (daily_income + item_income
+                                if daily_income is not None and item_income is not None else None)
+            cursor += 1
+        projected = ledger.snapshot(
+            day, last_quote, flow, daily_income, purchases=purchases,
+            canonical_quantity=canonical.quantity,
+            actions_complete=canonical.status != 'missing_actions',
+            prices_complete=not any(start <= day <= end for start, end in missing_price_ranges),
+        )
+        if projected['status'] == 'complete' and projected['cumulative_return_pct'] is None:
+            projected['status'] = ledger.last_status = 'incomplete_history'
+        if include_state and index == len(canonical_rows) - 1:
+            projected['ledger_state'] = ledger.state()
+        result.append(projected)
+    return result
+
+
 def position_now(transactions, corporate_events, quote, reporting_currency, rates, *,
                  valuation_date, actions_complete=True):
     """Use the same ledger rules for the current position without daily replay."""
@@ -737,7 +799,7 @@ def portfolio_day(rows, previous_value, previous_factor):
     }
 
 
-def fixed_income_valuation(lot, movements, valuation_date, observations=()):
+def fixed_income_valuation(lot, movements, valuation_date, observations=(), *, initial_state=None):
     """Value one contractual lot from immutable terms and dated cash movements.
 
     Observation values use the canonical catalog's percent-per-period units.
@@ -783,34 +845,45 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
     else:
         return incomplete('invalid_contract')
 
-    ordered = sorted((row for row in movements if row.effective_date <= valuation_date),
+    checkpoint_day = date.fromisoformat(initial_state['date']) if initial_state else None
+    ordered = sorted((row for row in movements if row.effective_date <= valuation_date
+                      and (checkpoint_day is None or row.effective_date > checkpoint_day)),
                      key=lambda row: (row.effective_date,
                                       row.id if row.id is not None else float('inf')))
-    if not ordered or ordered[0].movement_type != 'INITIAL_INVESTMENT' or ordered[0].effective_date != lot.start_date:
+    if not initial_state and (not ordered or ordered[0].movement_type != 'INITIAL_INVESTMENT'
+                              or ordered[0].effective_date != lot.start_date):
         return incomplete('invalid_movements')
-    original = decimal(ordered[0].amount)
+    original = decimal(initial_state['original'] if initial_state else ordered[0].amount)
     if original <= 0:
         return incomplete('invalid_movements')
     result['original_invested_amount'] = original
-    if lot.maturity_date and valuation_date > lot.maturity_date and not any(
+    if lot.maturity_date and valuation_date > lot.maturity_date and not (
+            initial_state and initial_state['terminated']) and not any(
             row.movement_type in {'FULL_REDEMPTION', 'MATURITY'} and
             row.effective_date <= lot.maturity_date for row in ordered):
         return incomplete('missing_maturity_movement')
     principal = gross = original
     realized = zero
     terminated = False
+    if initial_state:
+        principal = decimal(initial_state['principal'])
+        gross = decimal(initial_state['gross'])
+        realized = decimal(initial_state['realized'])
+        terminated = initial_state['terminated']
+        for field in ('benchmark_start', 'benchmark_end'):
+            result[field] = date.fromisoformat(initial_state[field]) if initial_state[field] else None
     movements_by_day = defaultdict(list)
     for index, row in enumerate(ordered):
         if row.currency != lot.currency or decimal(row.amount) <= 0 or row.effective_date < lot.start_date:
             return incomplete('invalid_movements')
         if row.movement_type == 'MATURITY' and row.effective_date != lot.maturity_date:
             return incomplete('invalid_movements')
-        if index and row.movement_type == 'INITIAL_INVESTMENT':
+        if (index or initial_state) and row.movement_type == 'INITIAL_INVESTMENT':
             return incomplete('invalid_movements')
-        if index:
+        if index or initial_state:
             movements_by_day[row.effective_date].append(row)
     observed = {row.reference_date: decimal(row.value) for row in observations}
-    day = lot.start_date
+    day = checkpoint_day + timedelta(days=1) if checkpoint_day else lot.start_date
     while day <= valuation_date:
         if day == lot.start_date:
             accrual_day = False
@@ -886,6 +959,13 @@ def fixed_income_valuation(lot, movements, valuation_date, observations=()):
         day += timedelta(days=1)
     result.update(outstanding_principal=principal, gross_accrued_value=gross,
                   accrued_gain=gross - principal, realized_gain=realized)
+    result['ledger_state'] = {
+        'date': valuation_date.isoformat(), 'original': str(original),
+        'principal': str(principal), 'gross': str(gross), 'realized': str(realized),
+        'terminated': terminated,
+        **{field: result[field].isoformat() if result[field] else None
+           for field in ('benchmark_start', 'benchmark_end')},
+    }
     return result
 
 

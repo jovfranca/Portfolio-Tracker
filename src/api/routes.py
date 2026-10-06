@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
-from src.domain import corporate_event_effects
-from src.models import Benchmark, Instrument, Portfolio, Transaction, TransactionImport, UserCorporateEvent
+from src.domain import corporate_event_effects, position_now
+from src.models import Asset, Benchmark, Instrument, Portfolio, Transaction, TransactionImport, UserCorporateEvent
 from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
     add_alias, catalog_instruments, create_instrument, resolve_instrument, search_instruments,
@@ -243,7 +243,6 @@ def update_fixed_income_movement(portfolio_id: int, lot_id: int, movement_id: in
                                  payload: FixedIncomeMovementInput, session: DB):
     movement = edit_movement(session, portfolio_id, lot_id, movement_id, payload)
     result = movement_data(movement)
-    consolidate(session, portfolio_id)
     session.commit()
     return result
 
@@ -251,7 +250,6 @@ def update_fixed_income_movement(portfolio_id: int, lot_id: int, movement_id: in
 @router.delete('/portfolios/{portfolio_id}/fixed-income/lots/{lot_id}/movements/{movement_id}', status_code=204)
 def remove_fixed_income_movement(portfolio_id: int, lot_id: int, movement_id: int, session: DB):
     delete_movement(session, portfolio_id, lot_id, movement_id)
-    consolidate(session, portfolio_id)
     session.commit()
     return Response(status_code=204)
 
@@ -297,7 +295,7 @@ def add_transaction(portfolio_id: int, payload: TransactionSelectionInput, sessi
     )
     session.add(transaction)
     session.flush()
-    get_overview(session, portfolio_id)
+    _validate_position_activity(session, portfolio_id, {instrument.id})
     session.commit()
     return transaction
 
@@ -312,6 +310,25 @@ def find_transaction(session, portfolio_id, transaction_id):
     return transaction
 
 
+def _validate_position_activity(session, portfolio_id, instrument_ids):
+    """Keep oversell validation on writes without constructing the overview."""
+    for instrument_id in instrument_ids:
+        rows = list(session.scalars(select(Transaction).where(
+            Transaction.portfolio_id == portfolio_id,
+            Transaction.instrument_id == instrument_id,
+        )))
+        if not rows:
+            continue
+        asset = session.scalar(select(Asset).where(
+            Asset.portfolio_id == portfolio_id, Asset.instrument_id == instrument_id,
+        ))
+        events = get_stored_actions(session, asset) if asset else []
+        try:
+            position_now(rows, events, None, 'BRL', {}, valuation_date=date.today())
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+
 @router.put(
     '/portfolios/{portfolio_id}/transactions/{transaction_id}',
     response_model=TransactionOutput,
@@ -324,6 +341,7 @@ def edit_transaction(
 ):
     get_portfolio(session, portfolio_id, lock=True)
     transaction = find_transaction(session, portfolio_id, transaction_id)
+    old_instrument_id = transaction.instrument_id
     instrument = require_instrument(session, payload.asset, payload.instrument_id)
     add_alias(session, instrument, payload.asset, 'manual-entry')
     ensure_asset(session, portfolio_id, instrument)
@@ -336,7 +354,7 @@ def edit_transaction(
     for key, value in values.items():
         setattr(transaction, key, value)
     session.flush()
-    get_overview(session, portfolio_id)
+    _validate_position_activity(session, portfolio_id, {old_instrument_id, instrument.id})
     session.commit()
     return transaction
 
@@ -344,9 +362,11 @@ def edit_transaction(
 @router.delete('/portfolios/{portfolio_id}/transactions/{transaction_id}', status_code=204)
 def delete_transaction(portfolio_id: int, transaction_id: int, session: DB):
     get_portfolio(session, portfolio_id, lock=True)
-    session.delete(find_transaction(session, portfolio_id, transaction_id))
+    transaction = find_transaction(session, portfolio_id, transaction_id)
+    instrument_id = transaction.instrument_id
+    session.delete(transaction)
     session.flush()
-    get_overview(session, portfolio_id)
+    _validate_position_activity(session, portfolio_id, {instrument_id})
     session.commit()
 
 
@@ -404,6 +424,7 @@ def import_transactions(
     ))
     if previous is not None:
         raise HTTPException(409, 'Este arquivo já foi importado para esta carteira.')
+    changed_instruments = set()
     for row in payload.rows:
         instrument = require_instrument(session, row.asset, row.instrument_id)
         ensure_asset(session, portfolio_id, instrument)
@@ -412,11 +433,12 @@ def import_transactions(
             instrument, row.transaction_currency,
         ))
         values['instrument_id'] = instrument.id
+        changed_instruments.add(instrument.id)
         session.add(Transaction(
             portfolio_id=portfolio_id, **values
         ))
     session.flush()
-    get_overview(session, portfolio_id)
+    _validate_position_activity(session, portfolio_id, changed_instruments)
     session.add(TransactionImport(
         portfolio_id=portfolio_id,
         digest=payload.digest,
@@ -517,7 +539,7 @@ def add_corporate_event(
     )
     session.add(event)
     session.flush()
-    get_overview(session, portfolio_id)
+    _validate_position_activity(session, portfolio_id, {asset.instrument_id})
     session.commit()
     return event
 
@@ -556,7 +578,8 @@ def edit_corporate_event(
         setattr(event, key, value)
     event.updated_at = datetime.now(timezone.utc)
     session.flush()
-    get_overview(session, portfolio_id)
+    asset = get_asset(session, portfolio_id, asset_id)
+    _validate_position_activity(session, portfolio_id, {asset.instrument_id})
     session.commit()
     return event
 
@@ -572,7 +595,8 @@ def delete_corporate_event(
     event = _manual_event(session, portfolio_id, asset_id, event_id)
     session.delete(event)
     session.flush()
-    get_overview(session, portfolio_id)
+    asset = get_asset(session, portfolio_id, asset_id)
+    _validate_position_activity(session, portfolio_id, {asset.instrument_id})
     session.commit()
 
 

@@ -29,7 +29,7 @@ test('selects trusted ARKX without exposing canonical or provider metadata', asy
   await page.getByLabel('Classe de alocação', { exact: true }).fill('ETF')
   await page.getByLabel('Taxa FX', { exact: true }).fill('5')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
-  await expect(page.getByText('Transação salva. Posições recalculadas.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Transação salva. Atualização das posições pendente.', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Transações', exact: true }).click()
   await page.getByRole('button', { name: 'Editar', exact: true }).click()
   await expect(page.getByLabel('Moeda da transação', { exact: true })).toBeDisabled()
@@ -49,7 +49,7 @@ test('selects Bitcoin and saves a BRL transaction without mapping configuration'
   await page.getByLabel('Quantidade', { exact: true }).fill('0.01')
   await page.getByLabel('Preço unitário', { exact: true }).fill('398000')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
-  await expect(page.getByText('Transação salva. Posições recalculadas.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Transação salva. Atualização das posições pendente.', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Transações', exact: true }).click()
   await page.getByRole('button', { name: 'Editar', exact: true }).click()
   await expect(page.getByLabel('Moeda da transação', { exact: true })).toBeEnabled()
@@ -70,7 +70,7 @@ test('creates an explicitly manual custom asset', async ({ page, request }) => {
   await page.getByLabel('Corretora', { exact: true }).fill('Direct')
   await page.getByLabel('Classe de alocação', { exact: true }).fill('Privado')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
-  await expect(page.getByText('Transação salva. Posições recalculadas.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Transação salva. Atualização das posições pendente.', { exact: true })).toBeVisible()
 })
 
 test('resolves an unknown import only through explicit custom creation', async ({ page, request }) => {

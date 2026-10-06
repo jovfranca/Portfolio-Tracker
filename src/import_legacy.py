@@ -4,15 +4,17 @@ import hashlib
 import io
 import json
 import pickle
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from sqlalchemy import select
 from src.database import SessionLocal
-from src.models import Portfolio, Transaction, LegacyImport
+from src.models import Asset, Portfolio, Transaction, LegacyImport
+from src.domain import position_now
+from src.corporate_actions import get_stored_actions
 from src.market_prices import save_user_price
 from src.schemas import TransactionInput, QuoteInput
-from src.services import get_portfolio, ensure_asset, get_overview, transaction_values
+from src.services import get_portfolio, ensure_asset, transaction_values
 from src.instruments import create_instrument, resolve_instrument
 
 
@@ -155,14 +157,18 @@ def import_transactions(session, path, portfolio_id, assets_path=None):
             for field in ['asset_class', 'sector', 'sub_sector']:
                 setattr(asset, field, getattr(old, field, '') or '')
             for quote in quotes:
-                stored = save_user_price(
+                save_user_price(
                     session, asset, quote.date, quote.close, quote.currency or 'BRL',
-                    quote.dividends, quote.stock_splits,
+                    quote.dividends, quote.stock_splits, source='legacy',
                 )
-                stored.source = 'legacy'
-                stored.retrieved_at = None
     session.flush()
-    get_overview(session, portfolio_id)
+    # Validate source quantities without constructing reporting/history on a write.
+    for asset in session.scalars(select(Asset).where(Asset.portfolio_id == portfolio_id)):
+        rows = list(session.scalars(select(Transaction).where(
+            Transaction.portfolio_id == portfolio_id, Transaction.instrument_id == asset.instrument_id)))
+        if rows:
+            position_now(rows, get_stored_actions(session, asset), None, 'BRL', {},
+                         valuation_date=date.today())
     session.add(LegacyImport(portfolio_id=portfolio_id, digest=digest, records=len(records)))
     session.flush()
     return {'imported': len(records), 'already_imported': False}
