@@ -65,6 +65,77 @@ def test_session_login_restore_logout_and_invalid_login(auth_client):
     assert login(c).json()['user']['id'] == result['user']['id']
 
 
+def test_session_exposes_only_current_users_linked_identity_metadata(auth_client, monkeypatch):
+    from src.auth.providers import ProviderIdentity
+    c, engine = auth_client
+    alice = login(c).json()
+    assert alice['user']['identities'] == [
+        {'provider': 'LOCAL', 'email': None, 'email_verified': False},
+    ]
+    # An email on a local identity must not imply a linked Google account.
+    with Session(engine) as session:
+        local = session.scalar(select(AuthIdentity).where(AuthIdentity.user_id == alice['user']['id']))
+        local.email = 'alice@gmail.com'
+        session.commit()
+    assert [i['provider'] for i in c.get('/api/auth/me').json()['user']['identities']] == ['LOCAL']
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'synthetic.apps.googleusercontent.com')
+    monkeypatch.setattr('src.auth.providers.verify_google', lambda credential, nonce: ProviderIdentity(
+        'GOOGLE', 'private-provider-subject', 'Google Alice', 'alice@gmail.com', True))
+    c.get('/api/auth/config')
+    linked = c.post('/api/auth/google/link', json={'credential': 'synthetic-credential'}).json()
+    assert linked['user']['id'] == alice['user']['id']
+    assert linked['households'] == alice['households']
+    assert linked['user']['identities'] == [
+        {'provider': 'LOCAL', 'email': 'alice@gmail.com', 'email_verified': False},
+        {'provider': 'GOOGLE', 'email': 'alice@gmail.com', 'email_verified': True},
+    ]
+    assert c.get('/api/auth/me').json() == linked
+    assert login(c, 'bob').json()['user']['identities'] == [
+        {'provider': 'LOCAL', 'email': None, 'email_verified': False},
+    ]
+
+
+def test_pending_invitation_list_is_private_filtered_and_contains_no_tokens(auth_client):
+    c, engine = auth_client
+    assert c.get('/api/households/1/invitations').status_code == 401
+    alice = login(c).json()
+    hid = alice['households'][0]['id']
+    invitations = [c.post(f'/api/households/{hid}/invitations', json={
+        'email': f'invited{i}@gmail.com', 'role': 'EDITOR',
+    }).json() for i in range(4)]
+    other = c.post('/api/households', json={'name': 'Other'}).json()['id']
+    c.post(f'/api/households/{other}/invitations', json={'email': 'other@gmail.com', 'role': 'OWNER'})
+    with Session(engine) as session:
+        session.get(HouseholdInvitation, invitations[1]['id']).status = 'ACCEPTED'
+        session.get(HouseholdInvitation, invitations[2]['id']).status = 'REVOKED'
+        session.get(HouseholdInvitation, invitations[3]['id']).expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+    result = c.get(f'/api/households/{hid}/invitations')
+    assert result.status_code == 200
+    pending = result.json()
+    assert len(pending) == 1
+    assert set(pending[0]) == {'id', 'email', 'role', 'expires_at'}
+    assert {key: pending[0][key] for key in ('id', 'email', 'role')} == {
+        key: invitations[0][key] for key in ('id', 'email', 'role')}
+    # SQLite's test adapter drops timezone metadata; PostgreSQL retains it.
+    assert datetime.fromisoformat(pending[0]['expires_at']).replace(tzinfo=timezone.utc) == datetime.fromisoformat(
+        invitations[0]['expires_at'])
+    assert c.delete(f"/api/households/{hid}/invitations/{invitations[0]['id']}").status_code == 204
+    assert c.get(f'/api/households/{hid}/invitations').json() == []
+    bob = login(c, 'bob').json()
+    assert c.get(f'/api/households/{hid}/invitations').status_code == 404
+    with Session(engine) as session:
+        member = Membership(user_id=bob['user']['id'], household_id=hid, role='EDITOR')
+        session.add(member)
+        session.commit()
+        member_id = member.id
+    for role in ('EDITOR', 'VIEWER'):
+        with Session(engine) as session:
+            session.get(Membership, member_id).role = role
+            session.commit()
+        assert c.get(f'/api/households/{hid}/invitations').status_code == 403
+
+
 def test_cookie_rotation_disabled_users_and_expiration(auth_client):
     c, engine = auth_client
     uid = login(c).json()['user']['id']
@@ -189,7 +260,7 @@ def test_invitations_verified_identity_single_use_and_last_owner(auth_client, mo
     invite = c.post(f'/api/households/{hid}/invitations', json={
         'email': 'bob@example.com', 'role': 'EDITOR',
     }).json()
-    login(c, 'bob')
+    bob = login(c, 'bob').json()
     assert c.post('/api/invitations/accept', json={'token': invite['token']}).status_code == 403
     with Session(engine) as session:
         identity = session.scalar(select(AuthIdentity).where(AuthIdentity.provider_subject == 'bob'))
@@ -199,12 +270,65 @@ def test_invitations_verified_identity_single_use_and_last_owner(auth_client, mo
     accepted = c.post('/api/invitations/accept', json={'token': invite['token']})
     assert accepted.status_code == 200
     assert accepted.json()['id'] == hid
+    assert c.get('/api/auth/me').json()['households'] == [
+        {'id': hid, 'name': alice['households'][0]['name'], 'role': 'EDITOR'},
+        *bob['households'],
+    ]
     assert c.post('/api/invitations/accept', json={'token': invite['token']}).status_code == 404
     login(c)
     members = c.get(f'/api/households/{hid}/members').json()
     owner = next(x for x in members if x['role'] == 'OWNER')
     assert c.delete(f"/api/households/{hid}/members/{owner['id']}").status_code == 409
     assert c.put(f"/api/households/{hid}/members/{owner['id']}", json={'role': 'VIEWER'}).status_code == 409
+
+
+def test_owner_membership_changes_refresh_roles_and_revoke_access(auth_client):
+    c, engine = auth_client
+    alice = login(c).json()
+    hid = alice['households'][0]['id']
+    bob = login(c, 'bob').json()
+    with Session(engine) as session:
+        member = Membership(user_id=bob['user']['id'], household_id=hid, role='EDITOR')
+        session.add(member)
+        session.commit()
+        member_id = member.id
+    login(c)
+    assert c.put(f'/api/households/{hid}/members/{member_id}', json={'role': 'OWNER'}).status_code == 200
+    members = c.get(f'/api/households/{hid}/members').json()
+    assert next(m for m in members if m['id'] == member_id)['role'] == 'OWNER'
+    own = next(m for m in members if m['user_id'] == alice['user']['id'])
+    assert c.put(f"/api/households/{hid}/members/{own['id']}", json={'role': 'VIEWER'}).status_code == 200
+    assert c.get('/api/auth/me').json()['households'][0]['role'] == 'VIEWER'
+    assert c.get(f'/api/households/{hid}/members').status_code == 200
+    login(c, 'bob')
+    assert c.delete(f"/api/households/{hid}/members/{own['id']}").status_code == 204
+    assert len(c.get('/api/auth/me').json()['households']) == 2
+    assert login(c).json()['households'] == []
+    assert c.get(f'/api/households/{hid}/members').status_code == 404
+
+
+@pytest.mark.parametrize('role', ['EDITOR', 'VIEWER'])
+def test_members_can_view_roster_without_administration_permissions(auth_client, role):
+    c, engine = auth_client
+    alice = login(c).json()
+    hid = alice['households'][0]['id']
+    bob = login(c, 'bob').json()
+    assert c.get(f'/api/households/{hid}/members').status_code == 404
+    with Session(engine) as session:
+        member = Membership(user_id=bob['user']['id'], household_id=hid, role=role)
+        session.add(member)
+        session.commit()
+        member_id = member.id
+    roster = c.get(f'/api/households/{hid}/members')
+    assert roster.status_code == 200
+    assert [(m['display_name'], m['role']) for m in roster.json()] == [('alice', 'OWNER'), ('bob', role)]
+    assert c.put(f'/api/households/{hid}/members/{member_id}', json={'role': 'OWNER'}).status_code == 403
+    assert c.delete(f'/api/households/{hid}/members/{member_id}').status_code == 403
+    assert c.get(f'/api/households/{hid}/invitations').status_code == 403
+    with Session(engine) as session:
+        session.delete(session.get(Membership, member_id))
+        session.commit()
+    assert c.get(f'/api/households/{hid}/members').status_code == 404
 
 
 def test_google_verified_subject_resolution_and_linking(auth_client, monkeypatch):
@@ -288,7 +412,7 @@ def test_expired_revoked_invitations_and_nonowner_admin(auth_client):
     for invitation in invitations:
         assert c.post('/api/invitations/accept', json={'token': invitation['token']}).status_code == 404
     assert c.post(f'/api/households/{hid}/invitations', json={'email': 'eve@gmail.com', 'role': 'OWNER'}).status_code == 403
-    assert c.get(f'/api/households/{hid}/members').status_code == 403
+    assert c.get(f'/api/households/{hid}/members').status_code == 200
 
 
 def test_actual_nested_ids_and_shared_financial_edits(auth_client):

@@ -1,4 +1,11 @@
 export type Portfolio = { id: number; household_id: number; name: string; display_currency: string; dirty_from: string | null; history_built_through: string | null }
+export type Role = 'OWNER' | 'EDITOR' | 'VIEWER'
+export type Space = { id: number; name: string; role: Role }
+export type AuthState = { user: { id: number; display_name: string;
+  identities: { provider: string; email: string | null; email_verified: boolean }[] }; households: Space[] }
+export type AuthConfig = { google_client_id: string | null; google_nonce: string | null; dev_enabled: boolean }
+export type Member = { id: number; user_id: number; display_name: string; role: Role }
+export type Invitation = { id: number; email: string; role: Role; expires_at: string }
 export type Numeric = number | string
 export type Transaction = {
   id: number; portfolio_id: number; trade_date: string; settlement_date: string;
@@ -113,7 +120,7 @@ function requestHeaders(contentType?: string) {
 export class AuthenticationRequired extends Error {}
 function checkAuthentication(response: Response, path: string) {
   if (response.status === 401) {
-    if (!path.startsWith('/auth/')) window.dispatchEvent(new Event('aurion-session-expired'))
+    if (path === '/auth/me' || !path.startsWith('/auth/')) window.dispatchEvent(new Event('aurion-session-expired'))
     throw new AuthenticationRequired('Sua sessão expirou. Entre novamente.')
   }
 }

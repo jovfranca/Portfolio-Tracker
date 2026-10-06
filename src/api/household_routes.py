@@ -71,7 +71,7 @@ def rename_household(household_id: int, payload: SpaceInput, session: DB, user: 
 
 @router.get('/households/{household_id}/members')
 def members(household_id: int, session: DB, user: CurrentUser):
-    require_household_access(session, user, household_id, roles={'OWNER'})
+    require_household_access(session, user, household_id)
     rows = session.execute(select(Membership, User.display_name).join(User).where(
         Membership.household_id == household_id).order_by(Membership.id))
     return [{'id': m.id, 'user_id': m.user_id, 'display_name': name, 'role': m.role} for m, name in rows]
@@ -103,6 +103,17 @@ def change_role(household_id: int, member_id: int, payload: RoleInput, session: 
 def remove_member(household_id: int, member_id: int, session: DB, user: CurrentUser):
     session.delete(editable_member(session, user, household_id, member_id))
     session.commit()
+
+
+@router.get('/households/{household_id}/invitations')
+def pending_invitations(household_id: int, session: DB, user: CurrentUser):
+    require_household_access(session, user, household_id, roles={'OWNER'})
+    invitations = session.scalars(select(HouseholdInvitation).where(
+        HouseholdInvitation.household_id == household_id,
+        HouseholdInvitation.status == 'PENDING',
+        HouseholdInvitation.expires_at > now()).order_by(HouseholdInvitation.id))
+    return [{'id': invitation.id, 'email': invitation.email, 'role': invitation.role,
+             'expires_at': invitation.expires_at} for invitation in invitations]
 
 
 @router.post('/households/{household_id}/invitations', status_code=201)

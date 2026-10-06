@@ -51,7 +51,7 @@ backend verifies the signed ID token's audience, issuer, expiration and a single
 See [Google's server verification guide](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token).
 
 To retain the initial user's records with Google login, first log in locally as
-**local**, then use **Vincular Google**. This explicitly links the verified Google
+**local**, then open **Settings → Vincular Google**. This explicitly links the verified Google
 identity to the current user; matching emails never automatically merge users.
 An identity already attached to another user cannot be linked. A new Google login
 without linking creates its own personal space.
@@ -86,17 +86,30 @@ private to their financial space; catalog instruments and provider prices, FX,
 PTAX and benchmarks remain shared. Ordinary user imports cannot redefine shared
 catalog aliases. Private fixed-income instruments retain their portfolio boundary.
 
-Space creation is available in the shell. Membership administration and invitations
-are available through authenticated APIs (`/docs` lists the schemas):
+The header contains the current user, space selector, Settings link and logout.
+Open `#/settings` to view linked identities (including Google's email and verification
+state), create spaces, and rename spaces you own. Google linkage comes from persisted
+provider identities in `/api/auth/me`; a linked account no longer shows the link action.
+Google unlinking is not available.
+
+For the selected space, OWNER can manage members and roles and create/revoke invitations.
+EDITOR and VIEWER can see the member roster and roles without administrative controls.
+Only unexpired pending invitations are listed. The creation token appears once on the
+page and is not retained across navigation/reload. All authenticated users can submit
+an invitation token in Settings. Acceptance refreshes the space selector while preserving
+the current selection and other memberships. Automatic email delivery is not included.
+
+These controls use authenticated APIs (`/docs` lists the schemas):
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/households` | Accessible spaces and current roles |
 | `POST /api/households` | Create `{ "name": "Family" }` with creator as OWNER |
 | `PUT /api/households/{id}` | OWNER renames space |
-| `GET /api/households/{id}/members` | OWNER lists members |
+| `GET /api/households/{id}/members` | Any member views the roster and roles |
 | `PUT /api/households/{id}/members/{member_id}` | OWNER sets `{ "role": "VIEWER" }` |
 | `DELETE /api/households/{id}/members/{member_id}` | OWNER removes membership |
+| `GET /api/households/{id}/invitations` | OWNER lists unexpired pending invitations, without tokens |
 | `POST /api/households/{id}/invitations` | OWNER creates `{ "email": "person@gmail.com", "role": "EDITOR" }` |
 | `DELETE /api/households/{id}/invitations/{invitation_id}` | OWNER revokes invitation |
 | `POST /api/invitations/accept` | Invited user submits `{ "token": "..." }` |

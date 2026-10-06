@@ -73,7 +73,11 @@ def session_data(session, user):
     rows = session.execute(select(Household, Membership.role).join(
         Membership, Membership.household_id == Household.id).where(
         Membership.user_id == user.id).order_by(Household.id))
-    return {'user': {'id': user.id, 'display_name': user.display_name},
+    identities = session.scalars(select(AuthIdentity).where(
+        AuthIdentity.user_id == user.id).order_by(AuthIdentity.id))
+    return {'user': {'id': user.id, 'display_name': user.display_name,
+                     'identities': [{'provider': identity.provider, 'email': identity.email,
+                                     'email_verified': identity.email_verified} for identity in identities]},
             'households': [{'id': h.id, 'name': h.name, 'role': role} for h, role in rows]}
 
 
