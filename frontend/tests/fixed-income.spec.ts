@@ -14,10 +14,10 @@ test('waits for product defaults before allowing fixed-income selection', async 
       ? { ...product, day_count_basis: 'ACT_365' } : product) })
   })
 
-  await page.goto('/')
+  await page.goto('/positions')
   await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
-  await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
-  await page.getByRole('button', { name: 'Renda fixa', exact: true }).click()
+  await page.getByRole('button', { name: '+ Adicionar', exact: true }).click()
+  await page.getByRole('button', { name: 'Nova aplicação em renda fixa', exact: true }).click()
   await expect(page.getByRole('listitem')).toHaveCount(0)
   await expect(page.getByText('Carregando produtos de renda fixa…')).toBeVisible()
 
@@ -32,7 +32,7 @@ test('canonical fixed-income products prefill lots and appear in positions and o
   const benchmarks = await (await request.get('/api/benchmarks')).json() as { id: number; code: string }[]
   const products = await (await request.get('/api/fixed-income/products')).json() as { symbol: string; instrument_id: number }[]
   expect(products.map(row => row.symbol).sort()).toEqual(['CDB', 'LCA', 'LCI'])
-  await page.goto('/')
+  await page.goto('/positions')
   await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
   let lotPosts = 0
   let transactionPosts = 0
@@ -42,8 +42,8 @@ test('canonical fixed-income products prefill lots and appear in positions and o
   })
 
   for (const [product, structure] of [['CDB', 'FIXED_RATE'], ['LCI', 'BENCHMARK_MULTIPLE'], ['LCA', 'BENCHMARK_SPREAD']] as const) {
-    await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
-    await page.getByRole('button', { name: 'Renda fixa', exact: true }).click()
+    await page.getByRole('button', { name: '+ Adicionar', exact: true }).click()
+    await page.getByRole('button', { name: 'Nova aplicação em renda fixa', exact: true }).click()
     await expect(page.getByLabel('Quantidade', { exact: true })).toHaveCount(0)
     await page.getByRole('listitem').filter({ hasText: product }).click()
     await page.getByText('Configurações avançadas do contrato').click()
@@ -51,7 +51,7 @@ test('canonical fixed-income products prefill lots and appear in positions and o
     await expect(page.getByLabel('Base de dias')).toHaveValue('BUS_252')
     await page.getByText('Configurações avançadas do contrato').click()
     await page.getByLabel('Emissor').fill('Banco Exemplo')
-    await page.getByLabel('Corretora').fill('Corretora Exemplo')
+    await page.getByRole('dialog').getByLabel('Corretora', { exact: true }).fill('Corretora Exemplo')
     await page.getByLabel('Data da aplicação').fill('2024-01-02')
     await page.getByLabel('Vencimento').fill('2027-01-02')
     await page.getByLabel('Valor aplicado').fill('1000.25')
@@ -73,9 +73,16 @@ test('canonical fixed-income products prefill lots and appear in positions and o
   expect(lots.map((lot: { product_type: string }) => lot.product_type)).toEqual(['CDB', 'LCI', 'LCA'])
   expect(lots.every((lot: { movements: { movement_type: string; amount: string }[] }) =>
     lot.movements.length === 1 && lot.movements[0].movement_type === 'INITIAL_INVESTMENT' && Number(lot.movements[0].amount) === 1000.25)).toBeTruthy()
+  await page.goto('/fixed-income/' + lots[0].id)
+  await expect(page.getByRole('heading', { name: 'Condições da aplicação' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Linha do tempo' })).toBeVisible()
+  await expect(page.getByText('Principal atual · BRL', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Aportar', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Resgatar', exact: true })).toBeVisible()
+  await page.goto('/positions')
   await expect(page.getByRole('heading', { name: 'Renda fixa' })).toBeVisible()
   await expect(page.locator('section.panel').filter({ has: page.getByRole('heading', { name: 'Renda fixa', exact: true }) }).getByRole('row')).toHaveCount(4)
-  await page.getByRole('button', { name: 'Transações', exact: true }).click()
+  await page.getByRole('link', { name: 'Transações', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Movimentos de renda fixa' })).toBeVisible()
   await expect(page.getByRole('table').filter({ hasText: 'Aplicação inicial' }).getByRole('row')).toHaveCount(4)
 })
@@ -100,18 +107,21 @@ test('redeems, edits and deletes a fixed-income movement through the shared form
   expect(lotResponse.ok()).toBeTruthy()
   const lot = await lotResponse.json() as { id: number }
 
-  await page.goto('/')
+  await page.goto('/positions')
   await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
-  await page.getByRole('button', { name: 'Transações', exact: true }).click()
-  await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
-  await page.getByRole('button', { name: 'Renda fixa', exact: true }).click()
-  await page.getByRole('button', { name: 'Resgate', exact: true }).click()
+  await page.getByRole('link', { name: 'Transações', exact: true }).click()
+  await page.getByRole('button', { name: '+ Adicionar', exact: true }).click()
+  await page.getByRole('button', { name: 'Nova aplicação em renda fixa', exact: true }).click()
+  await page.getByRole('button', { name: 'Fechar formulário', exact: true }).click()
+  await page.getByRole('button', { name: '+ Adicionar', exact: true }).click()
+  await page.getByRole('button', { name: 'Resgate de renda fixa', exact: true }).click()
   await page.getByRole('combobox', { name: 'Lote' }).selectOption(String(lot.id))
   await page.getByLabel('Data do movimento').fill(localDay(2))
   await page.getByLabel('Valor bruto resgatado').fill('550')
   await page.getByRole('button', { name: 'Salvar movimento' }).click()
   const movements = page.getByRole('table').filter({ hasText: 'Aplicação inicial' })
   await expect(movements.getByText('Resgate parcial')).toBeVisible()
+  await movements.getByRole('row').filter({ hasText: 'Resgate parcial' }).locator('summary').click()
   await movements.getByRole('row').filter({ hasText: 'Resgate parcial' }).getByRole('button', { name: 'Editar' }).click()
   await page.getByLabel('Valor bruto resgatado').fill('400')
   await page.getByRole('button', { name: 'Salvar movimento' }).click()
@@ -120,7 +130,7 @@ test('redeems, edits and deletes a fixed-income movement through the shared form
   await movements.getByRole('row').filter({ hasText: 'Resgate parcial' }).getByRole('button', { name: 'Excluir' }).click()
   await expect(movements.getByText('Resgate parcial')).toHaveCount(0)
 
-  await page.getByRole('button', { name: 'Cotações', exact: true }).click()
+  await page.goto('/data/benchmarks')
   await expect(page.getByRole('heading', { name: 'Dados dos indexadores' })).toBeVisible()
   await page.getByRole('combobox', { name: 'Indexador' }).selectOption('IPCA')
   await expect(page.getByText(/observações · de/)).toBeVisible()

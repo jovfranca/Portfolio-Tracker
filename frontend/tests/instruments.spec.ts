@@ -6,10 +6,11 @@ async function portfolio(request: APIRequestContext, name: string) {
 }
 
 async function openTransaction(page: Page, portfolioId: number) {
-  await page.goto('/')
+  await page.goto('/positions')
   await page.getByLabel('Carteira', { exact: true }).selectOption(String(portfolioId))
-  await page.getByRole('button', { name: '+ Nova transação', exact: true }).click()
-  await expect(page.getByLabel('Instrumento', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '+ Adicionar', exact: true }).click()
+  await page.getByRole('button', { name: 'Nova transação', exact: true }).click()
+  await expect(page.getByRole('dialog').getByLabel('Instrumento', { exact: true })).toHaveValue('')
   await page.getByRole('button', { name: 'Ações e ETFs', exact: true }).click()
 }
 
@@ -31,7 +32,8 @@ test('selects trusted ARKX without exposing canonical or provider metadata', asy
   await page.getByLabel('Taxa FX', { exact: true }).fill('5')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
   await expect(page.getByText('Transação salva. Atualização das posições pendente.', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Transações', exact: true }).click()
+  await page.getByRole('link', { name: 'Transações', exact: true }).click()
+  await page.locator('details.row-menu').first().locator('summary').click()
   await page.getByRole('button', { name: 'Editar', exact: true }).click()
   await expect(page.getByLabel('Moeda da transação', { exact: true })).toBeDisabled()
 })
@@ -51,7 +53,8 @@ test('selects Bitcoin and saves a BRL transaction without mapping configuration'
   await page.getByLabel('Preço unitário', { exact: true }).fill('398000')
   await page.getByRole('button', { name: 'Salvar transação', exact: true }).click()
   await expect(page.getByText('Transação salva. Atualização das posições pendente.', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Transações', exact: true }).click()
+  await page.getByRole('link', { name: 'Transações', exact: true }).click()
+  await page.locator('details.row-menu').first().locator('summary').click()
   await page.getByRole('button', { name: 'Editar', exact: true }).click()
   await expect(page.getByLabel('Moeda da transação', { exact: true })).toBeEnabled()
   const transactions = await (await request.get(`/api/portfolios/${portfolioId}/transactions`)).json()
@@ -63,8 +66,8 @@ test('creates an explicitly manual custom asset', async ({ page, request }) => {
   const portfolioId = await portfolio(request, 'Custom asset browser test')
   const symbol = 'PRIVATE' + Date.now()
   await openTransaction(page, portfolioId)
-  await page.getByLabel('Instrumento', { exact: true }).fill(symbol)
   await page.getByRole('button', { name: 'Personalizado', exact: true }).click()
+  await page.getByLabel('Instrumento', { exact: true }).fill(symbol)
   await page.getByLabel('Nome do ativo', { exact: true }).fill('Private company')
   await page.getByRole('button', { name: 'Criar ativo personalizado', exact: true }).click()
   await expect(page.getByText(/Instrumento selecionado:/)).toContainText(symbol)
@@ -83,18 +86,18 @@ test('resolves an unknown import only through explicit custom creation', async (
     'ticker,broker,type,trade_date,settlement_date,quantity,unit_price,transaction_currency\n' +
     `${raw},Example,Buy,2024-01-02,2024-01-03,1,10,BRL\n`) }
   await page.locator('input[type=file]').setInputFiles(file)
-  await expect(page.getByRole('button', { name: 'Confirmar importação', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Revisar confirmação', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Personalizado', exact: true }).click()
   await page.getByLabel('Nome do ativo', { exact: true }).fill('Imported custom asset')
   await page.getByRole('button', { name: 'Criar ativo personalizado', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Confirmar importação', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Revisar confirmação', exact: true })).toBeEnabled()
   expect(await (await request.get(`/api/portfolios/${portfolioId}/transactions`)).json()).toEqual([])
 })
 
 test('catalog inspection is read-only and shows primary mappings', async ({ page }) => {
   await page.goto('/#/catalog')
-  await expect(page.getByRole('heading', { name: 'Catálogo de instrumentos' })).toBeVisible()
-  await expect(page.getByText(/BTC-USD · USD · PRINCIPAL/)).toBeVisible()
-  await expect(page.getByText(/ARKX · USD · PRINCIPAL/)).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Instrumentos', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: 'ARKX', exact: true }).click()
+  await expect(page.getByText(/ARKX · USD · Ativo · Principal/)).toBeVisible()
   await expect(page.getByRole('button', { name: /Editar|Salvar catálogo/ })).toHaveCount(0)
 })

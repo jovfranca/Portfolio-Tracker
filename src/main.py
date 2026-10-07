@@ -16,7 +16,7 @@ from src.auth.security import mutation_guard
 from src.config import ROOT, allowed_origins
 
 
-app = FastAPI(title='Portfolio Tracker', version='1.0.0')
+app = FastAPI(title='Quintrion', version='1.0.0')
 origins = allowed_origins()
 app.add_middleware(
     CORSMiddleware,
@@ -56,7 +56,19 @@ app.include_router(household_router)
 dist = ROOT / 'frontend' / 'dist'
 if dist.is_dir():
     app.mount('/assets', StaticFiles(directory=dist / 'assets'), name='web-assets')
+    if (dist / 'brand').is_dir():
+        app.mount('/brand', StaticFiles(directory=dist / 'brand'), name='brand-assets')
 
     @app.get('/', include_in_schema=False)
     def index():
         return FileResponse(dist / 'index.html', headers={'Cache-Control': 'no-store'})
+
+    @app.get('/{web_path:path}', include_in_schema=False)
+    def web_page(web_path: str):
+        # Browser deep links use the same React entry point; unknown API paths
+        # and missing assets must retain a real 404 rather than returning HTML.
+        if web_path == 'api' or web_path.startswith(('api/', 'assets/')):
+            return JSONResponse({'detail': 'Not found'}, status_code=404)
+        if web_path in {'favicon.ico', 'brand/quintrion_favicon.ico'}:
+            return FileResponse(dist / 'brand' / 'quintrion_favicon.ico')
+        return index()

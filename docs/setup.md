@@ -1,4 +1,4 @@
-# Executar e testar o Portfolio Tracker
+# Executar e testar o Quintrion
 
 ## Neste computador: um terminal no VS Code
 
@@ -84,13 +84,13 @@ Essa regra vale também para avaliações históricas e resgates, sem depender d
 relógio dentro do cálculo. A convenção segue o intervalo inicial inclusivo/final
 exclusivo da [metodologia DI da B3](https://b3.com.br/main.jsp?lumA=1&lumII=2C9FBE63638CFE2501638D373B435E37&lumPageId=2C9FBE63638CFE2501638D3464C8577B).
 
-Após atualizar, aplique `python -m alembic upgrade head` e use **Atualizar posições** nas carteiras.
+Após atualizar, aplique `python -m alembic upgrade head` e use **Atualizar carteira** nas carteiras.
 As migrações `0023` e `0024` descartam os históricos derivados antigos e agendam
 a reconstrução explícita de cada posição na sua moeda contábil, independentemente
 da moeda de exibição. BRL continua disponível como moeda pivô para câmbio.
 A migração `0025` adiciona snapshots e checkpoints por lote de renda fixa,
 preserva os contratos e movimentos e agenda a primeira consolidação desses lotes.
-Até usar **Atualizar posições**, os valores ainda não consolidados ficam
+Até usar **Atualizar carteira**, os valores ainda não consolidados ficam
 desconhecidos; edições e exclusões mantêm os últimos valores consolidados com
 aviso de atualização pendente. Consultas de posições, lotes e histórico não
 reconstroem avaliações contratuais. A consolidação também salva o estado atual
@@ -130,19 +130,19 @@ O usuário local **local** acessa os registros migrados; outros usuários recebe
 seu próprio espaço financeiro.
 
 1. Selecione a carteira migrada ou crie uma carteira separada para testes.
-2. Clique em **Nova transação** e registre uma compra fictícia de 10 unidades a 20
+2. Abra **+ Adicionar → Nova transação** e registre uma compra fictícia de 10 unidades a 20
    com data de negociação de ontem.
-3. Abra **Cotações**, selecione o ativo e registre fechamento de 30 para ontem e
+3. Abra **Dados de mercado → Cotações**, selecione o ativo e registre fechamento de 30 para ontem e
    para a data atual.
-4. Clique em **Atualizar posições** e confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
-5. Abra **Desempenho** para ver o resultado de
+4. Clique em **Atualizar carteira** e confira quantidade 10, preço médio 20 e valor atual 300 em **Posições**.
+5. Abra o detalhe da posição → **Desempenho** para ver o resultado de
    100 e o retorno diário ponderado no tempo.
-6. Ainda em **Cotações**, adicione um desdobramento manual com fator 2, use **Atualizar posições** e confira
+6. Em **Dados de mercado → Eventos corporativos**, adicione um desdobramento manual com fator 2, use **Atualizar carteira** e confira
    quantidade 20 e preço médio 10 em **Posições**.
 7. Adicione um dividendo manual e confira seu valor bruto e a linha correspondente
    em **Atividade do ativo**.
 8. Edite a quantidade da transação para 5, confira o aviso de atualização pendente,
-   clique em **Atualizar posições** e recarregue a página para confirmar persistência.
+   clique em **Atualizar carteira** e recarregue a página para confirmar persistência.
 
 Não use os valores fictícios acima na carteira real. A conversão de valores atuais
 usa cotações FX datadas; se faltar FX, o total é identificado como incompleto.
@@ -228,7 +228,7 @@ no mesmo shell React, sem dependência de roteamento ou configuração adicional
 5. Clique em **Confirmar importação** quando todas as linhas forem válidas.
 
 Nenhuma transação é salva durante a prévia. Confirmar salva as operações e deixa
-a atualização das posições pendente até usar **Atualizar posições**. A proteção de duplicatas usa o conteúdo exato do arquivo
+a atualização das posições pendente até usar **Atualizar carteira**. A proteção de duplicatas usa o conteúdo exato do arquivo
 por carteira; um arquivo alterado ou reexportado não é necessariamente reconhecido.
 
 ### Estrutura e colunas aceitas
@@ -446,7 +446,7 @@ Ativos sem provedor precisam de preços manuais confiáveis.
 
 A troca de moeda na interface altera apenas a preferência de exibição e a
 projeção dos valores. Ela não invalida nem consolida o histórico canônico.
-Use **Atualizar posições** para processar alterações pendentes das fontes.
+Use **Atualizar carteira** para processar alterações pendentes das fontes.
 
 O gráfico de desempenho mostra ganho monetário, com unidade identificada;
 retorno percentual aparece na tabela. O retorno pode ter sinal diferente do
@@ -464,3 +464,5 @@ em `.env`; deixe a ferramenta solicitar a senha. Exemplo do banco local:
 Guarde uma cópia fora da pasta do projeto. Para testar restauração, use `pg_restore`
 em um banco separado e vazio, nunca sobrescrevendo o banco em uso. Os arquivos antigos
 foram preservados como fonte de conferência.
+
+A navegação, os contratos e as limitações da interface estão em [Quintrion UI](quintrion-ui.md).

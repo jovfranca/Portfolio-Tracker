@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from src.corporate_actions import get_actions, get_stored_actions
-from src.domain import ZERO, portfolio_day, position_history, position_now, project_position_history
+from src.domain import ZERO, portfolio_day, position_history, position_now, project_position_history, sum_known
 from src.market_prices import (accounting_currency, get_history, get_latest, get_quote_history,
                                history_for_reporting, stored_price_gaps)
 from src.models import (
@@ -288,6 +288,7 @@ def portfolio_series(session, portfolio_id):
                 **{field: values[field] for field in PORTFOLIO_FIELDS},
                 'daily_return_pct': values['daily_return_pct'],
                 'cumulative_return_pct': values['cumulative_return_pct'],
+                'net_flow': sum_known(daily_rows, 'net_flow'),
             })
             previous_value, factor = values['market_value'], values['return_factor']
         day += timedelta(days=1)

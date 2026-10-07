@@ -6,6 +6,8 @@ test('unbuilt positions remain visible with unknown values until explicit update
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
     if (path.startsWith('/api/auth/')) return route.fallback()
+    if (path.endsWith('/history')) return route.fulfill({ json: [] })
+    if (path.endsWith('/analytics')) return route.fulfill({ json: { return_pct: null, net_contributions: null, status: 'incomplete' } })
     if (path.endsWith('/consolidate')) {
       consolidated = true
       updates++
@@ -26,14 +28,14 @@ test('unbuilt positions remain visible with unknown values until explicit update
         history_status: consolidated ? 'complete' : 'pending', history_built_through: null },
     } })
   })
-  await page.goto('/')
+  await page.goto('/positions')
   const row = page.getByRole('row').filter({ has: page.getByText('NEW', { exact: true }) })
   await expect(row).toBeVisible()
   await expect(row.getByRole('cell').nth(1)).toHaveText('—')
   await expect(row.getByRole('cell').nth(4)).toHaveText('BRL —')
-  await expect(row).toContainText('atualização pendente: use Atualizar posições')
+  await expect(row).toContainText('Atualização pendente')
   expect(updates).toBe(0)
-  await page.getByRole('button', { name: 'Atualizar posições' }).click()
+  await page.getByRole('button', { name: 'Atualizar carteira' }).click()
   await expect(row.getByRole('cell').nth(1)).toHaveText('2,000000')
   await expect(row.getByRole('cell').nth(4)).toHaveText('BRL 20,00')
   expect(updates).toBe(1)
@@ -58,6 +60,8 @@ test('reporting values are primary, native values conditional, and closed positi
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
     if (path.startsWith('/api/auth/')) return route.fallback()
+    if (path.endsWith('/history')) return route.fulfill({ json: [] })
+    if (path.endsWith('/analytics')) return route.fulfill({ json: { return_pct: null, net_contributions: null, status: 'incomplete' } })
     if (route.request().method() === 'PUT' && path.endsWith('/portfolios/1')) {
       currencyUpdates++
       savedCurrency = route.request().postDataJSON().display_currency
@@ -70,7 +74,7 @@ test('reporting values are primary, native values conditional, and closed positi
     const body = path.endsWith('/portfolios') ? [
       { id: 1, name: 'First', display_currency: savedCurrency || 'BRL' },
       { id: 2, name: 'Second', display_currency: 'BRL' },
-    ] : path.endsWith('/transactions') || path.endsWith('/performance') ? [] : {
+    ] : path.endsWith('/transactions') || path.endsWith('/performance') || path.endsWith('/fixed-income/lots') ? [] : {
       positions: [position, { ...position, asset_id: 2, asset: 'CLOSED', quantity: 0 },
         { ...position, asset_id: 3, asset: 'CRYPTO', native_currency: null },
         { ...position, asset_id: 4, asset: 'LOCAL', transaction_currency: 'BRL', native_currency: 'BRL' }]
@@ -82,7 +86,7 @@ test('reporting values are primary, native values conditional, and closed positi
     }
     return route.fulfill({ json: body })
   })
-  await page.goto('/')
+  await page.goto('/positions')
   const open = page.getByRole('row').filter({ has: page.getByText('OPEN', { exact: true }) })
   const value = open.getByRole('cell').nth(4)
   await expect(value).toHaveText('BRL 120,00USD 24,00')
@@ -96,26 +100,22 @@ test('reporting values are primary, native values conditional, and closed positi
     await expect(row.getByRole('cell').nth(4)).toHaveText('BRL 120,00')
     await expect(row.getByRole('cell').nth(5)).toHaveText('BRL 30,00')
   }
-  await expect(page.getByRole('button', { name: 'Aplicar moeda' })).toBeDisabled()
-  await page.getByLabel('Moeda de exibição').selectOption('BRL')
-  expect(currencyUpdates).toBe(0)
-  await page.getByRole('button', { name: 'Atualizar posições' }).click()
+  await page.getByRole('button', { name: 'Atualizar carteira', exact: true }).click()
   await expect.poll(() => consolidations).toBe(1)
-  await page.getByLabel('Moeda de exibição').selectOption('EUR')
-  await expect(page.getByRole('button', { name: 'Aplicar moeda' })).toBeEnabled()
-  await page.getByRole('button', { name: 'Aplicar moeda' }).click()
+  await page.goto('/portfolios/1/settings')
+  await page.getByLabel('Moeda de exibição').fill('EUR')
+  expect(currencyUpdates).toBe(0)
+  await page.getByRole('button', { name: 'Salvar carteira' }).click()
   await expect.poll(() => currencyUpdates).toBe(1)
   expect(savedCurrency).toBe('EUR')
   await expect.poll(() => consolidations).toBe(1)
+  await page.goto('/positions')
   await expect(value).toHaveText('EUR 120,00USD 24,00')
-  await expect(page.getByText('Moeda de exibição atualizada.')).toBeVisible()
-  await page.getByLabel('Moeda de exibição').selectOption('OTHER')
-  await page.getByLabel('Código da moeda').fill('GBP')
-  await expect(page.getByRole('button', { name: 'Aplicar moeda' })).toBeEnabled()
   await page.getByLabel('Carteira', { exact: true }).selectOption('2')
+  await page.goto('/portfolios/2/settings')
   await expect(page.getByLabel('Moeda de exibição')).toHaveValue('BRL')
-  await page.getByRole('button', { name: 'Desempenho', exact: true }).click()
-  await expect(page.getByLabel('Posição').getByRole('option', { name: 'OPEN', exact: true })).toBeAttached()
+  await page.goto('/performance')
+  await expect(page.getByRole('link', { name: 'OPEN', exact: true })).toBeVisible()
 })
 
 test('partial history is shown as data gaps with visible performance dates', async ({ page }) => {
@@ -123,6 +123,8 @@ test('partial history is shown as data gaps with visible performance dates', asy
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
     if (path.startsWith('/api/auth/')) return route.fallback()
+    if (path.endsWith('/history')) return route.fulfill({ json: [] })
+    if (path.endsWith('/analytics')) return route.fulfill({ json: { return_pct: null, net_contributions: null, status: 'incomplete' } })
     if (path.endsWith('/portfolios')) return route.fulfill({ json: [
       { id: 1, name: 'Test', display_currency: 'USD', dirty_from: consolidated ? null : '2024-05-06', history_built_through: consolidated ? '2024-05-07' : null },
     ] })
@@ -131,11 +133,11 @@ test('partial history is shown as data gaps with visible performance dates', asy
       return route.fulfill({ json: { complete: false, message: 'Consolidação parcial: GLD. Confira as cotações, o câmbio e o histórico dos ativos indicados.' } })
     }
     if (path.endsWith('/performance')) return route.fulfill({ json: [
-      { date: '2024-05-06', quantity: 1, remaining_acquisition_cost: 100, market_value: 100, realized_gain: 0, unrealized_gain: 0, gross_income: 0, total_gain: 0, cumulative_return_pct: 0, status: 'complete' },
-      { date: '2024-05-07', quantity: 1, remaining_acquisition_cost: 100, market_value: null, realized_gain: 0, unrealized_gain: null, gross_income: 0, total_gain: null, cumulative_return_pct: null, status: 'missing_fx' },
-      { date: '2024-05-08', quote_date: '2024-05-06', quantity: 1, remaining_acquisition_cost: 100, market_value: 105, realized_gain: 0, unrealized_gain: 5, gross_income: 0, total_gain: 5, cumulative_return_pct: null, status: 'incomplete_history' },
+      { date: '2024-05-06', quantity: 1, remaining_acquisition_cost: 100, market_value: 100, realized_gain: 0, unrealized_gain: 0, gross_income: 0, total_gain: 0, reporting_currency: 'USD', cumulative_return_pct: 0, status: 'complete' },
+      { date: '2024-05-07', quantity: 1, remaining_acquisition_cost: 100, market_value: null, realized_gain: 0, unrealized_gain: null, gross_income: 0, total_gain: null, reporting_currency: 'USD', cumulative_return_pct: null, status: 'missing_fx' },
+      { date: '2024-05-08', quote_date: '2024-05-06', quantity: 1, remaining_acquisition_cost: 100, market_value: 105, realized_gain: 0, unrealized_gain: 5, gross_income: 0, total_gain: 5, reporting_currency: 'USD', cumulative_return_pct: null, status: 'incomplete_history' },
     ] })
-    if (path.endsWith('/transactions')) return route.fulfill({ json: [] })
+    if (path.endsWith('/transactions') || path.endsWith('/fixed-income/lots')) return route.fulfill({ json: [] })
     return route.fulfill({ json: {
       positions: [{ asset_id: 1, asset: 'GLD', quantity: 1, allocation_class: 'ETF',
         display_currency: 'USD', native_currency: 'USD', quote_currency: 'USD',
@@ -150,17 +152,17 @@ test('partial history is shown as data gaps with visible performance dates', asy
         missing_fx: [], missing_cost_fx: [], missing_prices: [], gross_income: 0, income_by_currency: { USD: 0 } },
     } })
   })
-  await page.goto('/')
-  await page.getByRole('button', { name: 'Atualizar posições' }).click()
-  await expect(page.getByText(/Consolidação parcial: GLD/)).toBeVisible()
-  await expect(page.getByText(/Histórico: dados incompletos/)).toBeVisible()
+  await page.goto('/positions')
+  await page.getByRole('button', { name: 'Atualizar carteira' }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Carteira atualizada parcialmente' })).toBeVisible()
+  await expect(page.getByRole('link', { name: /Dados precisam de atenção/ })).toBeVisible()
   await expect(page.getByText(/Retorno histórico indisponível/)).toBeVisible()
-  await page.getByRole('button', { name: 'Desempenho', exact: true }).click()
+  await page.goto('/positions/1?tab=performance')
   await expect(page.getByText(/Histórico com dados incompletos/)).toBeVisible()
   const missingDay = page.getByRole('row').filter({ has: page.getByText('07/05/2024') })
-  await expect(missingDay).toContainText('Incompleto')
-  await expect(missingDay.getByRole('cell').nth(3)).toHaveText('—')
-  await expect(page.getByText('Ganho total · USD', { exact: true })).toBeVisible()
+  await expect(missingDay).toContainText('Câmbio pendente')
+  await expect(missingDay.getByRole('cell').nth(4)).toHaveText('—')
+  await expect(page.getByText('Evolução histórica do ganho total · USD', { exact: true })).toBeVisible()
   await expect(page.getByText('Última disponível', { exact: true })).toBeVisible()
   const chartPath = await page.getByRole('img', { name: 'Evolução histórica do ganho total' }).locator('path').getAttribute('d')
   expect(chartPath?.match(/M/g)).toHaveLength(2)

@@ -1,0 +1,16 @@
+import { useState } from 'react'
+import { api, type AuthConfig, type AuthState } from './api'
+import GoogleButton from './GoogleButton'
+import { ErrorState, PageHeader, Tabs, message } from './ui'
+
+export default function AccountPage({ auth, tab, onLinked }: { auth: AuthState; tab: string; onLinked: (state: AuthState) => void }) {
+  const [config, setConfig] = useState<AuthConfig | null>(null), [error, setError] = useState('')
+  const [theme, setTheme] = useState(localStorage.getItem('quintrion-theme') ?? 'system')
+  const items = [['profile', 'Meu perfil'], ['security', 'Segurança'], ['preferences', 'Preferências'], ['data', 'Dados e privacidade']].map(([key, label]) => ['/account/' + key, label] as const)
+  return <><PageHeader title="Minha conta" description="Sua identidade, provedores de login e preferências." /><Tabs items={items} active={'/account/' + tab} />{error && <ErrorState error={error} />}
+    {tab === 'profile' && <section className="panel settings-section"><h2>Meu perfil</h2><dl className="detail-grid"><div><dt>Nome</dt><dd>{auth.user.display_name}</dd></div><div><dt>Idioma</dt><dd>Português (Brasil)</dd></div><div><dt>Fuso horário</dt><dd>{Intl.DateTimeFormat().resolvedOptions().timeZone}</dd></div><div><dt>Email</dt><dd>{auth.user.identities.map(i => i.email).filter(Boolean).join(' · ') || 'Não informado'}</dd></div></dl><p>O perfil usa os dados da identidade conectada. Edição de perfil e avatar ainda não está disponível.</p></section>}
+    {(tab === 'security' || tab === 'profile') && <section className="panel settings-section"><h2>Conta e identidades</h2><ul>{auth.user.identities.map((i, index) => <li key={index}>{i.provider === 'GOOGLE' ? 'Google' : i.provider} — Conectado{i.email && ' — ' + i.email + ' — ' + (i.email_verified ? 'Verificado' : 'Não verificado')}{!i.email && ' — Email não informado'}</li>)}</ul>{!auth.user.identities.some(i => i.provider === 'GOOGLE') && <><p>Google — Não conectado</p><button className="button outline" onClick={async () => { try { setConfig(await api<AuthConfig>('/auth/config')) } catch (e) { setError(message(e)) } }}>Vincular Google</button>{config && <GoogleButton config={config} link onSuccess={onLinked} />}</>}<p>Senha e sessões de provedores são gerenciadas no próprio provedor. Gerenciamento de dispositivos e MFA ainda não está disponível.</p></section>}
+    {tab === 'preferences' && <section className="panel settings-section"><h2>Preferências neste navegador</h2><label>Tema<select aria-label="Tema" value={theme} onChange={e => { setTheme(e.target.value); localStorage.setItem('quintrion-theme', e.target.value); document.documentElement.dataset.theme = e.target.value }}><option value="light">Claro</option><option value="dark">Escuro</option><option value="system">Sistema</option></select></label><p>Idioma: Português (Brasil). Datas: dd/mm/aaaa. As preferências de moeda ficam nas configurações de cada carteira.</p></section>}
+    {tab === 'data' && <section className="panel settings-section"><h2>Dados e privacidade</h2><p>Seus registros são privados aos espaços financeiros em que você participa. Exportação de dados pessoais e exclusão de conta ainda não estão disponíveis.</p></section>}
+  </>
+}

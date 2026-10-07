@@ -799,6 +799,23 @@ def portfolio_day(rows, previous_value, previous_factor):
     }
 
 
+def period_summary(rows, start_date=None, end_date=None):
+    """Summarize existing reporting-currency daily results without filling gaps."""
+    selected = [row for row in rows if (start_date is None or row['date'] >= start_date)
+                and (end_date is None or row['date'] <= end_date)]
+    complete = bool(selected) and all(row['status'] == 'complete' for row in selected)
+    known_returns = complete and all(row['daily_return_pct'] is not None for row in selected)
+    factor = Decimal('1')
+    if known_returns:
+        for row in selected:
+            factor *= Decimal('1') + decimal(row['daily_return_pct']) / 100
+    return {
+        'return_pct': (factor - 1) * 100 if known_returns else None,
+        'net_contributions': sum_known(selected, 'net_flow') if complete else None,
+        'status': 'complete' if known_returns else 'incomplete',
+    }
+
+
 def fixed_income_valuation(lot, movements, valuation_date, observations=(), *, initial_state=None):
     """Value one contractual lot from immutable terms and dated cash movements.
 

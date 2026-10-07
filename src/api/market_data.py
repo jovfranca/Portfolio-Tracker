@@ -25,7 +25,7 @@ def fetch_benchmark_history(mapping, start, end):
         })
         request = Request(
             f'https://api.bcb.gov.br/dados/serie/bcdata.sgs.{mapping.series_id}/dados?{params}',
-            headers={'User-Agent': 'Portfolio-Tracker/1.0'},
+            headers={'User-Agent': 'Quintrion/1.0'},
         )
         with urlopen(request, timeout=15) as response:
             payload = json.load(response)
@@ -51,7 +51,7 @@ def search_instruments(query):
     params = urlencode({'q': query, 'quotesCount': 20, 'newsCount': 0})
     request = Request(
         f'https://query1.finance.yahoo.com/v1/finance/search?{params}',
-        headers={'User-Agent': 'Portfolio-Tracker/1.0'},
+        headers={'User-Agent': 'Quintrion/1.0'},
     )
     with urlopen(request, timeout=15) as response:
         payload = json.load(response)
@@ -269,7 +269,7 @@ def _fetch_ptax_rates(currency, rate_type, start, end):
         '$format': 'json',
         '$select': 'cotacaoCompra,cotacaoVenda,dataHoraCotacao,tipoBoletim',
     }
-    request = Request(f'{base}?{urlencode(params)}', headers={'User-Agent': 'Portfolio-Tracker/1.0'})
+    request = Request(f'{base}?{urlencode(params)}', headers={'User-Agent': 'Quintrion/1.0'})
     with urlopen(request, timeout=15) as response:
         payload = json.load(response)
     return _parse_ptax_rows(currency, rate_type, payload.get('value', []))

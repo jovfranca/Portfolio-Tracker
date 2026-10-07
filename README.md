@@ -1,4 +1,4 @@
-# Portfolio Tracker
+# Quintrion
 
 Local portfolio tracking application with a React interface, FastAPI backend,
 and PostgreSQL database. Transactions are the source of truth; positions and
@@ -59,3 +59,5 @@ Use the application as a personal local tracker, not as tax or investment advice
 See [ARCHITECTURE.md](ARCHITECTURE.md) for code boundaries and
 [docs/requisitos-arquitetura-roadmap.md](docs/requisitos-arquitetura-roadmap.md)
 for proposed future product scope.
+
+Veja [a navegação Quintrion e os contratos da interface](docs/quintrion-ui.md).

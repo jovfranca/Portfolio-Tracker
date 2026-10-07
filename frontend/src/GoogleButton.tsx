@@ -29,14 +29,14 @@ export default function GoogleButton({ config, onSuccess, link = false }: {
       element.current.replaceChildren()
       window.google.accounts.id.renderButton(element.current, { theme: 'outline', size: 'large', text: 'continue_with' })
     }
-    let script = document.querySelector<HTMLScriptElement>('script[data-aurion-google]')
+    let script = document.querySelector<HTMLScriptElement>('script[data-quintrion-google]')
     if (window.google) initialize()
     else {
       if (!script) {
         script = document.createElement('script')
         script.src = 'https://accounts.google.com/gsi/client'
         script.async = true
-        script.dataset.aurionGoogle = 'true'
+        script.dataset.quintrionGoogle = 'true'
         document.head.appendChild(script)
       }
       script.addEventListener('load', initialize)
@@ -45,8 +45,8 @@ export default function GoogleButton({ config, onSuccess, link = false }: {
     script?.addEventListener('error', failed)
     return () => { cancelled = true; script?.removeEventListener('load', initialize); script?.removeEventListener('error', failed) }
   }, [config, link, onSuccess])
-  return <div><div ref={element} aria-label={link ? 'Vincular Google' : 'Continue with Google'} />
-    {!config.google_client_id && <><button className="button outline" disabled>{link ? 'Vincular Google' : 'Continue with Google'}</button><p>Login Google indisponível neste ambiente.</p></>}
+  return <div><div ref={element} aria-label={link ? 'Vincular Google' : 'Continuar com Google'} />
+    {!config.google_client_id && <><button className="button outline" disabled>{link ? 'Vincular Google' : 'Continuar com Google'}</button><p>Login Google indisponível neste ambiente.</p></>}
     {error && <p role="alert">{error}</p>}</div>
 }
 

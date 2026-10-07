@@ -160,7 +160,8 @@ def _errors(error):
 
 def preview_import(session, filename, content, portfolio_id=None):
     result = []
-    for number, raw in read_rows(filename, content, include_line_numbers=True):
+    parsed_rows = read_rows(filename, content, include_line_numbers=True)
+    for number, raw in parsed_rows:
         try:
             payload = TransactionInput.model_validate(raw)
             resolution = None
@@ -204,6 +205,10 @@ def preview_import(session, filename, content, portfolio_id=None):
                 'row': number, 'valid': True, 'data': normalized, 'errors': [],
                 'instrument_resolution': 'resolved' if resolution else 'not_requested',
             })
+    raw_by_number = dict(parsed_rows)
+    for row in result:
+        # Raw input is only a correction draft, never a validated/persistable row.
+        row['raw'] = raw_by_number[row['row']]
     return {
         'digest': sha256(content).hexdigest(),
         'filename': Path(filename).name[:255],

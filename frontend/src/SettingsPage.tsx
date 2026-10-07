@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type AuthConfig, type AuthState, type Invitation, type Member, type Role, type Space } from './api'
-import GoogleButton from './GoogleButton'
+import { api, type AuthState, type Invitation, type Member, type Role, type Space } from './api'
+import { Link, navigate } from './navigation'
 
 const errorText = (e: unknown) => e instanceof Error ? e.message : 'Não foi possível concluir.'
 const roles: Role[] = ['EDITOR', 'VIEWER', 'OWNER']
 const expiration = (value: string) => new Date(value).toLocaleString('pt-BR')
 
-export default function SettingsPage({ auth, space, onRefresh, onSwitch, onLinked }: {
+export default function SettingsPage({ auth, space, onRefresh, onSwitch, path }: {
   auth: AuthState; space?: Space; onRefresh: (preferredSpace?: number) => Promise<void>
-  onSwitch: (id: number) => void; onLinked: (state: AuthState) => void
+  onSwitch: (id: number) => void; path: string
 }) {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -21,14 +21,14 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, onLinke
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('EDITOR')
   const [token, setToken] = useState('')
-  const [linkConfig, setLinkConfig] = useState<AuthConfig | null>(null)
   const owner = space?.role === 'OWNER'
   const spaceId = space?.id
   const base = '/households/' + spaceId
-  const googleLinked = auth.user.identities.some(identity => identity.provider === 'GOOGLE')
+  const listing = path === '/settings/spaces'
+  const creating = path === '/settings/spaces/new'
 
   const loadAdministration = useCallback(async (signal?: AbortSignal) => {
-    if (spaceId === undefined) return
+    if (spaceId === undefined || listing || creating) return
     setLoading(true)
     try {
       const [people, pending] = await Promise.all([
@@ -37,7 +37,7 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, onLinke
       ])
       if (!signal?.aborted) { setMembers(people); setInvitations(pending) }
     } finally { if (!signal?.aborted) setLoading(false) }
-  }, [base, owner, spaceId])
+  }, [base, owner, spaceId, listing, creating])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -59,7 +59,7 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, onLinke
     void mutate(async () => {
       const added = await api<Space>('/households', 'POST', { name })
       await onRefresh(added.id)
-      setName('')
+      setName(''); navigate('/settings/spaces/' + added.id)
     }, 'Espaço criado.')
   }
 
@@ -117,41 +117,30 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, onLinke
     }, 'Convite aceito. O espaço está disponível no seletor acima.')
   }
 
-  return <main className="settings-page"><div className="content">
-    <div className="page-heading"><div><h1>Settings</h1><p>Conta e administração dos espaços financeiros.</p></div>
-      <a className="button outline" href="#/">Voltar para carteiras</a></div>
+  return <div className="settings-page">
+    <div className="page-heading"><div><h1>Espaços financeiros</h1><p>Colaboração, membros e permissões do espaço financeiro.</p></div>
+      <Link className="button outline" href="/settings/spaces">Todos os espaços</Link></div>
     {error && <div className="alert error" role="alert">{error}</div>}
     {notice && <div className="alert success" role="status">{notice}</div>}
-    <section className="panel settings-section" aria-labelledby="account-heading">
-      <h2 id="account-heading">Conta e identidades</h2>
-      <p>Nome: <strong>{auth.user.display_name}</strong></p>
-      <ul>{auth.user.identities.map((identity, index) => <li key={index}>
-        {identity.provider === 'GOOGLE' ? 'Google' : identity.provider} — Conectado
-        {identity.email && <> — {identity.email} — {identity.email_verified ? 'Verificado' : 'Não verificado'}</>}
-        {!identity.email && ' — Email não informado'}
-      </li>)}</ul>
-      {!googleLinked && <><p>Google — Não conectado</p>
-        <button className="button outline" disabled={busy} onClick={() => {
-          void mutate(async () => setLinkConfig(await api<AuthConfig>('/auth/config')), '')
-        }}>Vincular Google</button>
-        {linkConfig && <GoogleButton config={linkConfig} onSuccess={onLinked} link />}</>}
-    </section>
-    <section className="panel settings-section" aria-labelledby="spaces-heading">
+    {(listing || creating) && <section className="panel settings-section" aria-labelledby="spaces-heading">
       <h2 id="spaces-heading">Espaços financeiros</h2>
-      <div className="table-wrap"><table><thead><tr><th>Espaço</th><th>Seu papel</th><th>Ações</th></tr></thead>
+      {listing && <div className="table-wrap"><table><thead><tr><th>Espaço</th><th>Seu papel</th><th>Ações</th></tr></thead>
         <tbody>{auth.households.map(h => <tr key={h.id}>
           <td>{h.name}{h.id === space?.id && <small>Espaço selecionado</small>}</td><td>{h.role}</td>
-          <td><div className="settings-actions">{h.id !== space?.id && <button className="button quiet" disabled={busy} onClick={() => onSwitch(h.id)}>Selecionar</button>}
+          <td><div className="settings-actions"><Link className="button outline" href={'/settings/spaces/' + h.id}>Abrir configurações</Link>{h.id !== space?.id && <button className="button quiet" disabled={busy} onClick={() => { onSwitch(h.id); navigate('/settings/spaces/' + h.id) }}>Selecionar</button>}
             {h.role === 'OWNER' && <form key={h.name} onSubmit={e => renameSpace(e, h.id)}>
               <label>Nome do espaço: {h.name}<input name="name" required maxLength={120} defaultValue={h.name} /></label>
               <button className="button outline" disabled={busy}>Renomear</button>
             </form>}</div></td>
-        </tr>)}</tbody></table></div>
-      <form className="settings-form" onSubmit={createSpace}><fieldset disabled={busy}>
+        </tr>)}</tbody></table></div>}
+      {listing && <Link className="button primary" href="/settings/spaces/new">+ Novo espaço financeiro</Link>}
+      {creating && <form className="settings-form" onSubmit={createSpace}><fieldset disabled={busy}>
         <label>Nome do novo espaço<input required maxLength={120} value={name} onChange={e => setName(e.target.value)} /></label>
         <button className="button primary">Criar espaço</button>
-      </fieldset></form>
-    </section>
+      </fieldset></form>}
+    </section>}
+    {!listing && !creating && <><nav className="tabs"><Link href={base.replace('/households/', '/settings/spaces/')}>Geral</Link><Link href={base.replace('/households/', '/settings/spaces/') + '/members'}>Membros e convites</Link></nav>
+    {owner && <form className="panel inline-form" onSubmit={e => renameSpace(e, spaceId!)}><label>Nome do espaço: {space?.name}<input required name="name" maxLength={120} defaultValue={space?.name} /></label><button className="button outline" disabled={busy}>Renomear</button></form>}
     <section className="panel settings-section" aria-labelledby="members-heading">
       <h2 id="members-heading">Membros e acesso{space && ' — ' + space.name}</h2>
       {space && <p>Seu papel: {space.role}</p>}
@@ -188,6 +177,7 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, onLinke
           <td>{expiration(invitation.expires_at)}</td><td><button className="button danger" disabled={busy} onClick={() => revoke(invitation)}>Revogar</button></td>
         </tr>)}</tbody></table></div>)}
     </section>}
+    </>}
     <section className="panel settings-section" aria-labelledby="accept-heading">
       <h2 id="accept-heading">Aceitar convite</h2><p>Entre com uma identidade verificada que corresponda ao email convidado.</p>
       <form className="settings-form" onSubmit={accept}><fieldset disabled={busy}>
@@ -195,5 +185,5 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, onLinke
         <button className="button primary">Aceitar convite</button>
       </fieldset></form>
     </section>
-  </div></main>
+  </div>
 }

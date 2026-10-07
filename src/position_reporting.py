@@ -118,7 +118,7 @@ def _pending_position(session, portfolio, asset, snapshot, valuation_date):
     native_currency = asset.instrument.currency
     native = project(native_currency) if native_currency else None
     return {
-        'asset_id': asset.id, 'asset': asset.instrument.symbol,
+        'asset_id': asset.id, 'instrument_id': asset.instrument_id, 'asset': asset.instrument.symbol,
         'native_currency': native_currency, 'quote_currency': latest.currency if latest else None,
         'transaction_currency': None, 'display_currency': portfolio.display_currency,
         'broker': ', '.join(sorted(snapshot.ledger_state['brokers'])), 'allocation_class': '',
@@ -144,7 +144,7 @@ def _pending_position(session, portfolio, asset, snapshot, valuation_date):
 
 def _unbuilt_position(portfolio, asset, valuation_date):
     return {
-        'asset_id': asset.id, 'asset': asset.instrument.symbol,
+        'asset_id': asset.id, 'instrument_id': asset.instrument_id, 'asset': asset.instrument.symbol,
         'native_currency': asset.instrument.currency, 'quote_currency': None,
         'transaction_currency': None, 'display_currency': portfolio.display_currency,
         'broker': '', 'allocation_class': '', 'broker_breakdown': [],
@@ -269,7 +269,7 @@ def get_overview(session, portfolio_id):
             missing_cost_fx.append(asset.instrument.symbol)
         allocations = {row.allocation_class for row in rows}
         state = {
-            'asset_id': asset.id, 'asset': asset.instrument.symbol,
+            'asset_id': asset.id, 'instrument_id': asset.instrument_id, 'asset': asset.instrument.symbol,
             'native_currency': native_currency, 'quote_currency': quote_currency,
             'transaction_currency': position_currency,
             'display_currency': portfolio.display_currency,

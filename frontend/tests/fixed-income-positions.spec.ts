@@ -6,6 +6,8 @@ test('fixed-income pending lot shows the saved value and update instruction', as
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
     if (path.startsWith('/api/auth/')) return route.fallback()
+    if (path.endsWith('/history')) return route.fulfill({ json: [] })
+    if (path.endsWith('/analytics')) return route.fulfill({ json: { return_pct: null, net_contributions: null, status: 'incomplete' } })
     const body = path.endsWith('/portfolios') ? [{ id: 1, name: 'Pending lot', display_currency: 'BRL' }]
       : path.endsWith('/transactions') ? []
       : path.endsWith('/fixed-income/lots') ? [{ id: 1, instrument_symbol: 'PENDING-CDB',
@@ -18,10 +20,10 @@ test('fixed-income pending lot shows the saved value and update instruction', as
           missing_cost_fx: [], income_by_currency: {} } }
     return route.fulfill({ json: body })
   })
-  await page.goto('/')
+  await page.goto('/positions')
   const row = page.getByRole('row').filter({ has: page.getByText('PENDING-CDB', { exact: true }) })
   await expect(row.getByRole('cell').nth(5)).toContainText('1.000,00')
-  await expect(row.getByRole('cell').nth(5)).toContainText('Atualização pendente · use Atualizar posições')
+  await expect(row.getByRole('cell').nth(5)).toContainText('Atualização pendente · use Atualizar carteira')
 })
 
 test('fixed-income lots appear once while aggregates remain in portfolio totals', async ({ page }) => {
@@ -36,6 +38,8 @@ test('fixed-income lots appear once while aggregates remain in portfolio totals'
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname
     if (path.startsWith('/api/auth/')) return route.fallback()
+    if (path.endsWith('/history')) return route.fulfill({ json: [] })
+    if (path.endsWith('/analytics')) return route.fulfill({ json: { return_pct: null, net_contributions: null, status: 'incomplete' } })
     const body = path.endsWith('/portfolios') ? [{ id: 1, name: 'Test', display_currency: 'BRL' }]
       : path.endsWith('/transactions') ? []
       : path.endsWith('/fixed-income/lots') ? [lot, { ...lot, id: 2, instrument_symbol: 'CLOSED-CDB',
@@ -48,10 +52,12 @@ test('fixed-income lots appear once while aggregates remain in portfolio totals'
           missing_fx: [], missing_prices: [], missing_cost_fx: [], income_by_currency: {} } }
     return route.fulfill({ json: body })
   })
-  await page.goto('/')
+  await page.goto('/positions')
   await expect(page.getByText('CDB-TEST', { exact: true })).toHaveCount(1)
   await expect(page.getByText('STOCK-TEST', { exact: true })).toHaveCount(1)
+  await page.goto('/overview')
   await expect(page.locator('.metric.featured')).toContainText('1.200,00')
+  await page.goto('/positions')
   await expect(page.getByText('CLOSED-CDB', { exact: true })).toHaveCount(0)
   await page.getByLabel('Mostrar posições encerradas').check()
   await expect(page.getByText('CLOSED-CDB', { exact: true })).toHaveCount(1)
@@ -59,6 +65,7 @@ test('fixed-income lots appear once while aggregates remain in portfolio totals'
   await expect(page.getByText('STOCK-TEST', { exact: true })).toHaveCount(0)
   await expect(page.getByText('CDB-TEST', { exact: true })).toHaveCount(1)
   await expect(page.getByText('CLOSED-CDB', { exact: true })).toHaveCount(0)
+  await page.locator('summary[aria-label="Ações de CDB-TEST"]').click()
   await page.getByRole('button', { name: 'Resgatar', exact: true }).click()
   await expect(page.getByRole('combobox', { name: 'Lote', exact: true })).toHaveValue('1')
 })

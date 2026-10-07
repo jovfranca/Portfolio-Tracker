@@ -24,11 +24,13 @@ export type InstrumentSearchResult = {
   is_custom?: boolean
 }
 export type CatalogInstrument = {
+  origin?: string; aliases?: string[];
   id: number; symbol: string; name: string; asset_type: string; exchange: string | null;
   currency: string | null; status: string; mappings: Array<{ provider: string; provider_symbol: string;
     quote_currency: string; is_primary: boolean; active: boolean }>
 }
 export type ImportPreviewRow = {
+  raw?: Record<string, string>;
   row: number; valid: boolean; data?: Omit<Transaction, 'id' | 'portfolio_id' | 'instrument_id' | 'transaction_currency_locked'> & { instrument_id?: number | null };
   instrument_resolution?: 'resolved' | 'unresolved' | 'ambiguous' | 'not_requested';
   errors: { field: string; message: string }[]
@@ -38,6 +40,7 @@ export type ImportPreview = {
   rows: ImportPreviewRow[]
 }
 export type Position = {
+  instrument_id: number;
   position_type?: 'FIXED_INCOME';
   native_currency: string | null;
   quote_currency: string | null; status: string; gross_income: Numeric | null;
@@ -62,10 +65,13 @@ export type Overview = { positions: Position[]; assets: Asset[];
     lots: { id: number; asset_id: number; instrument_id: number; currency: string;
       gross_accrued_value: Numeric | null; status: string }[]; positions?: Position[] };
   summary: { transactions: number; positions: number; assets: number; priced_value: number | null;
+    acquisition_cost: Numeric | null; total_gain: Numeric | null;
     total_value: number | null; missing_prices: string[]; missing_fx: string[]; missing_cost_fx: string[]; missing_actions?: string[]; display_currency: string; currencies: string[];
     totals_by_currency: Record<string, number>; income_by_currency: Record<string, Numeric>;
     history_status: string; dirty_from: string | null; history_built_through: string | null; gross_income: Numeric | null }; methodology: string }
 export type FixedIncomeLot = {
+  instrument_id: number; asset_id: number; day_count_basis: string; compounding: string;
+  business_day_calendar: string; benchmark_lag_months: number; notes: string; status: string;
   id: number; instrument_symbol: string; instrument_name: string; product_type: string;
   issuer: string; broker: string; currency: string; start_date: string; maturity_date: string | null;
   yield_structure: 'FIXED_RATE' | 'BENCHMARK_MULTIPLE' | 'BENCHMARK_SPREAD';
@@ -74,6 +80,7 @@ export type FixedIncomeLot = {
   current_value: string | null; profitability: null; valuation_status: string;
   valuation: { original_invested_amount: Numeric | null; outstanding_principal: Numeric | null;
     gross_accrued_value: Numeric | null; accrued_gain: Numeric | null;
+    display_principal: Numeric | null; display_accrued_gain: Numeric | null; realized_gain: Numeric | null; display_realized_gain: Numeric | null;
     display_currency: string; display_value: Numeric | null; status: string;
     benchmark_start: string | null; benchmark_end: string | null;
     pending?: boolean; unbuilt?: boolean; consolidated_through?: string | null } | null;
@@ -94,6 +101,7 @@ export type FixedIncomeProduct = {
   benchmark_lag_months: number
 }
 export type Performance = { date: string; quote_date?: string | null; reporting_currency: string; status: string;
+  net_flow?: Numeric | null;
   quantity: Numeric | null; remaining_acquisition_cost: Numeric | null; average_cost: Numeric | null;
   market_value: Numeric | null; total_gain: Numeric | null; realized_gain: Numeric | null;
   unrealized_gain: Numeric | null; gross_income: Numeric | null;
@@ -120,7 +128,7 @@ function requestHeaders(contentType?: string) {
 export class AuthenticationRequired extends Error {}
 function checkAuthentication(response: Response, path: string) {
   if (response.status === 401) {
-    if (path === '/auth/me' || !path.startsWith('/auth/')) window.dispatchEvent(new Event('aurion-session-expired'))
+    if (path === '/auth/me' || !path.startsWith('/auth/')) window.dispatchEvent(new Event('quintrion-session-expired'))
     throw new AuthenticationRequired('Sua sessão expirou. Entre novamente.')
   }
 }

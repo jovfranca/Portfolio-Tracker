@@ -232,6 +232,24 @@ def search_instruments(session, query, category="ALL", portfolio_id=None):
     return results
 
 
+def visible_instrument_details(session, instrument_id=None):
+    """Read-only page projection using the existing authorized visibility rule."""
+    query = select(Instrument).where(visible_instruments(session))
+    if instrument_id is not None:
+        query = query.where(Instrument.id == instrument_id)
+    return [{
+        'id': item.id, 'symbol': item.symbol, 'name': item.name,
+        'asset_type': item.asset_type, 'exchange': item.exchange,
+        'currency': item.currency, 'status': item.status, 'origin': item.origin,
+        'aliases': [alias.alias for alias in item.aliases],
+        'mappings': [{
+            'provider': mapping.provider, 'provider_symbol': mapping.provider_symbol,
+            'quote_currency': mapping.quote_currency, 'is_primary': mapping.is_primary,
+            'active': mapping.active,
+        } for mapping in item.provider_mappings],
+    } for item in session.scalars(query.order_by(Instrument.symbol, Instrument.id))]
+
+
 def catalog_instruments(session):
     """Read-only catalog projection including provider mappings."""
     instruments = session.scalars(select(Instrument).where(

@@ -8,11 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
-from src.domain import corporate_event_effects, position_now
+from src.domain import corporate_event_effects, position_now, period_summary
 from src.models import Asset, Benchmark, Instrument, Portfolio, Transaction, TransactionImport, UserCorporateEvent
 from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
     add_alias, catalog_instruments, create_instrument, resolve_instrument, search_instruments,
+    visible_instrument_details,
 )
 from src.market_prices import get_history, get_latest, get_quote_history, get_stored_history, save_user_price
 from src.rates import RateUnavailable, backfill_rates, get_rates
@@ -193,6 +194,19 @@ def create_private_fixed_income_instrument(portfolio_id: int, payload: CustomIns
             'exchange': instrument.exchange, 'status': instrument.status}
 
 
+@router.get('/instruments')
+def instruments_page(session: DB):
+    return visible_instrument_details(session)
+
+
+@router.get('/instruments/{instrument_id}')
+def instrument_detail(instrument_id: int, session: DB):
+    rows = visible_instrument_details(session, instrument_id)
+    if not rows:
+        raise HTTPException(404, 'Instrument not found.')
+    return rows[0]
+
+
 @router.post('/instruments', status_code=201)
 def select_instrument():
     raise HTTPException(410, 'Select a catalog instrument or use /instruments/custom; provider mappings are catalog-managed.')
@@ -271,6 +285,14 @@ def consolidate_portfolio(portfolio_id: int, session: DB):
 @router.get('/portfolios/{portfolio_id}/history')
 def portfolio_performance(portfolio_id: int, session: DB):
     return portfolio_series(session, portfolio_id)
+
+
+@router.get('/portfolios/{portfolio_id}/analytics')
+def portfolio_period_analytics(portfolio_id: int, session: DB,
+                               start_date: date | None = None, end_date: date | None = None):
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(422, 'A data final deve ser igual ou posterior à inicial.')
+    return period_summary(portfolio_series(session, portfolio_id), start_date, end_date)
 
 
 @router.get('/portfolios/{portfolio_id}/transactions', response_model=list[TransactionOutput])

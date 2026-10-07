@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import App from './App'
 import { api, AuthenticationRequired, selectHousehold, type AuthState, type AuthConfig } from './api'
 import GoogleButton from './GoogleButton'
-import SettingsPage from './SettingsPage'
+import { Link, navigate, useRoute } from './navigation'
 
 const errorText = (e: unknown) => e instanceof Error ? e.message : 'Não foi possível concluir.'
 
-function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) {
+function Login({ onSuccess, path }: { onSuccess: (state: AuthState) => void; path: string }) {
   const [config, setConfig] = useState<AuthConfig | null>(null)
   const [username, setUsername] = useState('local')
   const [token, setToken] = useState('')
@@ -25,13 +25,16 @@ function Login({ onSuccess }: { onSuccess: (state: AuthState) => void }) {
     catch (e) { setError(errorText(e)) }
     finally { setBusy(false) }
   }
-  return <main className="auth-login"><section className="panel"><h1>Aurion</h1><p>Entre para acessar seus espaços financeiros.</p>
+  return <main className="auth-login"><section className="panel"><img className="login-brand light-brand" src="/brand/quintrion_horizontal_portuguese_light.svg" alt="Quintrion" /><img className="login-brand dark-brand" src="/brand/quintrion_horizontal_master_dark.svg" alt="Quintrion" /><h1>{path === '/signup' ? 'Criar conta' : 'Entre na sua conta'}</h1><p>Entre para acessar seus espaços financeiros.</p>
     {error && <p role="alert">{error}</p>}
+    {path === '/signup' && <p>Continue com Google para criar sua conta no primeiro acesso.</p>}
+    {['/forgot-password', '/reset-password'].includes(path) && <p>Recupere o acesso pelo provedor conectado. Recuperação por senha local ainda não está disponível.</p>}
     {config ? <GoogleButton config={config} onSuccess={onSuccess} /> : <p>Carregando opções de login…</p>}
     {config?.dev_enabled && <form onSubmit={devLogin}><h2>Login de desenvolvimento</h2>
       <label>Usuário local<input required value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" /></label>
       <label>Chave de desenvolvimento<input required type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="current-password" /></label>
       <button className="button primary" disabled={busy}>Entrar</button></form>}
+    <p className="auth-footer">{path === '/signup' ? <Link href="/login">Já tenho conta</Link> : <Link href="/signup">Criar conta</Link>}</p>
   </section></main>
 }
 
@@ -40,17 +43,13 @@ export default function AuthShell() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [spaceId, setSpaceId] = useState<number | null>(null)
-  const [path, setPath] = useState(() => window.location.hash.slice(1) || '/')
-  useEffect(() => {
-    const changed = () => setPath(window.location.hash.slice(1) || '/')
-    window.addEventListener('hashchange', changed)
-    return () => window.removeEventListener('hashchange', changed)
-  }, [])
+  const route = useRoute()
+  const path = route.split('?')[0]
   const signedIn = useCallback((state: AuthState) => {
-    const remembered = Number(localStorage.getItem('aurion-household'))
+    const remembered = Number(localStorage.getItem('quintrion-household') ?? localStorage.getItem('aurion-household'))
     const id = state.households.find(h => h.id === remembered)?.id ?? state.households[0]?.id ?? null
     selectHousehold(id); setSpaceId(id); setAuth(state); setError('')
-    if (id !== null) localStorage.setItem('aurion-household', String(id))
+    if (id !== null) localStorage.setItem('quintrion-household', String(id))
   }, [])
   const restore = useCallback(async () => {
     setLoading(true); setError('')
@@ -61,16 +60,17 @@ export default function AuthShell() {
   useEffect(() => { void restore() }, [restore])
   useEffect(() => {
     const expired = () => { selectHousehold(null); setAuth(null); setSpaceId(null) }
-    window.addEventListener('aurion-session-expired', expired)
-    return () => window.removeEventListener('aurion-session-expired', expired)
+    window.addEventListener('quintrion-session-expired', expired)
+    return () => window.removeEventListener('quintrion-session-expired', expired)
   }, [])
   function switchSpace(id: number) {
-    selectHousehold(id); localStorage.setItem('aurion-household', String(id)); setSpaceId(id)
+    if (/^\/settings\/spaces\/\d+/.test(path)) navigate(path.replace(/^(\/settings\/spaces\/)\d+/, '$1' + id))
+    selectHousehold(id); localStorage.setItem('quintrion-household', String(id)); setSpaceId(id)
   }
   async function logout() {
     try {
       await api('/auth/logout', 'POST'); window.google?.accounts.id.disableAutoSelect()
-      selectHousehold(null); setAuth(null); setSpaceId(null)
+      selectHousehold(null); setAuth(null); setSpaceId(null); navigate('/login')
     } catch (e) { setError(errorText(e)) }
   }
   async function refreshAuth(preferredSpace?: number) {
@@ -78,19 +78,16 @@ export default function AuthShell() {
     signedIn(state)
     if (preferredSpace !== undefined && state.households.some(h => h.id === preferredSpace)) switchSpace(preferredSpace)
   }
+  const targetId = Number(path.match(/^\/settings\/spaces\/(\d+)/)?.[1])
+  useEffect(() => {
+    if (targetId && auth?.households.some(h => h.id === targetId) && targetId !== spaceId) switchSpace(targetId)
+  }, [targetId, spaceId, auth])
+  useEffect(() => { if (auth && ['/login', '/signup'].includes(path)) navigate('/overview', true) }, [auth, path])
   if (loading) return <main className="auth-login" role="status">Restaurando sessão…</main>
   if (!auth && error) return <main className="auth-login"><p role="alert">{error}</p><button onClick={() => void restore()}>Tentar novamente</button></main>
-  if (!auth) return <Login onSuccess={signedIn} />
+  if (!auth) return <Login onSuccess={signedIn} path={path} />
+  if (targetId && !auth.households.some(h => h.id === targetId)) return <main className="auth-login"><p role="alert">Espaço financeiro não encontrado ou sem acesso.</p><Link href="/settings/spaces">Ver meus espaços financeiros</Link></main>
   const space = auth.households.find(h => h.id === spaceId)
-  const settings = path === '/settings'
-  return <><div className={'auth-bar' + (settings ? ' settings-bar' : '')}><strong>{auth.user.display_name}</strong>
-    <label htmlFor="financial-space">Espaço financeiro</label><select id="financial-space" value={spaceId ?? ''} onChange={e => switchSpace(Number(e.target.value))}>
-      {auth.households.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}</select>
-    <a className="button quiet" href="#/settings" aria-current={settings ? 'page' : undefined}>Settings</a>
-    <button className="button quiet" onClick={() => void logout()}>Sair</button>
-    {error && <p role="alert">{error}</p>}
-  </div>{settings ? <SettingsPage key={`${auth.user.id}:${spaceId}:${space?.role}`} auth={auth} space={space}
-    onRefresh={refreshAuth} onSwitch={switchSpace} onLinked={signedIn} />
-    : space ? <App key={`${auth.user.id}:${space.id}:${space.role}`} readOnly={space.role === 'VIEWER'} />
-    : <p>Crie um espaço financeiro em <a href="#/settings">Settings</a> para começar.</p>}</>
+  if (targetId && auth.households.some(h => h.id === targetId) && targetId !== spaceId) return <p role="status">Abrindo espaço financeiro…</p>
+  return <App key={`${auth.user.id}:${spaceId}:${space?.role}`} auth={auth} space={space} onSwitch={switchSpace} onLogout={() => void logout()} onRefresh={refreshAuth} onLinked={signedIn} authError={error} />
 }

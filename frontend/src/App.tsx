@@ -1,458 +1,116 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { api, type Portfolio, type Overview, type Transaction, type Performance, type Quote, type Asset, type Numeric, type CatalogInstrument, type CorporateEvent, type Activity, type FixedIncomeMovement } from './api'
+import { useCallback, useEffect, useState } from 'react'
+import { api, type AuthState, type Space, type Portfolio, type Overview, type Transaction, type FixedIncomeLot, type FixedIncomeMovement, type InstrumentSearchResult } from './api'
+import AppShell from './AppShell'
+import TransactionForm from './TransactionForm'
 import TransactionImportPage from './TransactionImportPage'
-import InstrumentPicker from './InstrumentPicker'
 import FixedIncomeForm from './FixedIncomeForm'
-import FixedIncomeLots from './FixedIncomeLots'
 import FixedIncomeMovementForm from './FixedIncomeMovementForm'
-import BenchmarkInspection from './BenchmarkInspection'
+import OverviewPage from './OverviewPage'
+import PositionsPage from './PositionsPage'
+import PositionDetailPage from './PositionDetailPage'
+import FixedIncomeDetailPage from './FixedIncomeDetailPage'
+import TransactionsPage from './TransactionsPage'
+import TransactionDetailPage from './TransactionDetailPage'
+import PerformancePage from './PerformancePage'
+import MarketDataPage from './MarketDataPage'
+import InstrumentsPage from './InstrumentsPage'
+import PortfoliosPage from './PortfoliosPage'
+import SettingsPage from './SettingsPage'
+import AccountPage from './AccountPage'
+import InvitationPage from './InvitationPage'
+import { Link, navigate, useRoute } from './navigation'
+import { EmptyState, ErrorState, LoadingState, message, Modal, PageHeader } from './ui'
+import type { AddAction } from './text'
 
-type OperationType = 'LISTED' | 'CRYPTO' | 'FIXED_INCOME' | 'CUSTOM'
-
-const tabPaths: Record<string, string> = { 'Posições': '/', 'Transações': '/transactions', 'Cotações': '/quotes', 'Desempenho': '/performance', 'Catálogo': '/catalog' }
-const currentPath = () => window.location.hash.slice(1) || '/'
-
-const fmt = (value: Numeric | null | undefined, digits = 2) => value == null ? '—' : Number(value).toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits })
-const localDate = () => {
-  const d = new Date()
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-}
-const dateLabel = (value: string | null) => value ? value.slice(0, 10).split('-').reverse().join('/') : 'Sem cotação'
-const message = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível concluir.'
-type Draft = Omit<Transaction, 'id' | 'portfolio_id' | 'fx_rate' | 'instrument_id' | 'transaction_currency_locked'> & {
-  instrument_id: number | null; fx_rate: Numeric | ''
-}
-const emptyDraft = (): Draft => ({ trade_date: localDate().slice(0, 10), settlement_date: localDate().slice(0, 10),
-  type: 'Buy', asset: '', instrument_id: null, broker: '', allocation_class: '', transaction_currency: 'BRL', fx_rate: '',
-  quantity: 1, price: 0, brokerage_fee: 0, other_fees: 0, notes: '' })
-
-export default function App({ readOnly = false }: { readOnly?: boolean }) {
-  const [portfolios, setPortfolios] = useState<Portfolio[]>([])
-  const [selected, setSelected] = useState<number | null>(null)
-  const [overview, setOverview] = useState<Overview | null>(null)
-  const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [path, setPath] = useState(currentPath)
-  const importing = path === '/transactions/import'
-  const cataloging = path === '/catalog'
-  const tab = importing ? 'Transações' : Object.keys(tabPaths).find(key => tabPaths[key] === path) ?? 'Posições'
-  useEffect(() => {
-    const onHashChange = () => setPath(currentPath())
-    window.addEventListener('hashchange', onHashChange)
-    return () => window.removeEventListener('hashchange', onHashChange)
-  }, [])
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
-  const [noticePartial, setNoticePartial] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [draft, setDraft] = useState<Draft>(emptyDraft)
-  const [listedCurrency, setListedCurrency] = useState<string | null>(null)
-  const lockedCurrency = listedCurrency
-  const [editing, setEditing] = useState<number | null>(null)
-  const [formOpen, setFormOpen] = useState(false)
-  const [operationType, setOperationType] = useState<OperationType | null>(null)
-  const [fixedIncomeMode, setFixedIncomeMode] = useState<'LOT' | 'REDEMPTION' | 'ADDITIONAL' | 'EDIT'>('LOT')
-  const [editingFixed, setEditingFixed] = useState<FixedIncomeMovement | null>(null)
-  const [fixedIncomeLotId, setFixedIncomeLotId] = useState<number | undefined>(undefined)
-  const [fixedIncomeVersion, setFixedIncomeVersion] = useState(0)
-  const [portfolioName, setPortfolioName] = useState('')
-  const [newPortfolio, setNewPortfolio] = useState(false)
-  const [query, setQuery] = useState('')
-  const [showClosed, setShowClosed] = useState(false)
-  const [currencyDraft, setCurrencyDraft] = useState('BRL')
+type FormState = { action: Exclude<AddAction, 'import'>; lotId?: number; movement?: FixedIncomeMovement; transaction?: Transaction; instrument?: InstrumentSearchResult }
+export default function App({ auth, space, onSwitch, onLogout, onRefresh, onLinked, authError }: { auth: AuthState; space?: Space; onSwitch: (id: number) => void; onLogout: () => void; onRefresh: (preferredSpace?: number) => Promise<void>; onLinked: (auth: AuthState) => void; authError: string }) {
+  const route = useRoute(), [path, search = ''] = route.split('?'), query = new URLSearchParams(search)
+  const readOnly = !space || space.role === 'VIEWER', storageKey = 'quintrion-portfolio:' + auth.user.id + ':' + space?.id
+  const [portfolios, setPortfolios] = useState<Portfolio[]>([]), [selected, setSelected] = useState<number | null>(null)
+  const [overview, setOverview] = useState<Overview | null>(null), [transactions, setTransactions] = useState<Transaction[]>([]), [lots, setLots] = useState<FixedIncomeLot[]>([])
+  const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [partial, setPartial] = useState(false), [version, setVersion] = useState(0), [form, setForm] = useState<FormState | null>(null)
   const selectedPortfolio = portfolios.find(p => p.id === selected)
-  useEffect(() => { setCurrencyDraft(selectedPortfolio?.display_currency ?? 'BRL') }, [selected, selectedPortfolio?.display_currency])
-
-  const loadPortfolios = useCallback(async () => {
-    setLoading(true); setError('')
-    try {
-      const list = await api<Portfolio[]>('/portfolios')
-      setPortfolios(list)
-      setSelected(current => list.some(p => p.id === current) ? current : list[0]?.id ?? null)
-    } catch (e) { setError(message(e)) }
-    finally { setLoading(false) }
-  }, [])
-  useEffect(() => { void loadPortfolios() }, [loadPortfolios])
-
+  const loadPortfolios = useCallback(async (signal?: AbortSignal) => {
+    if (!space) { setLoading(false); return }
+    const list = await api<Portfolio[]>('/portfolios', 'GET', undefined, signal)
+    if (signal?.aborted) return
+    const scoped = list.filter(p => p.household_id === undefined || p.household_id === space.id)
+    setPortfolios(scoped)
+    setSelected(current => scoped.some(p => p.id === current) ? current : scoped.find(p => p.id === Number(localStorage.getItem(storageKey)))?.id ?? scoped[0]?.id ?? null)
+    if (!scoped.length) setLoading(false)
+  }, [space?.id, storageKey])
   const reload = useCallback(async (signal?: AbortSignal) => {
-    if (selected === null) return
+    if (selected === null) { await loadPortfolios(signal); return }
     const base = '/portfolios/' + selected
-    const [data, txs, updatedPortfolios] = await Promise.all([
-      api<Overview>(base + '/overview', 'GET', undefined, signal),
-      api<Transaction[]>(base + '/transactions', 'GET', undefined, signal),
-      api<Portfolio[]>('/portfolios', 'GET', undefined, signal),
+    const [data, txs, lotRows, list] = await Promise.all([
+      api<Overview>(base + '/overview', 'GET', undefined, signal), api<Transaction[]>(base + '/transactions', 'GET', undefined, signal),
+      api<FixedIncomeLot[]>(base + '/fixed-income/lots', 'GET', undefined, signal), api<Portfolio[]>('/portfolios', 'GET', undefined, signal),
     ])
-    setOverview(data); setTransactions(txs); setPortfolios(updatedPortfolios)
-  }, [selected])
-
+    if (signal?.aborted) return
+    setOverview(data); setTransactions(txs); setLots(lotRows); setPortfolios(list.filter(p => p.household_id === undefined || p.household_id === space?.id))
+  }, [selected, space?.id, loadPortfolios])
   useEffect(() => {
-    setOverview(null); setTransactions([]); setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setEditingFixed(null); setFormOpen(false); setOperationType(null); setQuery('')
-    if (selected === null) return
     const controller = new AbortController()
-    setLoading(true); setError('')
-    reload(controller.signal).catch(e => {
-      if (!controller.signal.aborted) setError(message(e))
-    }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    void loadPortfolios(controller.signal).catch(e => { if (!controller.signal.aborted) { setError(message(e)); setLoading(false) } })
     return () => controller.abort()
-  }, [selected, reload])
-
+  }, [loadPortfolios])
+  useEffect(() => {
+    setOverview(null); setTransactions([]); setLots([]); setForm(null); setNotice(''); setError('')
+    if (selected === null) return
+    localStorage.setItem(storageKey, String(selected))
+    const controller = new AbortController(); setLoading(true)
+    void reload(controller.signal).catch(e => { if (!controller.signal.aborted) setError(message(e)) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [selected, reload, storageKey])
+  const routePortfolio = Number(path.match(/^\/portfolios\/(\d+)\/settings/)?.[1])
+  useEffect(() => { if (!busy && routePortfolio && portfolios.some(p => p.id === routePortfolio) && routePortfolio !== selected) setSelected(routePortfolio) }, [routePortfolio, selected, portfolios, busy])
+  useEffect(() => { setForm(null) }, [path])
   async function mutate(task: () => Promise<unknown>, success: string) {
     if (readOnly) { setError('Este espaço permite somente leitura.'); return false }
-    setBusy(true); setError(''); setNotice(''); setNoticePartial(false)
+    setBusy(true); setError(''); setNotice('')
     try {
       const result = await task()
-      await reload()
-      setFixedIncomeVersion(value => value + 1)
-      const partial = typeof result === 'object' && result !== null && 'complete' in result && result.complete === false
-      setNoticePartial(partial)
-      setNotice(partial && 'message' in result && typeof result.message === 'string' ? result.message : success)
+      await reload(); setVersion(value => value + 1)
+      const incomplete = typeof result === 'object' && result !== null && 'complete' in result && result.complete === false
+      setPartial(incomplete); setNotice(incomplete ? 'Carteira atualizada parcialmente. Confira os dados que precisam de atenção.' : success)
       return true
-    }
-    catch (e) { setError(message(e)); await reload().catch(() => {}); return false }
-    finally { setBusy(false) }
+    } catch (e) { setError(message(e)); await reload().catch(() => {}); return false } finally { setBusy(false) }
   }
-
-  async function createPortfolio(e: FormEvent) {
-    e.preventDefault(); setBusy(true); setError('')
-    if (readOnly) { setBusy(false); return }
-    try {
-      const created = await api<Portfolio>('/portfolios', 'POST', { name: portfolioName })
-      setLoading(true); setPortfolios([...portfolios, created]); setSelected(created.id); setPortfolioName(''); setNewPortfolio(false)
-    } catch (e) { setError(message(e)) } finally { setBusy(false) }
+  function add(action: AddAction, lotId?: number) {
+    if (readOnly || selected === null) return
+    if (action === 'import') navigate('/transactions/import')
+    else setForm({ action, lotId })
   }
-
-  async function saveDisplayCurrency(e: FormEvent) {
-    e.preventDefault()
-    if (!selectedPortfolio || currencyDraft === selectedPortfolio.display_currency) return
-    await mutate(async () => {
-      const updated = await api<Portfolio>('/portfolios/' + selectedPortfolio.id, 'PUT', {
-        name: selectedPortfolio.name, display_currency: currencyDraft.toUpperCase(),
-      })
-      setPortfolios(current => current.map(p => p.id === updated.id ? updated : p))
-      return updated
-    }, 'Moeda de exibição atualizada.')
+  function selectPortfolio(id: number) {
+    if (/^\/portfolios\/\d+\/settings/.test(path)) navigate('/portfolios/' + id + '/settings')
+    setSelected(id)
   }
-
-  async function saveTransaction(e: FormEvent) {
-    e.preventDefault()
-    if (!draft.instrument_id) {
-      setError('Selecione um instrumento antes de salvar.')
-      return
-    }
-    const url = '/portfolios/' + selected + '/transactions' + (editing === null ? '' : '/' + editing)
-    const payload = { ...draft, fx_rate: draft.fx_rate === '' ? null : draft.fx_rate }
-    if (await mutate(() => api(url, editing === null ? 'POST' : 'PUT', payload), 'Transação salva. Atualização das posições pendente.')) {
-      setDraft(emptyDraft()); setEditing(null); setFormOpen(false)
-    }
-  }
-  function edit(tx: Transaction) {
-    const { id, portfolio_id: _portfolioId, transaction_currency_locked: currencyLocked, ...values } = tx
-    setDraft({ ...values, fx_rate: values.fx_rate ?? '' }); setListedCurrency(currencyLocked ? values.transaction_currency : null); setEditingFixed(null); setEditing(id); setOperationType(null); setFormOpen(true)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-  function editFixedMovement(movement: FixedIncomeMovement) {
-    setEditing(null); setEditingFixed(movement); setFixedIncomeLotId(movement.lot_id)
-    setOperationType('FIXED_INCOME'); setFixedIncomeMode('EDIT'); setFormOpen(true)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-  function redeemLot(lotId: number) {
-    setEditing(null); setEditingFixed(null); setFixedIncomeLotId(lotId)
-    setOperationType('FIXED_INCOME'); setFixedIncomeMode('REDEMPTION'); setFormOpen(true)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
-  const marketPositions = overview?.positions.filter(p => p.position_type !== 'FIXED_INCOME') ?? []
-  const filteredPositions = marketPositions.filter(p => (showClosed || p.quantity === null || Number(p.quantity) !== 0) && [p.asset, p.allocation_class].join(' ').toLowerCase().includes(query.toLowerCase())) ?? []
-
-  return <div className="app">
-    <aside className="sidebar">
-      <a className="brand" href="/"><span className="brand-icon">P<span>↗</span></span><span>portfolio<span className="brand-sub">TRACKER</span></span></a>
-      <div className="nav-label">MEU PATRIMÔNIO</div>
-      {['Posições', 'Transações', 'Cotações', 'Desempenho', 'Catálogo'].map((item, i) =>
-        <button className={'nav-item ' + (tab === item ? 'active' : '')} key={item} onClick={() => { window.location.hash = tabPaths[item] }}>
-          <span className="nav-symbol" aria-hidden="true">{['◫', '⇄', '⌁', '↗', '◎'][i]}</span>{item}
-        </button>)}
-      <div className="sidebar-footer"><span className="status-dot" /> Ambiente local<span>Seus registros em PostgreSQL</span></div>
-    </aside>
-    <main>
-      <header className="topbar"><span>Visão da carteira</span><div className="portfolio-picker">
-        <label className="sr-only" htmlFor="portfolio">Carteira</label>
-        <select id="portfolio" value={selected ?? ''} disabled={busy || !portfolios.length} onChange={e => setSelected(Number(e.target.value))}>
-          {!portfolios.length && <option value="">Nenhuma carteira</option>}
-          {portfolios.map(p => <option value={p.id} key={p.id}>{p.name}</option>)}
-        </select>
-        <button className="button quiet" disabled={busy || readOnly} onClick={() => setNewPortfolio(!newPortfolio)}>+ Carteira</button>
-      </div></header>
-      <div className="content">
-        <div className="page-heading"><div><div className="eyebrow">SEU PORTFOLIO, EM PERSPECTIVA</div><h1>{importing ? 'Importar transações' : tab}</h1>
-          <p>{importing ? 'Envie seu histórico em CSV ou XLSX, revise os valores e confirme a importação na carteira selecionada.' : 'Acompanhe seus investimentos a partir das operações registradas.'}</p></div>
-          {importing ? <a className="button outline" href="#/transactions">← Voltar para Transações</a> : !cataloging && !readOnly && <div className="page-actions">
-            {tab === 'Transações' && <button className="button outline" disabled={selected === null || busy || loading} onClick={() => { setFormOpen(false); window.location.hash = '/transactions/import' }}>Importar transações</button>}
-            <button className="button primary" disabled={selected === null || busy || loading} onClick={() => { setDraft(emptyDraft()); setListedCurrency(null); setEditing(null); setEditingFixed(null); setFixedIncomeLotId(undefined); setFixedIncomeMode('LOT'); setOperationType(null); setFormOpen(!formOpen) }}>+ Nova transação</button>
-          </div>}
-        </div>
-        {error && <div role="alert" className="alert error">{error} <button className="button quiet" disabled={busy} onClick={() => void loadPortfolios().then(() => reload()).catch(e => setError(message(e)))}>Tentar novamente</button></div>}
-        {notice && <div role="status" className={'alert ' + (noticePartial ? 'warning' : 'success')}>{notice}</div>}
-        {!readOnly && (newPortfolio || (!loading && !portfolios.length && !error)) && <form className="panel inline-form" onSubmit={createPortfolio}>
-          <div><h2>Comece pela sua carteira</h2><p>Crie um espaço para organizar suas transações e posições.</p></div>
-          <label>Nome da carteira<input required maxLength={120} value={portfolioName} onChange={e => setPortfolioName(e.target.value)} placeholder="Ex.: Investimentos pessoais" /></label>
-          <button className="button primary" disabled={busy}>Criar carteira</button>
-        </form>}
-        {formOpen && !importing && !cataloging && editing === null && editingFixed === null && <section className="panel"><div className="section-heading"><h2>Tipo de ativo</h2><button className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div><div className="asset-type-choices" aria-label="Tipo de ativo da nova operação">
-          {([['LISTED', 'Ações e ETFs'], ['CRYPTO', 'Cripto'], ['FIXED_INCOME', 'Renda fixa'], ['CUSTOM', 'Personalizado']] as const).map(([value, label]) => <button type="button" key={value} disabled={busy} className={'button ' + (operationType === value ? 'primary' : 'outline')} onClick={() => { setOperationType(value); setFixedIncomeMode('LOT'); setFixedIncomeLotId(undefined); setDraft(current => ({ ...emptyDraft(), asset: current.asset })); setListedCurrency(null) }}>{label}</button>)}
-        </div></section>}
-        {formOpen && !importing && !cataloging && operationType === 'FIXED_INCOME' && editingFixed === null && <section className="panel"><div className="section-heading"><h2>Movimentação de renda fixa</h2></div><div className="asset-type-choices">
-          {([['LOT', 'Nova aplicação'], ['ADDITIONAL', 'Aporte adicional'], ['REDEMPTION', 'Resgate']] as const).map(([value, label]) => <button type="button" key={value} className={'button ' + (fixedIncomeMode === value ? 'primary' : 'outline')} onClick={() => setFixedIncomeMode(value)}>{label}</button>)}
-        </div></section>}
-        {formOpen && !importing && !cataloging && operationType === 'FIXED_INCOME' && selected !== null && (fixedIncomeMode === 'LOT'
-          ? <FixedIncomeForm key={selected} portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setFormOpen(false)} />
-          : <FixedIncomeMovementForm key={`${selected}-${fixedIncomeMode}-${editingFixed?.id ?? fixedIncomeLotId ?? 'new'}`} portfolioId={selected} busy={busy} mutate={mutate} onClose={() => { setFormOpen(false); setEditingFixed(null) }} mode={fixedIncomeMode} initialLotId={fixedIncomeLotId} editing={editingFixed ?? undefined} />)}
-        {formOpen && !importing && !cataloging && (editing !== null || (operationType !== null && operationType !== 'FIXED_INCOME')) && <form className="panel transaction-form" onSubmit={saveTransaction}>
-          <div className="section-heading"><h2>{editing === null ? 'Registrar transação' : 'Editar transação'}</h2><button type="button" className="button quiet" disabled={busy} onClick={() => setFormOpen(false)}>Fechar</button></div>
-          <fieldset disabled={busy}>
-            <div className="form-grid">
-              <label>Operação<select value={draft.type} onChange={e => setDraft({ ...draft, type: e.target.value as 'Buy' | 'Sell' })}><option value="Buy">Compra</option><option value="Sell">Venda</option></select></label>
-              <label>Data da negociação<input required type="date" max={localDate().slice(0, 10)} value={draft.trade_date} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></label>
-              <label>Data da liquidação<input required type="date" min={draft.trade_date} value={draft.settlement_date} onChange={e => setDraft({ ...draft, settlement_date: e.target.value })} /></label>
-              <label>Instrumento<input readOnly={draft.instrument_id !== null} required maxLength={40} value={draft.asset} onChange={e => setDraft({ ...draft, asset: e.target.value, instrument_id: null })} placeholder="Ex.: PETR4, Apple ou BTC" /></label>
-              {draft.instrument_id === null ? <InstrumentPicker key={operationType ?? 'edit'} query={draft.asset} initialMode={operationType ?? 'LISTED'} showModeChoices={editing !== null} onSelect={item => {
-                setListedCurrency(item.asset_type === 'STOCK' || item.asset_type === 'ETF' ? item.currency : null)
-                setDraft(current => {
-                  const currency = (item.asset_type === 'STOCK' || item.asset_type === 'ETF')
-                    ? item.currency ?? current.transaction_currency
-                    : (item.is_custom ? item.currency : null) ?? current.transaction_currency
-                  return { ...current, instrument_id: item.instrument_id, asset: item.symbol, transaction_currency: currency,
-                    fx_rate: currency === current.transaction_currency ? current.fx_rate : '' }
-                })
-              }} /> : <div className="selected-instrument wide"><span>Instrumento selecionado: <strong>{draft.asset}</strong></span><button type="button" className="button quiet" onClick={() => { setDraft({ ...draft, instrument_id: null, asset: '' }); setListedCurrency(null) }}>Trocar ativo</button></div>}
-              <label>Corretora<input required maxLength={120} value={draft.broker} onChange={e => setDraft({ ...draft, broker: e.target.value })} /></label>
-              <label>Classe de alocação<input required maxLength={120} value={draft.allocation_class} onChange={e => setDraft({ ...draft, allocation_class: e.target.value })} placeholder="Ex.: Ações Brasil" /></label>
-              <label>Moeda da transação<input disabled={!!lockedCurrency} required maxLength={3} pattern="[A-Za-z]{3}" value={draft.transaction_currency} onChange={e => { const currency = e.target.value.toUpperCase(); setDraft({ ...draft, transaction_currency: currency, fx_rate: currency === draft.transaction_currency ? draft.fx_rate : '' }) }} placeholder="BRL" /></label>
-              <label>Taxa FX<input type="number" min="0.000000000001" step="any" value={draft.fx_rate} disabled={draft.transaction_currency === 'BRL'} onChange={e => setDraft({ ...draft, fx_rate: e.target.value })} placeholder={draft.transaction_currency === 'BRL' ? '1' : 'Automática'} /></label>
-              {([['quantity', 'Quantidade'], ['price', 'Preço unitário'], ['brokerage_fee', 'Corretagem'], ['other_fees', 'Outras taxas']] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min={key === 'quantity' ? '0.000000000001' : '0'} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: e.target.value } as Draft)} /></label>)}
-              <label className="wide">Observações<input maxLength={5000} value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></label>
-            </div>
-            <div className="form-footer"><span>FX vazio usa a taxa histórica da data de liquidação; o valor salvo não muda depois.</span><button className="button primary" disabled={!draft.instrument_id}>{busy ? 'Salvando…' : 'Salvar transação'}</button></div>
-          </fieldset>
-        </form>}
-        {loading && <div className="panel empty" role="status">Carregando sua carteira…</div>}
-        {importing && (readOnly ? <p>Este espaço permite somente leitura.</p> : <TransactionImportPage key={selected} portfolioId={selected} portfolioName={portfolios.find(p => p.id === selected)?.name ?? ''} busy={busy || loading} mutate={mutate} />)}
-        {cataloging && <CatalogPage />}
-        {!importing && !cataloging && !loading && overview && <>
-          <form className="panel inline-form" onSubmit={saveDisplayCurrency}>
-            <label>Moeda de exibição<select value={['BRL', 'USD', 'EUR'].includes(currencyDraft) ? currencyDraft : 'OTHER'} onChange={e => setCurrencyDraft(e.target.value === 'OTHER' ? '' : e.target.value)}><option value="BRL">BRL</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="OTHER">Outra moeda…</option></select></label>
-            {!['BRL', 'USD', 'EUR'].includes(currencyDraft) && <label>Código da moeda<input aria-label="Código da moeda" value={currencyDraft} onChange={e => setCurrencyDraft(e.target.value.toUpperCase())} minLength={3} maxLength={3} pattern="[A-Za-z]{3}" placeholder="Ex.: GBP" required /></label>}
-            <button className="button outline" disabled={busy || readOnly || currencyDraft === selectedPortfolio?.display_currency}>Aplicar moeda</button>
-          </form>
-          <div className="method-note">Posições atualizadas até: {overview.summary.history_built_through ? dateLabel(overview.summary.history_built_through) : 'nunca'}. Histórico: {overview.summary.history_status === 'pending' ? 'atualização pendente' : overview.summary.history_status === 'complete' ? 'consolidado' : 'dados incompletos'}{overview.summary.dirty_from && overview.summary.history_status === 'pending' ? ' desde ' + dateLabel(overview.summary.dirty_from) : ''}. {overview.summary.history_status === 'incomplete' && !overview.fixed_income?.lot_count ? 'Confira cotações e câmbio nas datas marcadas como incompletas. ' : ''}<button className="button outline" disabled={busy || readOnly} onClick={() => void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Posições atualizadas.')}>{busy ? 'Atualizando…' : 'Atualizar posições'}</button></div>
-          {overview.fixed_income?.lot_count ? <div className="method-note">{overview.fixed_income.lot_count} lote(s) de renda fixa. {overview.fixed_income.valuation_status === 'pending' ? 'Atualização pendente; use Atualizar posições.' : overview.fixed_income.valuation_status === 'complete' ? 'Valor bruto contratual incluído no total.' : 'Há avaliações incompletas; confira os lotes abaixo.'}</div> : null}
-          <div className="metrics">
-            <article className="metric featured"><span>Valor das posições · {overview.summary.display_currency}</span><strong>{fmt(overview.summary.total_value)}</strong><small>{overview.fixed_income?.valuation_status === 'incomplete' ? 'Avaliação de renda fixa incompleta' : overview.summary.missing_actions?.length ? 'Eventos não verificados: ' + overview.summary.missing_actions.join(', ') : overview.summary.missing_fx.length ? 'FX indisponível: ' + overview.summary.missing_fx.join(', ') : overview.summary.missing_prices.length ? 'Sem cotação: ' + overview.summary.missing_prices.join(', ') : 'Total convertido na data da avaliação'}</small></article>
-            <article className="metric"><span>Ativos acompanhados</span><strong>{overview.summary.assets.toString().padStart(2, '0')}</strong><small>{overview.summary.positions} posições registradas</small></article>
-            <article className="metric"><span>Operações registradas</span><strong>{overview.summary.transactions.toString().padStart(2, '0')}</strong><small>Compras e vendas persistidas</small></article>
-          </div>
-          <div className="method-note"><span>i</span> {overview.methodology} {overview.summary.missing_cost_fx.length ? 'FX histórico indisponível para custo: ' + overview.summary.missing_cost_fx.join(', ') + '. ' : ''}Renda corporativa: {overview.summary.gross_income === null ? 'indisponível por dados incompletos' : Object.keys(overview.summary.income_by_currency).length ? Object.entries(overview.summary.income_by_currency).map(([currency, total]) => currency + ' ' + fmt(total)).join(' · ') : 'nenhuma'}.</div>
-          {tab === 'Posições' && <section className="panel">
-            <div className="section-heading"><div><h2>Composição da carteira</h2><p>Ativos de mercado por instrumento; renda fixa por lote na seção abaixo.</p></div><label className="search"><span className="sr-only">Filtrar posições</span><input placeholder="Buscar ativo ou classe…" value={query} onChange={e => setQuery(e.target.value)} /></label></div>
-            <label className="checkbox-control"><input type="checkbox" checked={showClosed} onChange={e => setShowClosed(e.target.checked)} /> Mostrar posições encerradas</label>
-            {!marketPositions.length ? overview.fixed_income?.lot_count ? <div className="empty">Os lotes de renda fixa estão listados abaixo. Não há posições de ações, ETFs ou cripto.</div> : <div className="empty"><div className="empty-icon">↗</div><h3>Sua carteira começa aqui</h3><p>Registre uma compra para acompanhar quantidade, preço médio e evolução.</p></div> :
-              <div className="table-wrap"><table><thead><tr><th>Ativo / classe</th><th>Quantidade</th><th>Preço médio / custo</th><th>Cotação</th><th>Valor atual</th><th>Renda bruta</th><th>Resultado total</th></tr></thead><tbody>{filteredPositions.map(p => <tr key={p.asset_id ?? p.asset}>
-                <td><strong>{p.asset}</strong><small>{p.allocation_class}</small></td><td>{fmt(p.quantity, 6)}</td><td>{p.position_type === 'FIXED_INCOME' ? 'Principal' : p.display_currency + ' ' + fmt(p.display_average_cost, 4)}<small>Custo {p.display_currency} {fmt(p.display_acquisition_cost)}</small>{p.native_currency && p.native_currency !== p.display_currency && p.native_average_cost !== null && <small>{p.native_currency} {fmt(p.native_average_cost, 4)} · custo {fmt(p.native_acquisition_cost)}</small>}</td><td>{p.position_type === 'FIXED_INCOME' ? 'Acúmulo contratual' : <>{p.display_currency} {fmt(p.display_price)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.current_price)}</small>}<small>{dateLabel(p.price_date)}{p.quote_refresh_required ? " · atualização pendente" : ""}</small></>}</td><td>{p.display_currency} {fmt(p.display_value)}{p.native_currency && p.native_currency === p.quote_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.total_value)}</small>}</td>
-                <td>{p.display_currency} {fmt(p.gross_income)}{p.native_currency && p.native_currency !== p.display_currency && <small>{p.native_currency} {fmt(p.native_gross_income)}</small>}</td>
-                <td className={Number(p.current_total_gain ?? 0) >= 0 ? 'positive' : 'negative'}>{p.display_currency} {fmt(p.current_total_gain)}<small>{p.current_accumulated_profitability === null ? 'Retorno histórico indisponível' : fmt(p.current_accumulated_profitability) + '%' + (p.return_date ? ' até ' + dateLabel(p.return_date) : '')}{p.status === 'pending' ? ' · atualização pendente: use Atualizar posições' : p.status !== 'complete' ? ' · valores incompletos' : ''}{p.history_behind_transactions ? ' · cotação anterior à última atividade' : ''}</small></td>
-              </tr>)}</tbody></table>{!filteredPositions.length && <div className="empty">Nenhuma posição corresponde à busca.</div>}</div>}
-          </section>}
-          {tab === 'Posições' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="positions" query={query} showClosed={showClosed} busy={busy || readOnly} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
-          {tab === 'Transações' && <section className="panel"><div className="section-heading"><div><h2>Histórico de operações</h2><p>Editar, excluir ou importar deixa a atualização das posições pendente.</p></div></div>
-            {!transactions.length ? <div className="empty">{overview.fixed_income?.lot_count ? 'Não há compras ou vendas de mercado. Os movimentos de renda fixa estão abaixo.' : 'Nenhuma transação registrada.'}</div> : <div className="table-wrap"><table><thead><tr><th>Negociação / liquidação</th><th>Operação</th><th>Ativo / moeda</th><th>Corretora / classe</th><th>Quantidade</th><th>Preço / FX</th><th>Taxas</th><th>Ações</th></tr></thead><tbody>{transactions.map(tx => <tr key={tx.id}><td>{dateLabel(tx.trade_date)}<small>{dateLabel(tx.settlement_date)}</small></td><td><span className={'badge ' + (tx.type === 'Buy' ? 'buy' : 'sell')}>{tx.type === 'Buy' ? 'Compra' : 'Venda'}</span></td><td><strong>{tx.asset}</strong><small>{tx.transaction_currency} · {tx.notes}</small></td><td>{tx.broker}<small>{tx.allocation_class}</small></td><td>{fmt(tx.quantity, 6)}</td><td>{fmt(tx.price, 4)}<small>FX {fmt(tx.fx_rate, 6)}</small></td><td>{fmt(Number(tx.brokerage_fee) + Number(tx.other_fees))}</td><td><div className="row-actions"><button className="button quiet" disabled={busy || readOnly} onClick={() => edit(tx)}>Editar</button><button className="button danger" disabled={busy || readOnly} onClick={() => {
-              if (window.confirm('Excluir esta transação? A atualização das posições ficará pendente.')) void mutate(() => api('/portfolios/' + selected + '/transactions/' + tx.id, 'DELETE'), 'Transação excluída. Atualização das posições pendente.')
-            }}>Excluir</button></div></td></tr>)}</tbody></table></div>}
-          </section>}
-          {tab === 'Transações' && !!overview.fixed_income?.lot_count && <FixedIncomeLots key={`${selected}-${fixedIncomeVersion}`} portfolioId={selected!} view="movements" busy={busy || readOnly} mutate={mutate} onEdit={editFixedMovement} onRedeem={redeemLot} />}
-          {tab === 'Cotações' && <><Quotes key={selected} portfolioId={selected!} assets={overview.assets} busy={busy} readOnly={readOnly} mutate={mutate} /><BenchmarkInspection key={fixedIncomeVersion} /></>}
-          {tab === 'Desempenho' && <PerformancePanel key={selected} portfolioId={selected!} overview={overview} />}
-          <footer className="footnote">Portfolio Tracker · Cálculos executados no backend Python · Uso local individual</footer>
-        </>}
-      </div>
-    </main>
-  </div>
-}
-
-function CatalogPage() {
-  const [items, setItems] = useState<CatalogInstrument[]>([])
-  const [error, setError] = useState('')
-  useEffect(() => { api<CatalogInstrument[]>('/instruments/catalog').then(setItems).catch(reason => setError(message(reason))) }, [])
-  return <section className="panel catalog-page">
-    <div className="section-heading"><div><h2>Catálogo de instrumentos</h2><p>Definições controladas pela aplicação. Esta página é somente leitura.</p></div></div>
-    {error && <div className="alert error">{error}</div>}
-    {!items.length && !error ? <div className="empty">Carregando catálogo…</div> : items.map(item => <article key={item.id}>
-      <div><strong>{item.symbol}</strong><span>{item.name}</span><small>{item.asset_type} · {item.exchange || 'Global'} · {item.currency || 'Sem moeda nativa'} · {item.status}</small></div>
-      <ul>{item.mappings.map(mapping => <li key={[mapping.provider, mapping.provider_symbol, mapping.quote_currency].join('|')}>
-        {mapping.provider} · {mapping.provider_symbol} · {mapping.quote_currency}{mapping.is_primary ? ' · PRINCIPAL' : ''}{!mapping.active ? ' · INATIVO' : ''}
-      </li>)}</ul>
-    </article>)}
-  </section>
-}
-
-type Mutate = (task: () => Promise<unknown>, success: string) => Promise<boolean>
-function Quotes({ portfolioId, assets, busy, readOnly, mutate }: { portfolioId: number; assets: Asset[]; busy: boolean; readOnly: boolean; mutate: Mutate }) {
-  const quoteAssets = assets.filter((asset, index) => assets.findIndex(item => item.id === asset.id) === index)
-  const [id, setId] = useState(quoteAssets[0]?.id ?? 0)
-  const [rows, setRows] = useState<Quote[]>([])
-  const [error, setError] = useState('')
-  const [version, setVersion] = useState(0)
-  const [draft, setDraft] = useState({ date: localDate().slice(0, 10), close: '' })
-  useEffect(() => {
-    if (!quoteAssets.some(asset => asset.id === id)) setId(quoteAssets[0]?.id ?? 0)
-  }, [assets, id])
-  const base = '/portfolios/' + portfolioId + '/assets/' + id
-  useEffect(() => {
-    if (!id) return
-    const controller = new AbortController(); setError(''); setRows([])
-    api<Quote[]>(base + '/history', 'GET', undefined, controller.signal).then(setRows).catch(e => { if (!controller.signal.aborted) setError(message(e)) })
-    return () => controller.abort()
-  }, [base, id, version])
-  if (!quoteAssets.length) return <div className="panel empty">Registre uma transação para adicionar cotações ao ativo.</div>
-  return <section className="panel"><div className="section-heading"><div><h2>Histórico de cotações</h2><p>Adicione preços manualmente ou atualize pelo Yahoo Finance.</p></div><label>Ativo<select value={id} disabled={busy} onChange={e => setId(Number(e.target.value))}>{quoteAssets.map(a => <option key={a.id} value={a.id}>{a.ticker}</option>)}</select></label></div>
-    <div className="quote-controls"><form onSubmit={async e => {
-      e.preventDefault()
-      if (await mutate(() => api(base + '/quote', 'PUT', { date: draft.date, close: Number(draft.close) }), 'Cotação salva.')) setVersion(version + 1)
-    }}><fieldset disabled={busy || readOnly}><div className="form-grid quote-grid"><label>Data da cotação<input required type="date" max={localDate().slice(0, 10)} value={draft.date} onChange={e => setDraft({ ...draft, date: e.target.value })} /></label>
-      <label>Fechamento<input required type="number" min="0" step="any" value={draft.close} onChange={e => setDraft({ ...draft, close: e.target.value })} /></label>
-    </div><div className="form-footer"><span>Dividendos e desdobramentos são cadastrados separadamente abaixo.</span><button className="button primary">Salvar cotação</button></div></fieldset></form>
-    <button className="button outline" disabled={busy || readOnly} onClick={async () => {
-      if (await mutate(() => api(base + '/refresh', 'POST'), 'Histórico atualizado; preços manuais preservados.')) setVersion(version + 1)
-    }}>{busy ? 'Processando…' : 'Atualizar pelo Yahoo Finance'}</button></div>
-    {error && <div role="alert" className="alert error">{error}</div>}
-    {!rows.length ? <div className="empty">Ainda não há cotações para este ativo.</div> : <div className="table-wrap"><table><thead><tr><th>Data</th><th>Fechamento / moeda</th><th>Dividendos</th><th>Desdobramento</th><th>Fonte</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(q => <tr key={q.date}><td>{dateLabel(q.date)}</td><td>{fmt(q.close, 4)}<small>{q.currency}</small></td><td>{fmt(q.dividends, 4)}</td><td>{fmt(q.stock_splits)}</td><td>{q.source}</td></tr>)}</tbody></table><p className="table-caption">Mostrando as {Math.min(rows.length, 100)} cotações mais recentes de {rows.length}.</p></div>}
-    <CorporateActionsPanel key={base} base={base} currency={quoteAssets.find(asset => asset.id === id)?.transaction_currency ?? 'BRL'} busy={busy || readOnly} mutate={mutate} refreshVersion={version} />
-  </section>
-}
-
-const eventLabels: Record<CorporateEvent['event_type'], string> = {
-  STOCK_SPLIT: 'Desdobramento', REVERSE_SPLIT: 'Grupamento', DIVIDEND: 'Dividendo',
-  JCP: 'JCP', AMORTIZATION: 'Amortização',
-}
-type EventDraft = {
-  event_type: CorporateEvent['event_type']; effective_date: string; payment_date: string;
-  amount_per_unit: string; conversion_factor: string; currency: string; notes: string
-}
-const emptyEventDraft = (currency: string): EventDraft => ({
-  event_type: 'DIVIDEND', effective_date: localDate().slice(0, 10), payment_date: '',
-  amount_per_unit: '', conversion_factor: '', currency, notes: '',
-})
-
-function CorporateActionsPanel({ base, currency, busy, mutate, refreshVersion }: {
-  base: string; currency: string; busy: boolean; mutate: Mutate; refreshVersion: number
-}) {
-  const [events, setEvents] = useState<CorporateEvent[]>([])
-  const [activity, setActivity] = useState<Activity[]>([])
-  const [error, setError] = useState('')
-  const [version, setVersion] = useState(0)
-  const [editing, setEditing] = useState<number | null>(null)
-  const [draft, setDraft] = useState<EventDraft>(() => emptyEventDraft(currency))
-  const split = draft.event_type === 'STOCK_SPLIT' || draft.event_type === 'REVERSE_SPLIT'
-  useEffect(() => {
-    const controller = new AbortController(); setError('')
-    Promise.all([
-      api<CorporateEvent[]>(base + '/corporate-events', 'GET', undefined, controller.signal),
-      api<Activity[]>(base + '/activity', 'GET', undefined, controller.signal),
-    ]).then(([eventRows, activityRows]) => { setEvents(eventRows); setActivity(activityRows) })
-      .catch(reason => { if (!controller.signal.aborted) setError(message(reason)) })
-    return () => controller.abort()
-  }, [base, version, refreshVersion])
-
-  function reset() { setEditing(null); setDraft(emptyEventDraft(currency)) }
-  function editEvent(event: CorporateEvent) {
-    setEditing(event.id)
-    setDraft({
-      event_type: event.event_type, effective_date: event.effective_date,
-      payment_date: event.payment_date ?? '', amount_per_unit: event.amount_per_unit == null ? '' : String(event.amount_per_unit),
-      conversion_factor: event.conversion_factor == null ? '' : String(event.conversion_factor),
-      currency: event.currency ?? currency, notes: event.notes,
-    })
-  }
-  async function saveEvent(e: FormEvent) {
-    e.preventDefault()
-    const payload = {
-      event_type: draft.event_type, effective_date: draft.effective_date,
-      payment_date: draft.payment_date || null, notes: draft.notes,
-      amount_per_unit: split ? null : draft.amount_per_unit,
-      conversion_factor: split ? draft.conversion_factor : null,
-      currency: split ? null : draft.currency,
-    }
-    const path = base + '/corporate-events' + (editing === null ? '' : '/' + editing)
-    if (await mutate(() => api(path, editing === null ? 'POST' : 'PUT', payload), 'Evento corporativo salvo.')) {
-      reset(); setVersion(value => value + 1)
-    }
-  }
-
-  return <>
-    <div className="section-heading"><div><h2>Eventos corporativos</h2><p>Eventos manuais são privados desta carteira; eventos do provedor são compartilhados pelo instrumento.</p></div></div>
-    <form className="quote-controls" onSubmit={saveEvent}><fieldset disabled={busy}><div className="form-grid quote-grid">
-      <label>Tipo<select value={draft.event_type} onChange={e => setDraft({ ...draft, event_type: e.target.value as CorporateEvent['event_type'], amount_per_unit: '', conversion_factor: '' })}>{Object.entries(eventLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-      <label>Data efetiva<input required type="date" max={localDate().slice(0, 10)} value={draft.effective_date} onChange={e => setDraft({ ...draft, effective_date: e.target.value })} /></label>
-      {split ? <label>Fator de conversão<input required type="number" min="0.000000000001" step="any" value={draft.conversion_factor} onChange={e => setDraft({ ...draft, conversion_factor: e.target.value })} /></label> : <>
-        <label>Valor por unidade<input required type="number" min="0" step="any" value={draft.amount_per_unit} onChange={e => setDraft({ ...draft, amount_per_unit: e.target.value })} /></label>
-        <label>Moeda<input required maxLength={3} pattern="[A-Za-z]{3}" value={draft.currency} onChange={e => setDraft({ ...draft, currency: e.target.value.toUpperCase() })} /></label>
-        <label>Data de pagamento<input type="date" min={draft.effective_date} value={draft.payment_date} onChange={e => setDraft({ ...draft, payment_date: e.target.value })} /></label>
-      </>}
-      <label className="wide">Observações<input maxLength={5000} value={draft.notes} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></label>
-    </div><div className="form-footer"><span>Eventos na data efetiva são aplicados antes das negociações do mesmo dia.</span><div className="row-actions">{editing !== null && <button type="button" className="button quiet" onClick={reset}>Cancelar</button>}<button className="button primary">{editing === null ? 'Adicionar evento' : 'Salvar alteração'}</button></div></div></fieldset></form>
-    {error && <div role="alert" className="alert error">{error}</div>}
-    {!!events.length && <div className="table-wrap"><table><thead><tr><th>Data / tipo</th><th>Definição</th><th>Efeito na carteira</th><th>Origem</th><th>Ações</th></tr></thead><tbody>{[...events].reverse().map(event => <tr key={event.origin + '-' + event.id}>
-      <td>{dateLabel(event.effective_date)}<small>{eventLabels[event.event_type]}</small></td><td>{event.conversion_factor != null ? 'Fator ' + fmt(event.conversion_factor, 6) : fmt(event.amount_per_unit, 6) + ' ' + event.currency}</td><td>{event.gross_amount != null ? 'Bruto ' + fmt(event.gross_amount, 4) + ' ' + event.currency : fmt(event.eligible_quantity, 6) + ' → posição ajustada'}</td><td>{event.origin === 'manual' ? 'Manual' : event.source}</td><td>{event.origin === 'manual' && <div className="row-actions"><button className="button quiet" onClick={() => editEvent(event)}>Editar</button><button className="button danger" onClick={() => {
-        if (window.confirm('Excluir este evento? A atualização das posições ficará pendente.')) void mutate(() => api(base + '/corporate-events/' + event.id, 'DELETE'), 'Evento excluído. Atualização das posições pendente.').then(ok => { if (ok) { reset(); setVersion(value => value + 1) } })
-      }}>Excluir</button></div>}</td>
-    </tr>)}</tbody></table></div>}
-    <div className="section-heading"><div><h2>Atividade do ativo</h2><p>Leitura cronológica unificada; transações e eventos continuam armazenados separadamente.</p></div></div>
-    {!activity.length ? <div className="empty">Nenhuma atividade registrada.</div> : <div className="table-wrap"><table><thead><tr><th>Data</th><th>Atividade</th><th>Quantidade elegível</th><th>Valor / fator</th><th>Origem</th></tr></thead><tbody>{[...activity].sort((a, b) => b.date.localeCompare(a.date) || (a.kind === b.kind ? 0 : a.kind === 'CORPORATE_ACTION' ? -1 : 1)).map(row => row.kind === 'TRANSACTION' ? <tr key={'transaction-' + row.id}>
-      <td>{dateLabel(row.date)}</td><td>{row.type === 'Buy' ? 'Compra' : 'Venda'}</td><td>{fmt(row.quantity, 6)}</td><td>{fmt(row.price, 4)} {row.currency}</td><td>{row.broker}</td>
-    </tr> : <tr key={'event-' + row.origin + '-' + row.id}>
-      <td>{dateLabel(row.date)}</td><td>{eventLabels[row.event_type]}</td><td>{fmt(row.eligible_quantity, 6)}</td><td>{row.conversion_factor != null ? 'Fator ' + fmt(row.conversion_factor, 6) : fmt(row.gross_amount, 4) + ' ' + row.currency}</td><td>{row.origin === 'manual' ? 'Manual' : row.source}</td>
-    </tr>)}</tbody></table></div>}
-  </>
-}
-
-function PerformancePanel({ portfolioId, overview }: { portfolioId: number; overview: Overview }) {
-  const [index, setIndex] = useState(0)
-  const [rows, setRows] = useState<Performance[]>([])
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const p = overview.positions[index]
-  useEffect(() => {
-    if (index >= overview.positions.length) setIndex(0)
-  }, [index, overview.positions.length])
-  const assetId = p?.asset_id
-  useEffect(() => {
-    setRows([]); setError('')
-    if (!p || !assetId) return
-    const controller = new AbortController(); setLoading(true)
-    const params = new URLSearchParams({ asset_id: String(assetId) })
-    api<Performance[]>('/portfolios/' + portfolioId + '/performance?' + params, 'GET', undefined, controller.signal)
-      .then(setRows).catch(e => { if (!controller.signal.aborted) setError(message(e)) })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
-    return () => controller.abort()
-  }, [portfolioId, assetId, p])
-  return <section className="panel"><div className="section-heading"><div><h2>Desempenho da posição · {overview.summary.display_currency}</h2><p>Ganho monetário com renda bruta; retorno percentual diário encadeado na tabela.</p></div>
-    <label>Posição<select value={index} onChange={e => setIndex(Number(e.target.value))}>{overview.positions.map((pos, i) => <option key={i} value={i}>{pos.asset}</option>)}</select></label></div>
-    {(overview.summary.history_status === 'pending' || rows.some(r => r.status !== 'complete')) && <div className="method-note">{overview.summary.history_status === 'pending' ? 'Histórico com atualização pendente. Use “Atualizar posições”.' : 'Histórico com dados incompletos. Confira as datas sem cotação ou câmbio e tente atualizar novamente.'}</div>}
-    {error && <div role="alert" className="alert error">{error}</div>}
-    {loading ? <div className="empty">Carregando histórico…</div> : !rows.length ? <div className="empty">Atualize as posições para gerar o histórico desta posição.</div> : <>
-      {rows.some(r => r.total_gain !== null) && <GainChart rows={rows} currency={overview.summary.display_currency} />}
-      <div className="table-wrap"><table><thead><tr><th>Data</th><th>Quantidade</th><th>Custo</th><th>Valor</th><th>Realizado</th><th>Não realizado</th><th>Renda bruta</th><th>Resultado total</th><th>Retorno acumulado</th><th>Cotação utilizada</th><th>Status</th></tr></thead><tbody>{[...rows].reverse().slice(0, 100).map(r => <tr key={r.date}><td>{dateLabel(r.date)}</td><td>{fmt(r.quantity, 6)}</td><td>{fmt(r.remaining_acquisition_cost)}</td><td>{fmt(r.market_value)}</td><td>{fmt(r.realized_gain)}</td><td>{fmt(r.unrealized_gain)}</td><td>{fmt(r.gross_income)}</td><td>{fmt(r.total_gain)}</td><td>{r.cumulative_return_pct === null ? '—' : fmt(r.cumulative_return_pct) + '%'}</td><td>{dateLabel(r.quote_date ?? null)}{r.quote_date && r.quote_date !== r.date && <small>Última disponível</small>}</td><td>{r.status === 'complete' ? 'Completo' : r.status === 'pending' ? 'Pendente' : 'Incompleto'}</td></tr>)}</tbody></table></div>
-    </>}
-  </section>
-}
-
-function GainChart({ rows, currency }: { rows: Performance[]; currency: string }) {
-  const values = rows.filter(r => r.total_gain !== null).map(r => Number(r.total_gain)), low = Math.min(0, ...values), high = Math.max(0, ...values)
-  const span = high - low || 1
-  const y = (n: number) => 160 - (n - low) / span * 125
-  const points = rows.map((r, i) => r.total_gain === null ? '' : ((i === 0 || rows[i - 1].total_gain === null) ? 'M' : 'L') + (55 + i / Math.max(rows.length - 1, 1) * 690) + ',' + y(Number(r.total_gain))).join(' ')
-  return <div className="chart"><p>Ganho total · {currency}</p><svg viewBox="0 0 800 205" role="img" aria-label="Evolução histórica do ganho total">
-    {[low, (high + low) / 2, high].map((v, i) => <g key={i}><line x1="55" x2="745" y1={y(v)} y2={y(v)} stroke="#e6ece8" /><text x="48" y={y(v) + 4} textAnchor="end">{fmt(v, 0)}</text></g>)}
-    <path d={points} fill="none" stroke="#27755b" strokeWidth="2.5" />
-    {rows.map((r, i) => r.total_gain !== null && (i === 0 || rows[i - 1].total_gain === null) && (i === rows.length - 1 || rows[i + 1].total_gain === null) ? <circle key={r.date} cx={55 + i / Math.max(rows.length - 1, 1) * 690} cy={y(Number(r.total_gain))} r="4" fill="#27755b" /> : null)}
-    <text x="55" y="190">{dateLabel(rows[0].date)}</text><text x="745" y="190" textAnchor="end">{dateLabel(rows[rows.length - 1].date)}</text>
-  </svg></div>
+  const update = () => { if (selected !== null) void mutate(() => api('/portfolios/' + selected + '/consolidate', 'POST'), 'Carteira atualizada.') }
+  const edit = (transaction: Transaction) => { if (!readOnly) setForm({ action: 'transaction', transaction }) }
+  const editMovement = (movement: FixedIncomeMovement) => { if (!readOnly) setForm({ action: 'contribution', lotId: movement.lot_id, movement }) }
+  let content
+  if (path.startsWith('/settings/spaces') || path === '/settings') content = <SettingsPage auth={auth} space={space} path={path === '/settings' ? '/settings/spaces' : path} onRefresh={onRefresh} onSwitch={onSwitch} />
+  else if (path.startsWith('/account/')) content = <AccountPage auth={auth} tab={path.split('/')[2]} onLinked={onLinked} />
+  else if (path.startsWith('/invite/')) content = <InvitationPage token={decodeURIComponent(path.slice(8))} onAccepted={onRefresh} />
+  else if (path.startsWith('/portfolios')) content = <PortfoliosPage key={path === '/portfolios/new' ? path : path + ':' + portfolios.find(p => p.id === routePortfolio)?.display_currency} portfolios={portfolios} portfolioId={routePortfolio || undefined} creating={path === '/portfolios/new'} space={space} readOnly={readOnly} busy={busy} mutate={mutate} onCreated={p => { setPortfolios(current => [...current.filter(item => item.id !== p.id), p]); setSelected(p.id) }} onSelect={setSelected} onUpdate={update} />
+  else if (path.startsWith('/instruments')) content = <InstrumentsPage key={path} lots={lots} instrumentId={path.match(/^\/instruments\/(\d+)$/) ? Number(path.split('/')[2]) : undefined} overview={overview} transactions={transactions} />
+  else if (path === '/help') content = <><PageHeader title="Ajuda" /><section className="panel settings-section"><h2>Comece pela carteira</h2><p>Adicione ou importe operações, atualize a carteira e confira os dados pendentes em Dados de mercado. Membros e convites são gerenciados em Configurações → Espaços financeiros.</p></section></>
+  else if (loading) content = <LoadingState />
+  else if (!selectedPortfolio || !overview) content = <EmptyState action={!readOnly ? <Link className="button primary" href="/portfolios/new">Criar primeira carteira</Link> : <Link href="/settings/spaces">Ver espaços financeiros</Link>}>{error ? 'Não foi possível carregar a carteira.' : 'Nenhuma carteira disponível no espaço financeiro ativo.'}</EmptyState>
+  else if (path === '/overview') content = <OverviewPage overview={overview} portfolioId={selected!} transactions={transactions} lots={lots} version={version} onAdd={readOnly ? undefined : () => add('transaction')} />
+  else if (path === '/positions') content = <PositionsPage overview={overview} lots={lots} onAdd={readOnly ? undefined : () => add('transaction')} onContribute={readOnly ? undefined : id => add('contribution', id)} onRedeem={readOnly ? undefined : id => add('redemption', id)} />
+  else if (/^\/positions\/\d+$/.test(path)) content = <PositionDetailPage assetId={Number(path.split('/')[2])} tab={query.get('tab') ?? 'overview'} overview={overview} transactions={transactions} portfolioId={selected!} readOnly={readOnly} busy={busy} version={version} mutate={mutate} onAdd={instrument => setForm({ action: 'transaction', instrument })} onEdit={edit} />
+  else if (/^\/fixed-income\/\d+$/.test(path)) content = <FixedIncomeDetailPage busy={busy} onDelete={readOnly ? undefined : m => { if (window.confirm(m.movement_type === 'INITIAL_INVESTMENT' ? 'Excluir a aplicação inicial e o lote? Movimentos futuros podem impedir a exclusão.' : 'Excluir este movimento? Movimentos posteriores podem impedir a exclusão.')) void mutate(() => api(`/portfolios/${selected}/fixed-income/lots/${m.lot_id}/movements/${m.id}`, 'DELETE'), 'Movimento excluído. Atualização da carteira pendente.') }} lot={lots.find(l => l.id === Number(path.split('/')[2]))} onContribute={readOnly ? undefined : id => add('contribution', id)} onRedeem={readOnly ? undefined : id => add('redemption', id)} onEdit={readOnly ? undefined : editMovement} />
+  else if (path === '/transactions/import') content = <><PageHeader title="Importar transações" description="Envie, revise, corrija e confirme as operações."><Link className="button outline" href="/transactions">← Voltar para Transações</Link></PageHeader>{readOnly ? <EmptyState>Seu papel permite somente leitura.</EmptyState> : <TransactionImportPage key={selected} portfolioId={selected} portfolioName={selectedPortfolio.name} busy={busy} mutate={mutate} />}</>
+  else if (path === '/transactions') content = <TransactionsPage portfolioId={selected!} transactions={transactions} lots={lots} busy={busy} readOnly={readOnly} mutate={mutate} onEdit={edit} onEditMovement={editMovement} onAdd={() => add('transaction')} />
+  else if (/^\/transactions\/\d+$/.test(path)) content = <TransactionDetailPage key={path} transaction={transactions.find(t => t.id === Number(path.split('/')[2]))} onEdit={readOnly ? undefined : edit} />
+  else if (path === '/performance') content = <PerformancePage portfolioId={selected!} overview={overview} lots={lots} version={version} />
+  else if (path === '/data' || path.startsWith('/data/')) content = <MarketDataPage key={path + ':' + selected} tab={path.split('/')[2] ?? 'status'} overview={overview} portfolioId={selected!} readOnly={readOnly} busy={busy} mutate={mutate} version={version} onUpdate={update} />
+  else content = <EmptyState action={<Link href="/overview">Abrir visão geral</Link>}>Página não encontrada.</EmptyState>
+  return <AppShell path={path} auth={auth} space={space} portfolios={portfolios} selected={selected} overview={overview} busy={busy} loading={loading} onSelect={selectPortfolio} onSwitch={onSwitch} onLogout={onLogout} onUpdate={update} onAdd={add}>
+    {(error || authError) && <ErrorState error={error || authError} retry={() => { setLoading(true); setError(''); void reload().catch(e => setError(message(e))).finally(() => setLoading(false)) }} />}{notice && <div className={'alert ' + (partial ? 'warning' : 'success')} role="status">{notice}{partial && <Link href="/data/status"> Ver status →</Link>}</div>}{content}
+    {form && selected !== null && !readOnly && <Modal title={form.transaction || form.movement ? 'Editar operação' : 'Adicionar operação'} onClose={() => { if (!busy) setForm(null) }}>
+      {form.action === 'transaction' ? <TransactionForm portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setForm(null)} transaction={form.transaction} instrument={form.instrument} /> : form.action === 'lot' ? <FixedIncomeForm portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setForm(null)} /> : <FixedIncomeMovementForm portfolioId={selected} busy={busy} mutate={mutate} onClose={() => setForm(null)} mode={form.movement ? 'EDIT' : form.action === 'redemption' ? 'REDEMPTION' : 'ADDITIONAL'} initialLotId={form.lotId} editing={form.movement} />}
+    </Modal>}
+  </AppShell>
 }

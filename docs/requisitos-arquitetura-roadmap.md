@@ -2,7 +2,7 @@
 
 Especificação de produto, arquitetura e plano de implementação — versão 0.1, 13/09/2026.
 
-**Estado:** proposta de implementação baseada nas respostas do proprietário, no código do Portfolio Tracker e na estrutura dos arquivos fornecidos. As escolhas recomendadas abaixo são decisões propostas, não funcionalidades já implementadas. Este documento não autoriza publicação, contratação de serviços ou movimentação financeira.
+**Estado:** proposta de implementação baseada nas respostas do proprietário, no código do Quintrion e na estrutura dos arquivos fornecidos. As escolhas recomendadas abaixo são decisões propostas, não funcionalidades já implementadas. Este documento não autoriza publicação, contratação de serviços ou movimentação financeira.
 
 **Implementação atual:** a fundação técnica usa React, FastAPI, SQLAlchemy,
 Alembic e PostgreSQL. Ela cobre carteiras, operações Buy/Sell, posições derivadas,
@@ -436,7 +436,7 @@ O patrimônio necessário pode ser obtido por busca numérica do saldo inicial q
 
 | Fonte | Evidência observada | Uso na migração |
 | --- | --- | --- |
-| Código do Portfolio Tracker | Migração incompleta de objetos/listas para SQLAlchemy; consultas de mercado dentro dos modelos; testes financeiros não estabelecidos | Referência de conceitos e cálculo; refatoração necessária |
+| Código do Quintrion | Migração incompleta de objetos/listas para SQLAlchemy; consultas de mercado dentro dos modelos; testes financeiros não estabelecidos | Referência de conceitos e cálculo; refatoração necessária |
 | `Controle de Investimentos_v2.0.xlsx` | Abas Transactions, Posições, Evolução, Plano Aposentadoria e auxiliares; moeda original/local; fórmulas com funções Google Sheets encapsuladas | Operações e premissas como fonte; resultados como referências a conferir, sem executar fórmulas na importação |
 | `Backup.xlsx` do Money Manager | Uma aba `Money Manager_2-19-26`; 2.064 registros de dados e cabeçalho | Importação financeira em staging, seguida de mapeamento e conciliação |
 
