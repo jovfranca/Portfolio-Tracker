@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, event, select, text
 from sqlalchemy.orm import Session
 
-from src.api.household_routes import AcceptInput, accept_invite, revoke_invite
+from src.api.household_routes import AcceptInput, accept_invite, reject_invite, revoke_invite
 from src.auth.providers import ProviderIdentity
 from src.auth.service import digest, now, resolve_identity
 from src.database import engine
@@ -110,3 +110,29 @@ def test_revocation_serializes_with_acceptance_without_deadlock(invited_guest):
     with Session(engine) as session:
         assert session.scalar(select(Membership).where(
             Membership.household_id == hid, Membership.user_id == guest_id)) is None
+
+
+def test_accept_and_reject_serialize_to_one_terminal_decision(invited_guest):
+    _, guest_id, hid, tokens = invited_guest
+    ready = Barrier(2)
+    def decide(action):
+        with Session(engine) as session:
+            session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            guest = session.get(User, guest_id)
+            ready.wait(timeout=5)
+            try:
+                action(AcceptInput(token=tokens[0]), session, guest)
+                return 200
+            except HTTPException as error:
+                return error.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(decide, [accept_invite, reject_invite]))
+    assert sorted(results) == [200, 404]
+    with Session(engine) as session:
+        invitation = session.scalar(select(HouseholdInvitation).where(
+            HouseholdInvitation.token_hash == digest(tokens[0])))
+        assert invitation.status in {'ACCEPTED', 'REJECTED'}
+        assert invitation.resolved_at is not None and invitation.resolved_by_user_id == guest_id
+        member = session.scalar(select(Membership).where(
+            Membership.household_id == hid, Membership.user_id == guest_id))
+        assert (member is not None) == (invitation.status == 'ACCEPTED')

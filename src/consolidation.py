@@ -289,6 +289,7 @@ def portfolio_series(session, portfolio_id):
                 'daily_return_pct': values['daily_return_pct'],
                 'cumulative_return_pct': values['cumulative_return_pct'],
                 'net_flow': sum_known(daily_rows, 'net_flow'),
+                'daily_income': sum_known(daily_rows, 'daily_income'),
             })
             previous_value, factor = values['market_value'], values['return_factor']
         day += timedelta(days=1)

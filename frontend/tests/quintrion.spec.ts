@@ -147,9 +147,10 @@ test('overview uses current reporting totals and dates historical return', async
     ...overview, summary: { ...overview.summary, acquisition_cost: '110', total_gain: '10' },
   } }))
   await page.goto('/overview')
-  await expect(page.locator('.metric').filter({ hasText: 'Custo de aquisição' }).locator('strong')).toHaveText('110,00')
-  await expect(page.locator('.metric').filter({ hasText: 'Resultado acumulado' }).locator('strong')).toHaveText('10,00')
-  await expect(page.locator('.metric').filter({ hasText: 'Retorno acumulado' })).toContainText('03/01/2024')
+  await page.getByText('Mais sobre a carteira', { exact: true }).click()
+  await expect(page.locator('.overview-secondary div').filter({ hasText: 'Custo de aquisição' }).locator('dd')).toHaveText(/R\$\s*110,00/)
+  await expect(page.locator('.overview-secondary div').filter({ hasText: 'Resultado acumulado' }).locator('dd')).toHaveText(/R\$\s*10,00/)
+  await expect(page.locator('.overview-secondary div').filter({ hasText: 'Retorno acumulado' })).toContainText('03/01/2024')
 })
 
 test('month and year performance periods clamp to the last valid calendar day', async ({ page }) => {
@@ -207,5 +208,5 @@ test('creating a portfolio cannot replace its overview with the previous portfol
   await page.getByRole('button', { name: 'Criar carteira', exact: true }).click()
   await expect(page).toHaveURL(/\/overview$/)
   await expect(page.getByLabel('Carteira', { exact: true })).toHaveValue('2')
-  await expect(page.locator('.metric.featured strong')).toHaveText('0,00')
+  await expect(page.locator('.metric.featured strong')).toHaveText(/R\$\s*0,00/)
 })

@@ -3,6 +3,13 @@ import type { Numeric } from './api'
 import { Link } from './navigation'
 
 export const fmt = (value: Numeric | null | undefined, digits = 2) => value == null ? '—' : Number(value).toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits })
+export const money = (value: Numeric | null | undefined, currency: string) => {
+  if (value == null) return '—'
+  const amount = Number(value)
+  if (!Number.isFinite(amount)) return '—'
+  if (currency === 'USD') return 'US$ ' + amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  try { return new Intl.NumberFormat('pt-BR', { style: 'currency', currency }).format(amount) } catch { return currency + ' ' + fmt(value) }
+}
 export const dateLabel = (value: string | null | undefined) => value ? value.slice(0, 10).split('-').reverse().join('/') : '—'
 export const message = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível concluir.'
 export const localDate = () => {

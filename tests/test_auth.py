@@ -271,7 +271,8 @@ def test_invitations_verified_identity_single_use_and_last_owner(auth_client, mo
     assert accepted.status_code == 200
     assert accepted.json()['id'] == hid
     assert c.get('/api/auth/me').json()['households'] == [
-        {'id': hid, 'name': alice['households'][0]['name'], 'role': 'EDITOR'},
+        {'id': hid, 'name': alice['households'][0]['name'], 'role': 'EDITOR',
+         'member_count': 2, 'portfolio_count': 0, 'status': 'ACTIVE'},
         *bob['households'],
     ]
     assert c.post('/api/invitations/accept', json={'token': invite['token']}).status_code == 404

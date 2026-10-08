@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, type AuthState, type Invitation, type Member, type Role, type Space } from './api'
 import { Link, navigate } from './navigation'
+import { useResource } from './useResource'
+import { ErrorState, LoadingState } from './ui'
 
 const errorText = (e: unknown) => e instanceof Error ? e.message : 'Não foi possível concluir.'
 const roles: Role[] = ['EDITOR', 'VIEWER', 'OWNER']
@@ -26,6 +28,7 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, path }:
   const base = '/households/' + spaceId
   const listing = path === '/settings/spaces'
   const creating = path === '/settings/spaces/new'
+  const spaces = useResource<Space[]>(listing ? '/households' : null)
 
   const loadAdministration = useCallback(async (signal?: AbortSignal) => {
     if (spaceId === undefined || listing || creating) return
@@ -49,7 +52,7 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, path }:
 
   async function mutate(work: () => Promise<void>, success: string) {
     setBusy(true); setError(''); setNotice('')
-    try { await work(); setNotice(success) }
+    try { await work(); if (listing) spaces.retry(); setNotice(success) }
     catch (e) { setError(errorText(e)) }
     finally { setBusy(false) }
   }
@@ -110,11 +113,7 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, path }:
 
   function accept(e: FormEvent) {
     e.preventDefault()
-    void mutate(async () => {
-      await api<Space>('/invitations/accept', 'POST', { token: token.trim() })
-      await onRefresh()
-      setToken('')
-    }, 'Convite aceito. O espaço está disponível no seletor acima.')
+    navigate('/invite/' + encodeURIComponent(token.trim()))
   }
 
   return <div className="settings-page">
@@ -124,9 +123,12 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, path }:
     {notice && <div className="alert success" role="status">{notice}</div>}
     {(listing || creating) && <section className="panel settings-section" aria-labelledby="spaces-heading">
       <h2 id="spaces-heading">Espaços financeiros</h2>
-      {listing && <div className="table-wrap"><table><thead><tr><th>Espaço</th><th>Seu papel</th><th>Ações</th></tr></thead>
-        <tbody>{auth.households.map(h => <tr key={h.id}>
+      {listing && spaces.loading && <LoadingState />}
+      {listing && spaces.error && <ErrorState error={spaces.error} retry={spaces.retry} />}
+      {listing && spaces.data && <div className="table-wrap"><table><thead><tr><th>Espaço</th><th>Seu papel</th><th>Membros</th><th>Carteiras</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody>{spaces.data.map(h => <tr key={h.id}>
           <td>{h.name}{h.id === space?.id && <small>Espaço selecionado</small>}</td><td>{h.role}</td>
+          <td>{h.member_count}</td><td>{h.portfolio_count}</td><td>{h.status === 'ACTIVE' ? 'Ativo' : '—'}</td>
           <td><div className="settings-actions"><Link className="button outline" href={'/settings/spaces/' + h.id}>Abrir configurações</Link>{h.id !== space?.id && <button className="button quiet" disabled={busy} onClick={() => { onSwitch(h.id); navigate('/settings/spaces/' + h.id) }}>Selecionar</button>}
             {h.role === 'OWNER' && <form key={h.name} onSubmit={e => renameSpace(e, h.id)}>
               <label>Nome do espaço: {h.name}<input name="name" required maxLength={120} defaultValue={h.name} /></label>
@@ -179,10 +181,10 @@ export default function SettingsPage({ auth, space, onRefresh, onSwitch, path }:
     </section>}
     </>}
     <section className="panel settings-section" aria-labelledby="accept-heading">
-      <h2 id="accept-heading">Aceitar convite</h2><p>Entre com uma identidade verificada que corresponda ao email convidado.</p>
+      <h2 id="accept-heading">Conferir convite</h2><p>Entre com uma identidade verificada que corresponda ao email convidado.</p>
       <form className="settings-form" onSubmit={accept}><fieldset disabled={busy}>
         <label>Token do convite<input required maxLength={512} autoComplete="off" value={token} onChange={e => setToken(e.target.value)} /></label>
-        <button className="button primary">Aceitar convite</button>
+        <button className="button primary">Conferir convite</button>
       </fieldset></form>
     </section>
   </div>

@@ -1,12 +1,31 @@
 export type Portfolio = { id: number; household_id: number; name: string; display_currency: string; dirty_from: string | null; history_built_through: string | null }
 export type Role = 'OWNER' | 'EDITOR' | 'VIEWER'
-export type Space = { id: number; name: string; role: Role }
+export type Space = { id: number; name: string; role: Role; member_count: number; portfolio_count: number; status: 'ACTIVE' }
 export type AuthState = { user: { id: number; display_name: string;
   identities: { provider: string; email: string | null; email_verified: boolean }[] }; households: Space[] }
 export type AuthConfig = { google_client_id: string | null; google_nonce: string | null; dev_enabled: boolean }
 export type Member = { id: number; user_id: number; display_name: string; role: Role }
 export type Invitation = { id: number; email: string; role: Role; expires_at: string }
+export type InvitationPreview = Invitation & { space: { id: number; name: string };
+  inviter: { id: number; display_name: string } | null; created_at: string; resolved_at: string | null;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'REVOKED' | 'EXPIRED' }
 export type Numeric = number | string
+export type PeriodAnalytics = { return_pct: Numeric | null; net_contributions: Numeric | null;
+  annualized_return_pct?: Numeric | null;
+  return_series?: { date: string; return_pct: Numeric | null }[];
+  benchmarks?: { code: string; status: string; return_pct: Numeric | null; annualized_return_pct: Numeric | null;
+    series: { date: string; return_pct: Numeric | null }[] }[];
+  monetary_result: Numeric | null; reporting_currency: string; status: string;
+  start_date: string | null; end_date: string | null; coverage_start: string | null; coverage_end: string | null }
+export type FxCoverage = { portfolio_id: number; reporting_currency: string; as_of: string;
+  fallback_days: number; status: string; requirements_status: string; unknown_requirements: string[];
+  last_successful_sync_at: string | null; sync_tracking: string;
+  pairs: { currency: string; base_currency: string; status: string; required_rate_type: string;
+    required_start: string; required_end: string; required_count: number; covered_count: number;
+    missing_dates: string[]; available_start: string | null; available_end: string | null;
+    sources: string[]; last_observation_retrieved_at: string | null;
+    requirements: { date: string; reference_date: string | null; fallback_used: boolean; reasons: string[] }[];
+    history: { reference_date: string; rate_type: string; side: string; rate: Numeric; source: string; retrieved_at: string | null }[] }[] }
 export type Transaction = {
   id: number; portfolio_id: number; trade_date: string; settlement_date: string;
   instrument_id: number;

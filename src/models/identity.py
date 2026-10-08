@@ -71,7 +71,7 @@ class HouseholdInvitation(Base):
     __tablename__ = 'household_invitations'
     __table_args__ = (
         CheckConstraint("role IN ('OWNER', 'EDITOR', 'VIEWER')", name='valid_role'),
-        CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'REVOKED')", name='valid_status'),
+        CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED')", name='valid_status'),
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     household_id: Mapped[int] = mapped_column(ForeignKey('households.id', ondelete='CASCADE'), index=True)
@@ -81,3 +81,6 @@ class HouseholdInvitation(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    invited_by_user_id: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'))
+    resolved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

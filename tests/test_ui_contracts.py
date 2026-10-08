@@ -80,11 +80,21 @@ def test_period_analytics_is_scoped_and_validates_range(auth_client, monkeypatch
         from src.services import get_portfolio
         get_portfolio(session, pid)
         return [{'date': date(2024, 1, 2), 'status': 'complete',
-                 'daily_return_pct': Decimal('10'), 'net_flow': Decimal('50')}]
+                 'daily_return_pct': Decimal('10'), 'net_flow': Decimal('50'),
+                 'market_value': Decimal('55'), 'daily_income': Decimal('0'), 'reporting_currency': 'BRL'}]
     monkeypatch.setattr('src.api.routes.portfolio_series', series)
-    assert client.get(f'/api/portfolios/{portfolio_id}/analytics').json() == {
+    assert client.get(f'/api/portfolios/{portfolio_id}/analytics?end_date=2024-01-02').json() == {
         'return_pct': 10, 'net_contributions': 50, 'status': 'complete',
+        'monetary_result': 5, 'reporting_currency': 'BRL',
+        'start_date': '2024-01-02', 'end_date': '2024-01-02',
+        'coverage_start': '2024-01-02', 'coverage_end': '2024-01-02',
+        'requested_start_date': None, 'requested_end_date': '2024-01-02',
     }
+    assert client.get(f'/api/portfolios/{portfolio_id}/analytics').json()['monetary_result'] is None
+    today = date.today().isoformat()
+    same_day = client.get(f'/api/portfolios/{portfolio_id}/analytics?start_date={today}&end_date={today}').json()
+    assert same_day['start_date'] == same_day['end_date'] == today
+    assert same_day['monetary_result'] is None
     login(client, 'bob')
     assert client.get(f'/api/portfolios/{portfolio_id}/analytics').status_code == 404
 
@@ -111,3 +121,47 @@ def test_spa_deep_links_preserve_api_and_asset_404s(tmp_path, monkeypatch):
         for path in ['/api/nonexistent', '/assets/missing.js', '/brand/missing.svg']:
             assert client.get(path).status_code == 404
         assert client.get('/favicon.ico').content == b'icon'
+
+
+def test_period_result_projects_real_consolidated_market_history(auth_client, monkeypatch):
+    from datetime import date, timedelta
+    from src.corporate_actions import CorporateActionResult, get_stored_actions
+    # Simulate successful provider action coverage, keeping the real ledger/projection.
+    monkeypatch.setattr('src.consolidation.get_actions', lambda session, asset, start, end:
+                        CorporateActionResult(get_stored_actions(session, asset, start, end), []))
+    client, _ = auth_client
+    login(client)
+    pid = client.post('/api/portfolios', json={'name': 'Period result'}).json()['id']
+    iid = client.post('/api/instruments/custom', json={
+        'symbol': 'PERIOD', 'name': 'Synthetic period result', 'currency': 'BRL',
+    }).json()['id']
+    first, end = date.today() - timedelta(days=3), date.today() - timedelta(days=1)
+    assert client.post(f'/api/portfolios/{pid}/transactions', json={
+        'asset': 'PERIOD', 'instrument_id': iid, 'type': 'Buy', 'broker': 'Example',
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+        'quantity': '10', 'price': '10', 'transaction_currency': 'BRL',
+    }).status_code == 201
+    aid = client.get(f'/api/portfolios/{pid}/overview').json()['assets'][0]['id']
+    for day, close in [(first, '10'), (end, '12')]:
+        assert client.put(f'/api/portfolios/{pid}/assets/{aid}/quote', json={
+            'date': day.isoformat(), 'close': close,
+        }).status_code == 200
+    assert client.post(f'/api/portfolios/{pid}/assets/{aid}/corporate-events', json={
+        'event_type': 'DIVIDEND', 'effective_date': end.isoformat(),
+        'amount_per_unit': '1', 'currency': 'BRL',
+    }).status_code == 201
+    assert client.get(f'/api/portfolios/{pid}/analytics').json()['monetary_result'] is None
+    assert client.post(f'/api/portfolios/{pid}/consolidate').status_code == 200
+    result = client.get(f'/api/portfolios/{pid}/analytics').json()
+    assert result['monetary_result'] == 30 and result['net_contributions'] == 100
+    assert result['reporting_currency'] == 'BRL' and result['status'] == 'complete'
+    assert result['start_date'] == first.isoformat() and result['end_date'] == end.isoformat()
+    history = client.get(f'/api/portfolios/{pid}/history').json()
+    assert history[-1]['daily_income'] == 10
+    assert client.put(f'/api/portfolios/{pid}/transactions/' + str(client.get(
+        f'/api/portfolios/{pid}/transactions').json()[0]['id']), json={
+        'asset': 'PERIOD', 'instrument_id': iid, 'type': 'Buy', 'broker': 'Example',
+        'trade_date': first.isoformat(), 'settlement_date': first.isoformat(),
+        'quantity': '9', 'price': '10', 'transaction_currency': 'BRL',
+    }).status_code == 200
+    assert client.get(f'/api/portfolios/{pid}/analytics').json()['monetary_result'] is None

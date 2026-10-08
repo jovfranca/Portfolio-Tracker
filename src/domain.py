@@ -799,21 +799,108 @@ def portfolio_day(rows, previous_value, previous_factor):
     }
 
 
-def period_summary(rows, start_date=None, end_date=None):
-    """Summarize existing reporting-currency daily results without filling gaps."""
+def period_summary(rows, start_date=None, end_date=None, *, inception_date=None):
+    """Summarize the full inception series using the existing daily return numerator.
+
+    Invested assets exclude cash: purchases add capital, net sale/redemption
+    proceeds remove it, and distributions are income. Sum V[d] + income[d]
+    - V[d-1] - flow[d], including fees and FX through the dated projections.
+    The inception opening value is zero, as in portfolio_day. A later period
+    needs the preceding closing snapshot; missing inputs never become zero.
+    """
+    rows = sorted(rows, key=lambda row: row['date'])
     selected = [row for row in rows if (start_date is None or row['date'] >= start_date)
                 and (end_date is None or row['date'] <= end_date)]
-    complete = bool(selected) and all(row['status'] == 'complete' for row in selected)
+    first = selected[0]['date'] if selected else None
+    last = selected[-1]['date'] if selected else None
+    inception = inception_date or (rows[0]['date'] if rows else None)
+    contiguous = bool(selected) and (last - first).days + 1 == len(selected)
+    covered = contiguous and first == max(start_date or inception, inception) and (end_date is None or last == end_date)
+    complete = covered and all(row['status'] == 'complete' for row in selected)
     known_returns = complete and all(row['daily_return_pct'] is not None for row in selected)
     factor = Decimal('1')
     if known_returns:
         for row in selected:
             factor *= Decimal('1') + decimal(row['daily_return_pct']) / 100
+    currencies = {row.get('reporting_currency') for row in rows if not end_date or row['date'] <= end_date}
+    currency = next(iter(currencies)) if len(currencies) == 1 else None
+    opening = next((row for row in rows if first and row['date'] == first - timedelta(days=1)), None)
+    initial = bool(selected) and first == inception
+    previous_value = ZERO if initial else opening.get('market_value') if opening else None
+    known_result = complete and currency is not None and (initial or opening is not None
+                   and opening['status'] == 'complete') and previous_value is not None
+    monetary_result = ZERO
+    for row in selected:
+        value, flow, income = (row.get(field) for field in ('market_value', 'net_flow', 'daily_income'))
+        if not known_result or any(v is None for v in (value, flow, income)):
+            known_result = False
+            break
+        monetary_result += decimal(value) + decimal(income) - decimal(previous_value) - decimal(flow)
+        previous_value = value
     return {
         'return_pct': (factor - 1) * 100 if known_returns else None,
-        'net_contributions': sum_known(selected, 'net_flow') if complete else None,
-        'status': 'complete' if known_returns else 'incomplete',
+        'net_contributions': sum_known(selected, 'net_flow') if complete and currency is not None else None,
+        'monetary_result': monetary_result if known_result else None,
+        'reporting_currency': currency,
+        'start_date': start_date or first, 'end_date': end_date or last,
+        'coverage_start': first, 'coverage_end': last,
+        'status': 'complete' if known_returns and known_result else 'incomplete',
     }
+
+
+def annualized_period_return(summary):
+    """Annualize a complete time-weighted period over its effective calendar days.
+
+    This is a reporting projection (365-day year), not a contractual yield.
+    """
+    value = summary.get('return_pct')
+    start, end = summary.get('coverage_start'), summary.get('coverage_end')
+    if summary.get('status') != 'complete' or value is None or not start or not end or end < start:
+        return None
+    factor = 1 + decimal(value) / 100
+    if factor < 0:
+        return None
+    return (factor ** (Decimal(365) / Decimal((end - start).days + 1)) - 1) * 100
+
+
+def period_return_series(rows, start_date=None, end_date=None):
+    """Rebase existing daily time-weighted returns; unknown segments stay unknown."""
+    selected = sorted((r for r in rows if (not start_date or r['date'] >= start_date)
+                       and (not end_date or r['date'] <= end_date)), key=lambda r: r['date'])
+    factor, previous = Decimal(1), None
+    result = []
+    for row in selected:
+        if (row['status'] != 'complete' or row['daily_return_pct'] is None
+                or previous and row['date'] != previous + timedelta(days=1)):
+            factor = None
+        if factor is not None:
+            factor *= 1 + decimal(row['daily_return_pct']) / 100
+        result.append({'date': row['date'], 'return_pct': (factor - 1) * 100 if factor is not None else None})
+        previous = row['date']
+    return result
+
+
+def cdi_return_series(dates, observations):
+    """Compound stored CDI percent-per-business-day observations on BR dates.
+
+    Reuses the supported BR calendar. No fetching or missing-rate substitution.
+    """
+    factor = Decimal(1)
+    result = []
+    cursor = dates[0] if dates else None
+    for day in dates:
+        # Chart dates can omit portfolio snapshots. They are output coordinates,
+        # not permission to skip an intervening business day's CDI observation.
+        while cursor <= day:
+            if _fixed_income_business_day(cursor, 'BR'):
+                value = observations.get(cursor)
+                if value is None or decimal(value) <= -100:
+                    factor = None
+                elif factor is not None:
+                    factor *= 1 + decimal(value) / 100
+            cursor += timedelta(days=1)
+        result.append({'date': day, 'return_pct': (factor - 1) * 100 if factor is not None else None})
+    return result
 
 
 def fixed_income_valuation(lot, movements, valuation_date, observations=(), *, initial_state=None):

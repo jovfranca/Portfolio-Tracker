@@ -4,12 +4,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.database import Base, get_session
-from src.domain import corporate_event_effects, position_now, period_summary
-from src.models import Asset, Benchmark, Instrument, Portfolio, Transaction, TransactionImport, UserCorporateEvent
+from src.domain import (corporate_event_effects, position_now, period_summary,
+                        annualized_period_return, period_return_series, cdi_return_series)
+from src.models import Asset, Benchmark, FixedIncomeLot, Instrument, Portfolio, Transaction, TransactionImport, UserCorporateEvent
 from src.corporate_actions import SPLIT_TYPES, get_actions, get_stored_actions
 from src.instruments import (
     add_alias, catalog_instruments, create_instrument, resolve_instrument, search_instruments,
@@ -217,6 +218,12 @@ def portfolio_overview(portfolio_id: int, session: DB):
     return get_overview(session, portfolio_id)
 
 
+@router.get('/portfolios/{portfolio_id}/fx-coverage')
+def fx_coverage(portfolio_id: int, session: DB):
+    from src.fx_reporting import portfolio_fx_coverage
+    return portfolio_fx_coverage(session, portfolio_id)
+
+
 @router.post('/portfolios/{portfolio_id}/fixed-income/lots', status_code=201)
 def create_fixed_income_lot(portfolio_id: int, payload: FixedIncomeLotInput, session: DB):
     lot = create_lot(session, portfolio_id, payload)
@@ -289,10 +296,56 @@ def portfolio_performance(portfolio_id: int, session: DB):
 
 @router.get('/portfolios/{portfolio_id}/analytics')
 def portfolio_period_analytics(portfolio_id: int, session: DB,
-                               start_date: date | None = None, end_date: date | None = None):
+                               start_date: date | None = None, end_date: date | None = None,
+                               include_series: bool = False, benchmark_codes: str = ''):
     if start_date and end_date and end_date < start_date:
         raise HTTPException(422, 'A data final deve ser igual ou posterior à inicial.')
-    return period_summary(portfolio_series(session, portfolio_id), start_date, end_date)
+    if (start_date and start_date > date.today()) or (end_date and end_date > date.today()):
+        raise HTTPException(422, 'O período não pode estar no futuro.')
+    # History contains closed days only; today's current quote is a separate projection.
+    closed_end = min(end_date or date.today(), date.today() - timedelta(days=1))
+    if start_date and start_date > closed_end:
+        closed_end = end_date or date.today()  # no closed days, but keep a valid selected range
+    portfolio = get_portfolio(session, portfolio_id)
+    rows = portfolio_series(session, portfolio_id)
+    activity_starts = [session.scalar(select(func.min(Transaction.trade_date)).where(
+        Transaction.portfolio_id == portfolio_id)), session.scalar(select(func.min(FixedIncomeLot.start_date)).
+        join(Asset, FixedIncomeLot.asset_id == Asset.id).where(Asset.portfolio_id == portfolio_id))]
+    # Sources can precede the first available snapshot. Never assume a truncated series opened at zero.
+    starts = [day for day in activity_starts if day is not None]
+    if rows:
+        starts.append(rows[0]['date'])
+    inception = min(starts, default=None)
+    result = period_summary(rows, start_date, closed_end, inception_date=inception)
+    response = {**result, 'reporting_currency': portfolio.display_currency,
+                'requested_start_date': start_date, 'requested_end_date': end_date}
+    if include_series:
+        from src.benchmarks import stored_observations
+
+        series = period_return_series(rows, start_date, closed_end)
+        response['annualized_return_pct'] = annualized_period_return(result)
+        response['return_series'] = series
+        comparisons = []
+        for code in dict.fromkeys(c.strip().upper() for c in benchmark_codes.split(',') if c.strip()):
+            comparison = {'code': code, 'status': 'unsupported', 'return_pct': None,
+                          'annualized_return_pct': None, 'series': []}
+            benchmark = session.scalar(select(Benchmark).where(Benchmark.code == code, Benchmark.status == 'ACTIVE')) if code == 'CDI' else None
+            if (code == 'CDI' and portfolio.display_currency == 'BRL' and benchmark is not None
+                    and benchmark.frequency == 'DAILY' and benchmark.unit == 'PERCENT_PER_DAY'
+                    and benchmark.reference_currency == 'BRL' and benchmark.jurisdiction == 'BR'):
+                dates = [r['date'] for r in series]
+                observations = stored_observations(session, benchmark, dates[0], dates[-1]) if dates else []
+                comparison['series'] = cdi_return_series(dates, {r.reference_date: r.value for r in observations})
+                complete = result['status'] == 'complete' and bool(dates) and all(
+                    r['return_pct'] is not None for r in comparison['series'])
+                comparison['status'] = 'complete' if complete else 'incomplete'
+                if complete:
+                    comparison['return_pct'] = comparison['series'][-1]['return_pct']
+                    comparison['annualized_return_pct'] = annualized_period_return({
+                        **result, 'return_pct': comparison['return_pct']})
+            comparisons.append(comparison)
+        response['benchmarks'] = comparisons
+    return response
 
 
 @router.get('/portfolios/{portfolio_id}/transactions', response_model=list[TransactionOutput])

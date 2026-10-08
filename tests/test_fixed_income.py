@@ -68,6 +68,38 @@ def lot_payload(**changes):
     return payload
 
 
+def test_fx_coverage_keeps_dirty_saved_lots_provisional_and_includes_backdated_start(client, monkeypatch):
+    c, engine = client
+    monkeypatch.setattr('src.api.market_data.fetch_rates', lambda *args: [])
+    start = date.today() - timedelta(days=3)
+    earlier = start - timedelta(days=2)
+    created = c.post('/api/portfolios/1/fixed-income/lots', json=lot_payload(
+        start_date=start.isoformat(), maturity_date=None, fixed_rate='0',
+        day_count_basis='ACT_365', business_day_calendar='NONE')).json()
+    assert c.post('/api/portfolios/1/consolidate').status_code == 200
+    assert c.put('/api/portfolios/1', json={'name': 'Savings', 'display_currency': 'USD'}).status_code == 200
+    with Session(engine) as session:
+        session.add(ExchangeRate(currency='USD', rate_type='FX', rate_side='MARKET',
+            reference_date=start, rate=Decimal('5'), source='synthetic'))
+        session.commit()
+    movement_url = f"/api/portfolios/1/fixed-income/lots/{created['id']}/movements/{created['movements'][0]['id']}"
+    assert c.put(movement_url, json={'movement_type': 'INITIAL_INVESTMENT',
+        'effective_date': earlier.isoformat(), 'amount': '1000', 'currency': 'BRL'}).status_code == 200
+    coverage = c.get('/api/portfolios/1/fx-coverage').json()
+    assert coverage['requirements_status'] == 'pending'
+    pair = coverage['pairs'][0]
+    assert pair['required_start'] == earlier.isoformat()
+    assert pair['missing_dates'] == [earlier.isoformat(), (earlier + timedelta(days=1)).isoformat()]
+    # Deletion also keeps the old snapshot requirements provisional until consolidation.
+    assert c.delete(movement_url).status_code == 204
+    retained = c.get('/api/portfolios/1/fx-coverage').json()
+    assert retained['requirements_status'] == 'pending'
+    assert retained['pairs'][0]['required_start'] == start.isoformat()
+    assert c.post('/api/portfolios/1/consolidate').status_code == 200
+    cleared = c.get('/api/portfolios/1/fx-coverage').json()
+    assert cleared['pairs'] == [] and cleared['requirements_status'] == 'complete'
+
+
 def test_reporting_uses_saved_lots_through_pending_edits_and_deletion(client, monkeypatch):
     c, engine = client
     start = date.today() - timedelta(days=4)

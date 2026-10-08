@@ -121,7 +121,8 @@ def invite(household_id: int, payload: InvitationInput, session: DB, user: Curre
     require_household_access(session, user, household_id, roles={'OWNER'}, lock=True)
     token = secrets.token_urlsafe(32)
     invitation = HouseholdInvitation(household_id=household_id, email=payload.email, role=payload.role,
-                                     token_hash=digest(token), expires_at=now() + timedelta(days=7))
+                                     token_hash=digest(token), expires_at=now() + timedelta(days=7),
+                                     invited_by_user_id=user.id)
     session.add(invitation)
     session.commit()
     return {'id': invitation.id, 'token': token, 'expires_at': invitation.expires_at,
@@ -135,33 +136,76 @@ def revoke_invite(household_id: int, invitation_id: int, session: DB, user: Curr
         HouseholdInvitation.id == invitation_id, HouseholdInvitation.household_id == household_id))
     if invitation is None:
         raise HTTPException(404, 'Invitation not found.')
+    if invitation.status != 'PENDING' or expired(invitation.expires_at):
+        raise HTTPException(409, 'Only a pending invitation can be revoked.')
     invitation.status = 'REVOKED'
+    invitation.resolved_at, invitation.resolved_by_user_id = now(), user.id
     session.commit()
 
 
-@router.post('/invitations/accept')
-def accept_invite(payload: AcceptInput, session: DB, user: CurrentUser):
+def recipient_invitation(session, user, token, *, lock=False):
     household_id = session.scalar(select(HouseholdInvitation.household_id).where(
-        HouseholdInvitation.token_hash == digest(payload.token)))
+        HouseholdInvitation.token_hash == digest(token)))
     if household_id is None:
         raise HTTPException(404, 'Invitation not found or expired.')
     # Use the same household-first lock order as member/invitation administration.
     # This serializes distinct invitations for one membership and avoids a cycle
     # between acceptance's invitation lock and revocation's household lock.
-    session.scalar(select(Household).where(Household.id == household_id).with_for_update())
-    invitation = session.scalar(select(HouseholdInvitation).where(
-        HouseholdInvitation.token_hash == digest(payload.token)).with_for_update())
-    if invitation is None or invitation.status != 'PENDING' or expired(invitation.expires_at):
+    if lock:
+        session.scalar(select(Household).where(Household.id == household_id).with_for_update())
+    query = select(HouseholdInvitation).where(HouseholdInvitation.token_hash == digest(token))
+    invitation = session.scalar(query.with_for_update() if lock else query)
+    if invitation is None:
         raise HTTPException(404, 'Invitation not found or expired.')
     identity = session.scalar(select(AuthIdentity).where(
         AuthIdentity.user_id == user.id, func.lower(AuthIdentity.email) == invitation.email,
         AuthIdentity.email_verified.is_(True)))
     if identity is None:
         raise HTTPException(403, 'Sign in with a verified identity matching the invited email.')
+    return invitation
+
+
+def invitation_data(session, invitation):
+    space = session.get(Household, invitation.household_id)
+    inviter = session.get(User, invitation.invited_by_user_id) if invitation.invited_by_user_id else None
+    return {'id': invitation.id, 'space': {'id': space.id, 'name': space.name},
+            'inviter': {'id': inviter.id, 'display_name': inviter.display_name} if inviter else None,
+            'email': invitation.email, 'role': invitation.role,
+            'status': ('EXPIRED' if invitation.status == 'PENDING' and expired(invitation.expires_at)
+                       else invitation.status),
+            'created_at': invitation.created_at, 'expires_at': invitation.expires_at,
+            'resolved_at': invitation.resolved_at}
+
+
+@router.post('/invitations/preview')
+def preview_invite(payload: AcceptInput, session: DB, user: CurrentUser):
+    return invitation_data(session, recipient_invitation(session, user, payload.token))
+
+
+def pending_recipient_invitation(session, user, token):
+    invitation = recipient_invitation(session, user, token, lock=True)
+    if invitation.status != 'PENDING' or expired(invitation.expires_at):
+        raise HTTPException(404, 'Invitation not found or expired.')
+    return invitation
+
+
+@router.post('/invitations/reject')
+def reject_invite(payload: AcceptInput, session: DB, user: CurrentUser):
+    invitation = pending_recipient_invitation(session, user, payload.token)
+    invitation.status = 'REJECTED'
+    invitation.resolved_at, invitation.resolved_by_user_id = now(), user.id
+    session.commit()
+    return invitation_data(session, invitation)
+
+
+@router.post('/invitations/accept')
+def accept_invite(payload: AcceptInput, session: DB, user: CurrentUser):
+    invitation = pending_recipient_invitation(session, user, payload.token)
     existing = session.scalar(select(Membership).where(
         Membership.household_id == invitation.household_id, Membership.user_id == user.id))
     if existing is None:
         session.add(Membership(household_id=invitation.household_id, user_id=user.id, role=invitation.role))
     invitation.status = 'ACCEPTED'
+    invitation.resolved_at, invitation.resolved_by_user_id = now(), user.id
     session.commit()
     return space_data(session, user, invitation.household_id)

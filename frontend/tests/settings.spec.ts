@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import type { AuthState, Member, Role } from '../src/api'
+const counts = { member_count: 1, portfolio_count: 0, status: 'ACTIVE' as const }
 
 test('Settings administers spaces and invitations through the real API', async ({ page }) => {
   const username = 'settings-' + Date.now()
@@ -57,7 +58,7 @@ test('Settings administers spaces and invitations through the real API', async (
 test('linked Google state survives reload and acceptance refreshes spaces', async ({ page }) => {
   let state: AuthState = { user: { id: 1, display_name: 'Alice', identities: [
     { provider: 'LOCAL', email: 'alice@gmail.com', email_verified: true },
-  ] }, households: [{ id: 10, name: 'Personal', role: 'OWNER' }] }
+  ] }, households: [{ id: 10, name: 'Personal', role: 'OWNER', ...counts }] }
   let linked = false
   await page.addInitScript(() => {
     let callback: (result: { credential: string }) => void
@@ -75,6 +76,11 @@ test('linked Google state survives reload and acceptance refreshes spaces', asyn
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/auth/me') return route.fulfill({ json: state })
+    if (path === '/api/households') return route.fulfill({ json: state.households })
+    if (path === '/api/invitations/preview') return route.fulfill({ json: {
+      id: 1, space: { id: 20, name: 'Shared' }, inviter: { id: 3, display_name: 'Owner' },
+      email: 'alice@gmail.com', role: 'EDITOR', status: 'PENDING', expires_at: '2027-01-01T00:00:00Z',
+    } })
     if (path === '/api/auth/config') return route.fulfill({ json: {
       google_client_id: 'synthetic-client', google_nonce: 'synthetic-nonce', dev_enabled: true,
     } })
@@ -86,7 +92,7 @@ test('linked Google state survives reload and acceptance refreshes spaces', asyn
     }
     if (path === '/api/invitations/accept') {
       expect(route.request().postDataJSON()).toEqual({ token: 'synthetic-invite' })
-      state = { ...state, households: [...state.households, { id: 20, name: 'Shared', role: 'EDITOR' }] }
+      state = { ...state, households: [...state.households, { id: 20, name: 'Shared', role: 'EDITOR', ...counts }] }
       return route.fulfill({ json: state.households[1] })
     }
     return route.fulfill({ json: [] })
@@ -103,11 +109,13 @@ test('linked Google state survives reload and acceptance refreshes spaces', asyn
   await expect(page.getByRole('button', { name: 'Vincular Google', exact: true })).toHaveCount(0)
   await page.goto('/settings/spaces')
   await page.getByLabel('Token do convite', { exact: true }).fill(' synthetic-invite ')
+  await page.getByRole('button', { name: 'Conferir convite', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Convite para espaço financeiro' })).toBeVisible()
   await page.getByRole('button', { name: 'Aceitar convite', exact: true }).click()
   const selector = page.getByLabel('Espaço financeiro', { exact: true })
   await expect(selector).toContainText('Shared')
   await expect(selector).toContainText('Personal')
-  await expect(selector).toHaveValue('10')
+  await expect(selector).toHaveValue('20')
   await expect(page.getByLabel('Token do convite', { exact: true })).toHaveValue('')
   await page.goto('/settings/spaces/20')
   await expect(page.getByRole('heading', { name: 'Membros e acesso — Shared' })).toBeVisible()
@@ -140,7 +148,7 @@ for (const role of ['EDITOR', 'VIEWER'] as Role[]) {
       await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
     }
     await expect(page.getByRole('button', { name: 'Criar espaço', exact: true })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'Aceitar convite', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Conferir convite', exact: true })).toBeVisible()
     expect(administrationRequests.length).toBeGreaterThan(0)
     expect(administrationRequests.every(path => path === '/api/households/20/members')).toBeTruthy()
   })
@@ -158,6 +166,7 @@ test('expired session during account refresh returns to login', async ({ page })
       expired = true
       return route.fulfill({ json: { id: 10, name: 'Renamed', role: 'OWNER' } })
     }
+    if (path === '/api/households') return route.fulfill({ json: [{ id: 10, name: 'Personal', role: 'OWNER', ...counts }] })
     if (path === '/api/auth/config') return route.fulfill({ json: {
       google_client_id: null, google_nonce: null, dev_enabled: true,
     } })
@@ -172,7 +181,7 @@ test('expired session during account refresh returns to login', async ({ page })
 
 test('OWNER changes and removes members; self-demotion refreshes permissions', async ({ page }) => {
   let state: AuthState = { user: { id: 1, display_name: 'Alice', identities: [] },
-    households: [{ id: 10, name: 'Family', role: 'OWNER' }] }
+    households: [{ id: 10, name: 'Family', role: 'OWNER', ...counts }] }
   let members: Member[] = [
     { id: 1, user_id: 1, display_name: 'Alice', role: 'OWNER' },
     { id: 2, user_id: 2, display_name: 'Bob', role: 'EDITOR' },

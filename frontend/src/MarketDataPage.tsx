@@ -3,6 +3,7 @@ import { api, type Overview } from './api'
 import BenchmarkInspection from './BenchmarkInspection'
 import { Attention } from './OverviewPage'
 import { CorporateActionsPanel, Quotes } from './MarketPanels'
+import FxCoveragePanel from './FxCoveragePanel'
 import { dateLabel, EmptyState, fmt, localDate, message, PageHeader, Tabs, type Mutate } from './ui'
 
 export default function MarketDataPage({ tab, overview, portfolioId, readOnly, busy, mutate, version, onUpdate }: { tab: string; overview: Overview; portfolioId: number; readOnly: boolean; busy: boolean; mutate: Mutate; version: number; onUpdate: () => void }) {
@@ -11,10 +12,10 @@ export default function MarketDataPage({ tab, overview, portfolioId, readOnly, b
   const items = [['status', 'Status'], ['quotes', 'Cotações'], ['fx', 'Câmbio'], ['benchmarks', 'Benchmarks'], ['corporate-actions', 'Eventos corporativos']].map(([key, label]) => ['/data/' + key, label] as const)
   return <><PageHeader title="Dados de mercado" description="Monitore cotações, câmbio, benchmarks e eventos que sustentam sua carteira." />
     <Tabs items={items} active={'/data/' + tab} />
-    {tab === 'status' && <><Attention overview={overview} /><section className="panel settings-section"><h2>Status da carteira</h2><p>Histórico atualizado até {dateLabel(overview.summary.history_built_through)}. {overview.methodology}</p>{!readOnly && <button className="button primary" disabled={busy} onClick={onUpdate}>Atualizar tudo</button>}</section></>}
+    {tab === 'status' && <><Attention overview={overview} /><FxCoveragePanel portfolioId={portfolioId} version={version} compact /><section className="panel settings-section"><h2>Status da carteira</h2><p>Histórico atualizado até {dateLabel(overview.summary.history_built_through)}. {overview.methodology}</p>{!readOnly && <button className="button primary" disabled={busy} onClick={onUpdate}>Atualizar tudo</button>}</section></>}
     {tab === 'quotes' && <Quotes key={version} portfolioId={portfolioId} assets={marketAssets} initialAssetId={assetId} readOnly={readOnly} busy={busy} mutate={mutate} />}
     {tab === 'benchmarks' && <BenchmarkInspection key={version} />}
-    {tab === 'fx' && <FxPanel overview={overview} />}
+    {tab === 'fx' && <><FxCoveragePanel portfolioId={portfolioId} version={version} /><details className="panel settings-section"><summary>Consulta avançada por data</summary><FxPanel overview={overview} /></details></>}
     {tab === 'corporate-actions' && <section className="panel"><div className="section-heading"><label>Instrumento<select value={assetId} onChange={e => setAssetId(Number(e.target.value))}>{marketAssets.map(a => <option key={a.id} value={a.id}>{a.ticker}</option>)}</select></label></div>{!assetId ? <EmptyState>Adicione uma transação para acompanhar eventos.</EmptyState> : <CorporateActionsPanel key={assetId} base={'/portfolios/' + portfolioId + '/assets/' + assetId} currency={overview.assets.find(a => a.id === assetId)?.transaction_currency ?? 'BRL'} busy={busy} readOnly={readOnly} mutate={mutate} refreshVersion={version} />}</section>}
   </>
 }

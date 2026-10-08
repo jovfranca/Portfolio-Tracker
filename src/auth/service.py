@@ -5,9 +5,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
-from src.models import AuthIdentity, AuthSession, Household, Membership, User
+from src.models import AuthIdentity, AuthSession, Household, Membership, Portfolio, User
 
 SESSION_COOKIE = 'aurion_session'
 CHALLENGE_COOKIE = 'aurion_challenge'
@@ -70,15 +70,23 @@ def resolve_identity(session, identity, *, link_user=None):
 
 
 def session_data(session, user):
-    rows = session.execute(select(Household, Membership.role).join(
+    member_counts = select(Membership.household_id, func.count().label('count')).group_by(
+        Membership.household_id).subquery()
+    portfolio_counts = select(Portfolio.household_id, func.count().label('count')).group_by(
+        Portfolio.household_id).subquery()
+    rows = session.execute(select(Household, Membership.role, member_counts.c.count,
+                                  func.coalesce(portfolio_counts.c.count, 0)).join(
         Membership, Membership.household_id == Household.id).where(
-        Membership.user_id == user.id).order_by(Household.id))
+        Membership.user_id == user.id).join(member_counts, member_counts.c.household_id == Household.id).
+        outerjoin(portfolio_counts, portfolio_counts.c.household_id == Household.id).order_by(Household.id))
     identities = session.scalars(select(AuthIdentity).where(
         AuthIdentity.user_id == user.id).order_by(AuthIdentity.id))
     return {'user': {'id': user.id, 'display_name': user.display_name,
                      'identities': [{'provider': identity.provider, 'email': identity.email,
                                      'email_verified': identity.email_verified} for identity in identities]},
-            'households': [{'id': h.id, 'name': h.name, 'role': role} for h, role in rows]}
+            'households': [{'id': h.id, 'name': h.name, 'role': role, 'member_count': members,
+                            'portfolio_count': portfolios, 'status': 'ACTIVE'}
+                           for h, role, members, portfolios in rows]}
 
 
 def establish_session(session, request, response, user):

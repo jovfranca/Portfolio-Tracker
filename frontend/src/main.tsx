@@ -9,5 +9,6 @@ import '@fontsource/manrope/latin-500.css'
 import '@fontsource/manrope/latin-600.css'
 import '@fontsource/manrope/latin-700.css'
 import './theme.css'
+import './overview.css'
 document.documentElement.dataset.theme = localStorage.getItem('quintrion-theme') ?? 'system'
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><AuthShell /></React.StrictMode>)
